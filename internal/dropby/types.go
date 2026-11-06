@@ -57,6 +57,8 @@ type Message struct {
 	// 可选问题是聊天消息的一部分；问题关闭后正文仍留在原位置，不能变成弹窗或必答表单。
 	Question       *Question `json:"question,omitempty"`
 	QuestionStatus string    `json:"question_status,omitempty"`
+	// 仅从这条公开消息的真实工具引用派生；保存作品本身不等于向群里分享。
+	Artifacts []Artifact `json:"artifacts,omitempty"`
 }
 
 type Memory struct {
@@ -71,6 +73,8 @@ type Memory struct {
 // Work 是可以真正执行和恢复的工作，不代表兴趣的生命周期。
 // chat/explore 是一次有限的交流机会；research 才是一项已安排的后台行动。
 type Work struct {
+	Autonomous     bool   `json:"autonomous,omitempty"` // 计费来源与引用消息分离，记得真人原话不等于持续占用前台额度。
+	RootID         string `json:"root_id,omitempty"`    // 同一自主机会的后续共享执行边界，不能靠新建工作重置。
 	ID             string `json:"id"`
 	ConversationID string `json:"conversation_id"`
 	MemberID       string `json:"member_id"`
@@ -114,6 +118,8 @@ type Participation struct {
 }
 
 type Artifact struct {
+	// 每个版本保存自己的格式，避免修改 HTML 时悄悄变成 Markdown。
+	Format         string `json:"format"`
 	ID             string `json:"id"`
 	ConversationID string `json:"conversation_id"`
 	MemberID       string `json:"member_id"`

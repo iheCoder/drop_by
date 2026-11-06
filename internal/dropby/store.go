@@ -78,6 +78,14 @@ CREATE TABLE IF NOT EXISTS usage(day TEXT PRIMARY KEY, calls INTEGER NOT NULL DE
 		db.Close()
 		return nil, err
 	}
+	if err = s.initArtifacts(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = s.initProactivity(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err = s.initParticipation(); err != nil {
 		db.Close()
 		return nil, err
@@ -246,7 +254,15 @@ func (s *Store) Messages(room string, before int64, limit int) ([]Message, error
 		}
 		result = append(result, m)
 	}
-	return result, rows.Err()
+	if e = rows.Err(); e != nil {
+		return nil, e
+	}
+	// 当前连接池只开一条连接，先结束消息读取再解析成果引用，避免嵌套查询等待自己。
+	rows.Close()
+	if e = s.attachMessageArtifacts(result); e != nil {
+		return nil, e
+	}
+	return result, nil
 }
 
 func insertMessage(tx *sql.Tx, m Message) error {
@@ -289,7 +305,7 @@ func (s *Store) AddUserMessage(m Message, interval time.Duration) error {
 	if _, e = tx.Exec(`UPDATE message_questions SET status=CASE WHEN message_id=? THEN 'answered' ELSE 'dismissed' END,response_id=? WHERE status='open' AND message_id IN (SELECT id FROM messages WHERE conversation_id=?)`, m.ReplyTo, m.ID, m.ConversationID); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(`UPDATE conversations SET revision=revision+1,next_explore=? WHERE id=?`, time.Now().Add(interval).UnixMilli(), m.ConversationID); e != nil {
+	if _, e = tx.Exec(`UPDATE conversations SET revision=revision+1,idle_rounds=0,next_explore=? WHERE id=?`, time.Now().Add(interval).UnixMilli(), m.ConversationID); e != nil {
 		return e
 	}
 	// 极明确的停止在接收消息的事务中立即生效，不等待模型、预算或后台轮询。
@@ -304,12 +320,12 @@ func (s *Store) AddUserMessage(m Message, interval time.Duration) error {
 			if _, e = tx.Exec(`UPDATE conversations SET research_paused=1 WHERE id=?`, m.ConversationID); e != nil {
 				return e
 			}
-			if _, e = tx.Exec(`UPDATE work SET status='stopped' WHERE conversation_id=? AND kind='research' AND status IN ('pending','running','waiting_budget','paused')`, m.ConversationID); e != nil {
+			if _, e = tx.Exec(`UPDATE work SET status='stopped' WHERE conversation_id=? AND kind IN ('research','revisit') AND status IN ('pending','running','waiting_budget','paused')`, m.ConversationID); e != nil {
 				return e
 			}
 		}
 	}
-	if _, e = tx.Exec(`UPDATE work SET status='superseded' WHERE conversation_id=? AND kind!='research' AND status IN ('pending','running','waiting_budget')`, m.ConversationID); e != nil {
+	if _, e = tx.Exec(`UPDATE work SET status='superseded' WHERE conversation_id=? AND kind NOT IN ('research','revisit') AND status IN ('pending','running','waiting_budget')`, m.ConversationID); e != nil {
 		return e
 	}
 	w := Work{ID: newID("work"), ConversationID: m.ConversationID, Kind: "chat", Instruction: m.Body, SourceID: m.ID, Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
@@ -379,15 +395,29 @@ func (s *Store) SystemMessage(room, id, body string) error {
 }
 
 func insertWork(tx *sql.Tx, w Work) error {
-	_, e := tx.Exec(`INSERT INTO work(id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, w.ID, w.ConversationID, w.MemberID, w.Kind, w.Instruction, w.Reason, w.SourceID, w.Status, w.DueAt, w.CreatedAt)
+	if w.RootID == "" {
+		w.RootID = w.ID
+	}
+	// 限制同一成员从同一个来由衍生的实际行动；已完成的工作也计入。
+	// 同伴各自拥有机会，保存成果后的分享也不会被这一队列边界吞掉。
+	if w.RootID != w.ID && (w.Kind == "research" || w.Kind == "revisit") {
+		var children int
+		if err := tx.QueryRow(`SELECT count(*) FROM work WHERE (root_id=? OR id=?) AND member_id=? AND kind IN ('research','revisit')`, w.RootID, w.RootID, w.MemberID).Scan(&children); err != nil {
+			return err
+		}
+		if children >= maxChainedActions {
+			return errAutonomyLimit
+		}
+	}
+	_, e := tx.Exec(`INSERT INTO work(id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,created_at,root_id,autonomous) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, w.ID, w.ConversationID, w.MemberID, w.Kind, w.Instruction, w.Reason, w.SourceID, w.Status, w.DueAt, w.CreatedAt, w.RootID, w.Autonomous)
 	return e
 }
 
-const workColumns = `id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,attempts,result,created_at`
+const workColumns = `id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,attempts,result,created_at,root_id,autonomous`
 
 func scanWork(rows interface{ Scan(...any) error }) (Work, error) {
 	var w Work
-	e := rows.Scan(&w.ID, &w.ConversationID, &w.MemberID, &w.Kind, &w.Instruction, &w.Reason, &w.SourceID, &w.Status, &w.DueAt, &w.Attempts, &w.Result, &w.CreatedAt)
+	e := rows.Scan(&w.ID, &w.ConversationID, &w.MemberID, &w.Kind, &w.Instruction, &w.Reason, &w.SourceID, &w.Status, &w.DueAt, &w.Attempts, &w.Result, &w.CreatedAt, &w.RootID, &w.Autonomous)
 	return w, e
 }
 func (s *Store) Works(room string) ([]Work, error) {
@@ -424,7 +454,7 @@ func (s *Store) Participations(room string) ([]Participation, error) {
 	return list, rows.Err()
 }
 func (s *Store) DueWorks() ([]Work, error) {
-	rows, e := s.db.Query(`SELECT `+workColumns+` FROM work WHERE status IN ('pending','waiting_budget') AND due_at<=? ORDER BY CASE kind WHEN 'chat' THEN 0 WHEN 'research' THEN 1 ELSE 2 END,created_at LIMIT 100`, time.Now().UnixMilli())
+	rows, e := s.db.Query(`SELECT `+workColumns+` FROM work WHERE status IN ('pending','waiting_budget') AND due_at<=? ORDER BY CASE kind WHEN 'chat' THEN 0 WHEN 'share' THEN 1 WHEN 'revisit' THEN 2 WHEN 'research' THEN 2 ELSE 3 END,created_at LIMIT 100`, time.Now().UnixMilli())
 	if e != nil {
 		return nil, e
 	}
@@ -450,45 +480,6 @@ func (s *Store) Claim(id string) (bool, error) {
 func (s *Store) Finish(w Work, status, result string, due time.Time) error {
 	_, e := s.db.Exec(`UPDATE work SET status=?,result=CASE WHEN ?='' THEN result ELSE ? END,due_at=? WHERE id=? AND status='running'`, status, result, result, due.UnixMilli(), w.ID)
 	return e
-}
-
-// 定时器只提供一次判断机会。没有内容可推进时，成员可安静地结束这次机会。
-func (s *Store) ScheduleExploration(interval time.Duration) error {
-	tx, e := s.db.Begin()
-	if e != nil {
-		return e
-	}
-	defer tx.Rollback()
-	// 未到时间的研究不能冻结整个聊天。只避开正在执行、待处理的聊天机会和预算暂停，
-	// 让其他成员仍能独立发现事情；已有研究作为上下文，避免重复安排同一方向。
-	rows, e := tx.Query(`SELECT c.id FROM conversations c WHERE c.next_explore<=? AND c.research_paused=0 AND NOT EXISTS(SELECT 1 FROM work w WHERE w.conversation_id=c.id AND (w.status IN ('running','waiting_budget') OR (w.status='pending' AND w.kind IN ('chat','explore'))))`, time.Now().UnixMilli())
-	if e != nil {
-		return e
-	}
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if e = rows.Scan(&id); e != nil {
-			rows.Close()
-			return e
-		}
-		ids = append(ids, id)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return e
-	}
-	for _, id := range ids {
-		w := Work{ID: newID("work"), ConversationID: id, Kind: "explore", Instruction: "这是没有新真人消息时的一次自主机会。结合自己的兴趣、共同经历和已有工作，推进值得探索的方向，或分享一个具体的新想法。刚被邀请而聊天尚空时，也可以自然开启一个具体话题。不需要真人先说话；没有合适内容就安静结束，不定时问候，不催回复。", Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
-		if e = insertWork(tx, w); e != nil {
-			return e
-		}
-		if _, e = tx.Exec(`UPDATE conversations SET next_explore=? WHERE id=?`, time.Now().Add(interval).UnixMilli(), id); e != nil {
-			return e
-		}
-	}
-	return tx.Commit()
 }
 
 func (s *Store) Memories(member, room string) ([]Memory, error) {
@@ -530,7 +521,7 @@ func (s *Store) RecordTool(r ToolRun) error {
 	return e
 }
 func (s *Store) Artifacts(room string) ([]Artifact, error) {
-	rows, e := s.db.Query(`SELECT a.id,a.conversation_id,a.member_id,a.title,a.content,a.version,a.source_id,a.created_at FROM artifacts a WHERE conversation_id=? AND version=(SELECT max(version) FROM artifacts b WHERE b.id=a.id) ORDER BY created_at DESC`, room)
+	rows, e := s.db.Query(`SELECT a.id,a.conversation_id,a.member_id,a.title,a.content,a.version,a.source_id,a.created_at,a.format FROM artifacts a WHERE conversation_id=? AND version=(SELECT max(version) FROM artifacts b WHERE b.id=a.id) ORDER BY created_at DESC`, room)
 	if e != nil {
 		return nil, e
 	}
@@ -538,7 +529,7 @@ func (s *Store) Artifacts(room string) ([]Artifact, error) {
 	result := []Artifact{}
 	for rows.Next() {
 		var a Artifact
-		if e = rows.Scan(&a.ID, &a.ConversationID, &a.MemberID, &a.Title, &a.Content, &a.Version, &a.SourceID, &a.CreatedAt); e != nil {
+		if e = rows.Scan(&a.ID, &a.ConversationID, &a.MemberID, &a.Title, &a.Content, &a.Version, &a.SourceID, &a.CreatedAt, &a.Format); e != nil {
 			return nil, e
 		}
 		result = append(result, a)
@@ -546,7 +537,7 @@ func (s *Store) Artifacts(room string) ([]Artifact, error) {
 	return result, rows.Err()
 }
 func (s *Store) ArtifactVersions(id string) ([]Artifact, error) {
-	rows, e := s.db.Query(`SELECT id,conversation_id,member_id,title,content,version,source_id,created_at FROM artifacts WHERE id=? ORDER BY version DESC`, id)
+	rows, e := s.db.Query(`SELECT id,conversation_id,member_id,title,content,version,source_id,created_at,format FROM artifacts WHERE id=? ORDER BY version DESC`, id)
 	if e != nil {
 		return nil, e
 	}
@@ -554,7 +545,7 @@ func (s *Store) ArtifactVersions(id string) ([]Artifact, error) {
 	list := []Artifact{}
 	for rows.Next() {
 		var a Artifact
-		if e = rows.Scan(&a.ID, &a.ConversationID, &a.MemberID, &a.Title, &a.Content, &a.Version, &a.SourceID, &a.CreatedAt); e != nil {
+		if e = rows.Scan(&a.ID, &a.ConversationID, &a.MemberID, &a.Title, &a.Content, &a.Version, &a.SourceID, &a.CreatedAt, &a.Format); e != nil {
 			return nil, e
 		}
 		list = append(list, a)

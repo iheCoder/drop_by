@@ -39,6 +39,8 @@ func NewHandler(engine *Engine) http.Handler {
 	mux.HandleFunc("GET /api/conversations/{id}", a.conversation)
 	mux.HandleFunc("POST /api/conversations/{id}/messages", a.sendMessage)
 	mux.HandleFunc("GET /api/artifacts/{id}", a.artifact)
+	mux.HandleFunc("GET /api/artifacts/{id}/preview", a.artifactPreview)
+	mux.HandleFunc("GET /api/artifacts/{id}/download", a.artifactDownload)
 	mux.HandleFunc("GET /api/tool-runs/{id}", a.toolRun)
 	mux.HandleFunc("GET /api/events", a.events)
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +138,7 @@ func (a *API) state(w http.ResponseWriter, r *http.Request) {
 		activities = append(activities, activity)
 	}
 	a.engine.mu.Unlock()
-	respond(w, 200, map[string]any{"members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "daily_budget_micros": a.engine.Config.DailyBudgetMicros, "daily_calls": a.engine.Config.DailyCalls, "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
+	respond(w, 200, map[string]any{"members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "daily_budget_micros": a.engine.Config.DailyBudgetMicros, "autonomous_daily_budget_micros": a.engine.Config.AutonomousBudgetMicros, "daily_calls": a.engine.Config.DailyCalls, "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
 }
 func (a *API) questions(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -441,9 +443,8 @@ func (a *API) artifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Query().Get("download") == "1" {
-		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+versions[0].ID+`.md"`)
-		io.WriteString(w, versions[0].Content)
+		// 保留旧下载地址；类型和版本选择使用统一的下载逻辑。
+		a.artifactDownload(w, r)
 		return
 	}
 	respond(w, 200, map[string]any{"versions": versions})

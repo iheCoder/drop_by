@@ -18,6 +18,7 @@ type Config struct {
 	ExploreInterval                                                time.Duration
 	MaxTurns, MaxToolRounds, MaxOutputTokens, DailyCalls           int
 	DailyBudgetMicros                                              int64
+	AutonomousBudgetMicros                                         int64
 	InputPrice, OutputPrice                                        float64 // 美元 / 百万 token；用于请求前保守预留。
 	ToolCostMicros                                                 int64
 }
@@ -29,8 +30,8 @@ func LoadConfig() (Config, error) {
 		Model: env("DROPBY_MODEL", "gpt-5.6-sol"), BaseURL: env("DROPBY_BASE_URL", "https://api.openai.com/v1"),
 		APIKey:    env("DROPBY_API_KEY", os.Getenv("OPENAI_API_KEY")),
 		SearchURL: env("DROPBY_SEARCH_URL", "https://api.deepseek.com/v1/tools"), SearchKey: os.Getenv("DEEPSEEK_API_KEY"),
-		ExploreInterval: 10 * time.Minute, MaxTurns: 5, MaxToolRounds: 8, MaxOutputTokens: 8000, DeepMaxOutputTokens: 25000, Reasoning: env("DROPBY_REASONING", "none"), DeepReasoning: env("DROPBY_DEEP_REASONING", "high"),
-		DailyCalls: 600, DailyBudgetMicros: 3_000_000,
+		ExploreInterval: 30 * time.Minute, MaxTurns: 5, MaxToolRounds: 8, MaxOutputTokens: 8000, DeepMaxOutputTokens: 25000, Reasoning: env("DROPBY_REASONING", "none"), DeepReasoning: env("DROPBY_DEEP_REASONING", "high"),
+		DailyCalls: 600, DailyBudgetMicros: 3_000_000, AutonomousBudgetMicros: 1_000_000,
 		InputPrice: 4, OutputPrice: 20, ToolCostMicros: 750,
 	}
 	if v := os.Getenv("DROPBY_SEARCH_KEY"); v != "" {
@@ -61,6 +62,13 @@ func LoadConfig() (Config, error) {
 			return c, fmt.Errorf("DROPBY_DAILY_BUDGET_USD 必须在 0 到 1000 之间")
 		}
 		c.DailyBudgetMicros = int64(n * 1e6)
+	}
+	if v := os.Getenv("DROPBY_AUTONOMOUS_BUDGET_USD"); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		if err != nil || n < 0 || n > 1000 || math.IsNaN(n) {
+			return c, fmt.Errorf("DROPBY_AUTONOMOUS_BUDGET_USD 必须在 0 到 1000 之间")
+		}
+		c.AutonomousBudgetMicros = int64(n * 1e6)
 	}
 	if v := os.Getenv("DROPBY_EXPLORE_INTERVAL"); v != "" {
 		d, e := time.ParseDuration(v)

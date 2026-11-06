@@ -307,6 +307,44 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: r
 .artifact-toolbar a { flex: 0 0 auto; }
 .version-select { font-size: 12px; padding: 8px; min-height: 36px; }
 .artifact-content { white-space: pre-wrap; font-size: 14px; line-height: 1.9; overflow-wrap: anywhere; }
+
+/* A card accompanies an actual public sharing message. Silent research remains
+   in the collection until a member chooses to share a saved version. */
+.message-artifacts { display: grid; gap: 10px; width: min(390px, 100%); margin-top: 10px; }
+.artifact-card { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 112px; padding: 18px; text-align: left; background: var(--surface); border: 1px solid #dbe2ed; border-radius: 15px; box-shadow: var(--shadow); }
+.artifact-card:hover { background: #fafcff; border-color: #a7bfe8; }
+.artifact-card-icon { display: grid; place-items: center; width: 44px; height: 52px; flex: 0 0 44px; color: var(--blue); background: var(--blue-soft); border-radius: 10px; }
+.artifact-card-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 6px; }
+.artifact-kind { color: var(--muted); font-size: 10px; font-weight: 500; }
+.artifact-card-copy strong { font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; }
+.artifact-card-caption { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.artifact-card > .icon { width: 16px; height: 16px; color: var(--subtle); }
+.artifact-list-entry { margin-bottom: 21px; }
+.artifact-list-entry > p { margin: 8px 3px 0; color: var(--muted); font-size: 11px; }
+.artifact-list-entry .artifact-card { padding: 15px; gap: 11px; box-shadow: none; }
+.artifact-list-entry .artifact-card-icon { width: 36px; height: 46px; flex-basis: 36px; }
+.capability-block .section-label { margin-bottom: 11px; }
+.capability-list { display: flex; flex-wrap: wrap; gap: 7px; }
+.capability-list span { padding: 6px 9px; background: var(--canvas); border: 1px solid var(--line); border-radius: 7px; color: var(--muted); font-size: 11px; }
+
+/* The page preview needs more room than a profile, while keeping the conversation
+   alongside it on wide screens. Narrow screens use the existing full-page inspector. */
+.app.artifact-open .inspector { width: min(52vw, 740px); flex-basis: min(52vw, 740px); }
+.artifact-back { display: inline-flex; align-items: center; gap: 7px; margin: -9px 0 15px -7px; min-height: 38px; }
+.artifact-back .icon { width: 15px; height: 15px; }
+.artifact-toolbar { margin-bottom: 17px; gap: 10px; }
+.artifact-toolbar .version-select { min-width: 0; min-height: 42px; }
+.artifact-download { display: inline-flex; align-items: center; min-height: 42px; padding: 8px 10px; border-radius: 8px; background: var(--canvas); font-size: 12px; }
+.artifact-tabs { display: flex; gap: 5px; padding: 4px; background: var(--canvas); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 16px; width: fit-content; }
+.artifact-tabs button { min-height: 36px; min-width: 76px; padding: 7px 15px; border-radius: 7px; font-size: 12px; color: var(--muted); }
+.artifact-tabs button[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 4px rgb(27 39 60 / 9%); }
+.artifact-update { display: block; width: 100%; min-height: 44px; padding: 10px 14px; margin-bottom: 14px; border: 1px solid #c6d6f4; border-radius: 10px; background: var(--blue-soft); color: #2456ac; font-size: 12px; text-align: left; }
+.artifact-preview { display: block; width: 100%; height: clamp(560px, 62vh, 760px); border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.artifact-preview-note { font-size: 11px; color: var(--muted); line-height: 1.8; margin: 12px 1px 0; }
+.source-actions { display: flex; justify-content: flex-end; margin: -4px 0 7px; }
+.source-actions button { min-height: 36px; }
+.artifact-source { overflow: auto; max-height: 65vh; margin: 0; padding: 17px; border: 1px solid var(--line); border-radius: 12px; background: #f8f9fb; color: #344055; font: 12px/1.8 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }
+.artifact-source code { font: inherit; }
 .evidence { font-size: 13px; line-height: 1.8; }
 .action-summary { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
 .evidence pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; line-height: 1.8; background: var(--canvas); padding: 12px; border-radius: 10px; }
@@ -328,6 +366,8 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: r
   .app.panel-open .inspector { width: 100%; flex: 1; border-left: 0; }
   .app.panel-open .panel-content { max-width: 560px; width: 100%; margin: 0 auto; padding: 28px; }
   .app.panel-open .panel-heading { padding-inline: 28px; }
+  .app.artifact-open .inspector { width: 100%; flex: 1; }
+  .app.artifact-open .panel-content { max-width: none; }
   .chat-header { gap: 3px; padding-inline: 18px; }
   .chat-title { gap: 9px; }
   .header-avatar > .avatar, .header-avatar > .group-portrait { display: block; width: 36px; height: 36px; flex-basis: 36px; }
@@ -377,6 +417,11 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: r
   .desktop-hint { display: none; }
   .icon-button { min-width: 44px; min-height: 44px; }
   .question-option { min-height: 46px; }
+  .artifact-card { padding: 14px; gap: 10px; }
+  .artifact-card-icon { width: 36px; height: 46px; flex-basis: 36px; }
+  .artifact-toolbar .version-select, .artifact-download, .artifact-tabs button, .source-actions button { min-height: 44px; }
+  .app.artifact-open .panel-content { padding: 20px 16px; }
+  .artifact-preview { height: max(560px, 58vh); }
   .latest-messages { bottom: 148px; }
   .field input, .field textarea { font-size: 16px; }
   .app.panel-open .panel-content { padding: 24px; }

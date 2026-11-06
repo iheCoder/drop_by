@@ -56,11 +56,12 @@ type HTTPModel struct {
 }
 
 type Usage struct {
-	Day          string `json:"day"`
-	Calls        int    `json:"calls"`
-	CostMicros   int64  `json:"cost_micros"`
-	InputTokens  int    `json:"input_tokens"`
-	OutputTokens int    `json:"output_tokens"`
+	AutonomousCostMicros int64  `json:"autonomous_cost_micros"`
+	Day                  string `json:"day"`
+	Calls                int    `json:"calls"`
+	CostMicros           int64  `json:"cost_micros"`
+	InputTokens          int    `json:"input_tokens"`
+	OutputTokens         int    `json:"output_tokens"`
 }
 
 // 预算按上海日期结算，重启不会清空。请求前按输入字节数和最大输出 token 预留，
@@ -73,7 +74,17 @@ func nextBudgetDay() time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, t.Location())
 }
 func (s *Store) Reserve(c Config, cost int64) (string, error) {
+	return s.ReserveContext(context.Background(), c, cost)
+}
+
+// 同一次请求同时预留总预算和自主预算；并发检查也不能吃掉留给真人的额度。
+func (s *Store) ReserveContext(ctx context.Context, c Config, cost int64) (string, error) {
 	day := budgetDay()
+	autonomous := autonomyRoot(ctx) != ""
+	var autoCost int64
+	if autonomous {
+		autoCost = cost
+	}
 	tx, e := s.db.Begin()
 	if e != nil {
 		return day, e
@@ -82,7 +93,7 @@ func (s *Store) Reserve(c Config, cost int64) (string, error) {
 	if _, e = tx.Exec(`INSERT OR IGNORE INTO usage(day) VALUES(?)`, day); e != nil {
 		return day, e
 	}
-	r, e := tx.Exec(`UPDATE usage SET calls=calls+1,cost_micros=cost_micros+? WHERE day=? AND calls<? AND cost_micros+?<=?`, cost, day, c.DailyCalls, cost, c.DailyBudgetMicros)
+	r, e := tx.Exec(`UPDATE usage SET calls=calls+1,cost_micros=cost_micros+?,autonomous_cost_micros=autonomous_cost_micros+? WHERE day=? AND calls<? AND cost_micros+?<=? AND (?=0 OR autonomous_cost_micros+?<=?)`, cost, autoCost, day, c.DailyCalls, cost, c.DailyBudgetMicros, autoCost, autoCost, c.AutonomousBudgetMicros)
 	if e != nil {
 		return day, e
 	}
@@ -91,17 +102,34 @@ func (s *Store) Reserve(c Config, cost int64) (string, error) {
 		return day, e
 	}
 	if n == 0 {
+		if autonomous {
+			var calls int
+			var total, background int64
+			if err := tx.QueryRow(`SELECT calls,cost_micros,autonomous_cost_micros FROM usage WHERE day=?`, day).Scan(&calls, &total, &background); err != nil {
+				return day, err
+			}
+			if calls < c.DailyCalls && total+cost <= c.DailyBudgetMicros && background+cost > c.AutonomousBudgetMicros {
+				return day, errAutonomyBudget
+			}
+		}
 		return day, ErrBudget
 	}
 	return day, tx.Commit()
 }
 func (s *Store) Settle(day string, reserved, actual int64, input, output int) error {
-	_, e := s.db.Exec(`UPDATE usage SET cost_micros=max(0,cost_micros-?+?),input_tokens=input_tokens+?,output_tokens=output_tokens+? WHERE day=?`, reserved, actual, input, output, day)
+	return s.SettleContext(context.Background(), day, reserved, actual, input, output)
+}
+func (s *Store) SettleContext(ctx context.Context, day string, reserved, actual int64, input, output int) error {
+	var autoDelta int64
+	if autonomyRoot(ctx) != "" {
+		autoDelta = actual - reserved
+	}
+	_, e := s.db.Exec(`UPDATE usage SET cost_micros=max(0,cost_micros-?+?),autonomous_cost_micros=max(0,autonomous_cost_micros+?),input_tokens=input_tokens+?,output_tokens=output_tokens+? WHERE day=?`, reserved, actual, autoDelta, input, output, day)
 	return e
 }
 func (s *Store) Usage() (Usage, error) {
 	u := Usage{Day: budgetDay()}
-	e := s.db.QueryRow(`SELECT calls,cost_micros,input_tokens,output_tokens FROM usage WHERE day=?`, u.Day).Scan(&u.Calls, &u.CostMicros, &u.InputTokens, &u.OutputTokens)
+	e := s.db.QueryRow(`SELECT calls,cost_micros,input_tokens,output_tokens,autonomous_cost_micros FROM usage WHERE day=?`, u.Day).Scan(&u.Calls, &u.CostMicros, &u.InputTokens, &u.OutputTokens, &u.AutonomousCostMicros)
 	if errors.Is(e, sql.ErrNoRows) {
 		e = nil
 	}
@@ -170,7 +198,7 @@ func (m *HTTPModel) Complete(ctx context.Context, messages []ChatMessage, defs [
 		return ChatMessage{}, fmt.Errorf("本次行动的内部请求过大，已保存工具记录")
 	}
 	reserve := int64(math.Ceil(float64(inputEstimate)*m.Config.InputPrice + float64(m.Config.MaxOutputTokens)*m.Config.OutputPrice))
-	day, e := m.Store.Reserve(m.Config, reserve)
+	day, e := m.Store.ReserveContext(ctx, m.Config, reserve)
 	if e != nil {
 		return ChatMessage{}, e
 	}
@@ -186,7 +214,7 @@ func (m *HTTPModel) Complete(ctx context.Context, messages []ChatMessage, defs [
 	}
 	if response.Usage.PromptTokens+response.Usage.CompletionTokens > 0 {
 		actual := int64(math.Ceil(float64(response.Usage.PromptTokens)*m.Config.InputPrice + float64(response.Usage.CompletionTokens)*m.Config.OutputPrice))
-		if e = m.Store.Settle(day, reserve, actual, response.Usage.PromptTokens, response.Usage.CompletionTokens); e != nil {
+		if e = m.Store.SettleContext(ctx, day, reserve, actual, response.Usage.PromptTokens, response.Usage.CompletionTokens); e != nil {
 			return ChatMessage{}, e
 		}
 	}
@@ -283,7 +311,7 @@ func CompleteMember(ctx context.Context, model Model, m Member) (Member, error) 
 		Tools   []string `json:"tools"`
 	}
 	input := map[string]any{"name": m.Name, "direction": m.Direction, "existing_profile": m.Profile, "questions": m.Questions, "answers": m.Answers}
-	e := modelJSON(ctx, model, `根据已有说明和用户这次自愿提供的情境回答，合并为 400 字内的成员说明。保留既有兴趣，只修改被这次回答影响的部分；未提供的偏好留有余地。包含关注点、判断方式、参与意愿、可以自然变化的地方。不使用性格数值，不固定站队，不编造真实行动或已经发生的关系。工具池只有 search（搜索）、read_page（网页阅读）、save_artifact（保存和修改文本成果），根据成员方向选择合适工具。返回 {"profile":"自然语言说明","tools":["search","read_page","save_artifact"]}`, input, &out)
+	e := modelJSON(ctx, model, `根据已有说明和用户这次自愿提供的情境回答，合并为 400 字内的成员说明。保留既有兴趣，只修改被这次回答影响的部分；未提供的偏好留有余地。包含关注点、判断方式、参与意愿、可以自然变化的地方。不使用性格数值，不固定站队，不编造真实行动或已经发生的关系。工具池只有 search（搜索）、read_page（网页阅读）、save_artifact（保存和修改 Markdown 或 HTML 成果；HTML 用 format=html，可制作交互小网页），根据成员方向选择合适工具。所有成员另有对话提问 ask_question、安排后续 schedule_followup、取消过时后续 cancel_work 等本地能力，不要把这些列入 tools 数组。返回 {"profile":"自然语言说明","tools":["search","read_page","save_artifact"]}`, input, &out)
 	if e != nil {
 		return m, e
 	}

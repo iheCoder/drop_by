@@ -758,7 +758,7 @@ func TestFirstReplyDefersSlowTools(t *testing.T) {
 	e := NewEngine(s, nil, testConfig())
 	first := Work{Kind: "first_reply"}
 	defs := e.Tools.Definitions(m, c, first)
-	allowed := map[string]bool{"schedule_exploration": true, "ask_question": true}
+	allowed := map[string]bool{"schedule_exploration": true, "schedule_followup": true, "cancel_work": true, "ask_question": true}
 	if len(defs) != len(allowed) {
 		t.Fatalf("首句工具: %+v", defs)
 	}
@@ -773,12 +773,13 @@ func TestFirstReplyDefersSlowTools(t *testing.T) {
 	}
 	c.ResearchPaused = true
 	defs = e.Tools.Definitions(m, c, first)
-	if len(defs) != 1 || defs[0].Function.Name != "ask_question" {
-		t.Fatal("研究暂停后只能保留可选聊天问题，不能重新排研究")
+	if len(defs) != 2 || defs[0].Function.Name != "cancel_work" || defs[1].Function.Name != "ask_question" {
+		t.Fatal("研究暂停后仍可取消自己的旧工作和提出问题，但不能安排新研究")
 	}
 	c.DiscussionPaused = true
-	if len(e.Tools.Definitions(m, c, first)) != 0 {
-		t.Fatal("讨论也暂停后不能继续发布问题")
+	defs = e.Tools.Definitions(m, c, first)
+	if len(defs) != 1 || defs[0].Function.Name != "cancel_work" {
+		t.Fatal("讨论也暂停后只能清理旧安排，不能继续发布问题")
 	}
 }
 

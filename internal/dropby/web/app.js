@@ -7,6 +7,7 @@ let state = { members: [], conversations: [], active_rooms: [] };
 let selected = localStorage.getItem('dropby-room') || '';
 let roomData = null, messages = [], replyTo = null, loadSequence = 0, hasEarlier = false;
 let refreshTimer, toastTimer, currentVersions = [];
+let currentArtifactIndex = 0, artifactMode = 'preview', panelRequest = 0;
 let panelView = '', avatarData = '', avatarIcon = 'cat', avatarColor = 'jade';
 let sideTab = 'chats', sending = false, renderedMessages = '', profileBaseline = null;
 let avatarRequest = 0, avatarLoading = false;
@@ -153,11 +154,21 @@ async function loadConversation(id, preserve) {
   renderActivity();
   $('show-activity').hidden = false;
   if (panelView === 'activity') showActivity(false);
+  if (panelView === 'artifacts' && $('panel-content').dataset.artifactListSignature !== JSON.stringify(data.artifacts.map(a => [a.id,a.version,a.title]))) {
+    const top = $('panel-content').scrollTop; showArtifacts(); $('panel-content').scrollTop = top;
+  }
   if (panelView === 'room') roomDetails(false);
   if (panelView.startsWith('profile:')) {
     const id = panelView.slice(8), current = member(id);
     const signature = JSON.stringify([current, roomData.member_states?.find(s => s.member_id === id)]);
     if ($('panel-content').dataset.profileSignature !== signature) { const top = $('panel-content').scrollTop; profile(id); $('panel-content').scrollTop = top; }
+  }
+  // 新版只提示，不重建用户正在试用的页面；点击后才载入新的版本。
+  const update = $('artifact-new-version');
+  if (update && panelView.startsWith('artifact:')) {
+    const latest = data.artifacts.find(a => a.id === panelView.slice(9));
+    update.hidden = !latest || latest.version <= (currentVersions[0]?.version || 0);
+    if (!update.hidden) update.textContent = `已有第 ${latest.version} 版 · 打开新版`;
   }
   renderMessages(!preserve || changedRoom);
   const last = messages.at(-1)?.seq || 0;
@@ -173,6 +184,8 @@ function renderMessages(scrollToBottom) {
   renderedMessages = signature;
   let lastDate = '';
   const lastHumanSeq = Math.max(0, ...messages.filter(m => m.author_id === 'user').map(m => m.seq));
+  // 只展示公开消息明确分享的成果版本。安静研究保存的作品留在成果集合里，
+  // 不因数据库多了一份草稿，就替角色自动在群里发布内容。
   $('messages').innerHTML = messages.length ? messages.map(m => {
     const date = dateLabel(m.created_at), divider = date !== lastDate ? `<div class="date-divider">${date}</div>` : ''; lastDate = date;
     if (m.author_id === 'system') {
@@ -184,7 +197,7 @@ function renderMessages(scrollToBottom) {
     const quote = m.reply_to ? `<button class="quote" data-action="jump-message" data-id="${m.reply_to}" aria-label="查看引用的消息"><strong>${escapeHTML(quoted ? authorName(quoted.author_id) : '较早的消息')}</strong><span>${escapeHTML(quoted ? quoted.body.slice(0,100) : '点击查看这段交流')}</span></button>` : '';
     const q = m.question, open = q && m.question_status === 'open' && m.seq > lastHumanSeq;
     const question = q ? `${m.body !== q.text ? `<span class="question-text">${m.body ? '\n\n' : ''}${escapeHTML(q.text)}</span>` : ''}${open ? `<div class="question-options">${q.options.map((option,i) => `<button class="question-option" data-action="answer-question" data-id="${m.id}" data-option="${i}">${escapeHTML(option)}${icon('chevron-right')}</button>`).join('')}</div><span class="question-hint">选一个，或直接在下面说说你的想法。聊点别的也可以。</span>` : m.question_status === 'answered' ? '<span class="question-closed">已回答</span>' : ''}` : '';
-    return `${divider}<article class="message ${isUser ? 'user-message' : ''}" id="message-${m.id}" data-message-id="${m.id}">${isUser ? avatar(person) : `<button class="avatar-button" data-action="profile" data-id="${m.author_id}" aria-label="了解 ${escapeHTML(authorName(m.author_id))}">${avatar(person)}</button>`}<div class="message-content"><div class="message-meta"><strong>${escapeHTML(authorName(m.author_id))}</strong><time datetime="${m.created_at}">${timeLabel(m.created_at)}</time></div><div class="message-bubble">${quote}${richText(m.body)}${question}</div><div class="message-actions"><button data-action="reply" data-id="${m.id}" aria-label="回复 ${escapeHTML(authorName(m.author_id))} 的消息">${icon('reply')}回复</button>${(m.evidence || []).map((id,i) => `<button data-action="evidence" data-id="${id}">${icon('external-link')}查看行动${m.evidence.length > 1 ? ' ' + (i+1) : ''}</button>`).join('')}</div></div></article>`;
+    return `${divider}<article class="message ${isUser ? 'user-message' : ''}" id="message-${m.id}" data-message-id="${m.id}">${isUser ? avatar(person) : `<button class="avatar-button" data-action="profile" data-id="${m.author_id}" aria-label="了解 ${escapeHTML(authorName(m.author_id))}">${avatar(person)}</button>`}<div class="message-content"><div class="message-meta"><strong>${escapeHTML(authorName(m.author_id))}</strong><time datetime="${m.created_at}">${timeLabel(m.created_at)}</time></div><div class="message-bubble">${quote}${richText(m.body)}${question}</div>${m.artifacts?.length ? `<div class="message-artifacts">${m.artifacts.map(artifactCard).join('')}</div>` : ''}<div class="message-actions"><button data-action="reply" data-id="${m.id}" aria-label="回复 ${escapeHTML(authorName(m.author_id))} 的消息">${icon('reply')}回复</button>${(m.evidence || []).map((id,i) => `<button data-action="evidence" data-id="${id}">${icon('external-link')}查看行动${m.evidence.length > 1 ? ' ' + (i+1) : ''}</button>`).join('')}</div></div></article>`;
   }).join('') : `<div class="empty-chat"><div class="empty-avatars">${roomData.conversation.member_ids.map(id => avatar(member(id))).join('')}</div><strong>${roomData.conversation.kind === 'direct' ? `和 ${escapeHTML(authorName(roomData.conversation.member_ids[0]))} 打个招呼` : '人到齐了，随便聊聊'}</strong><p>一个念头、一件小事、一个好奇的问题。<br>从哪里开始，都可以。</p></div>`;
   if (scrollToBottom || nearBottom) body.scrollTop = body.scrollHeight; else body.scrollTop = previousTop;
   updateLatestButton();
@@ -226,13 +239,15 @@ function showMentions() {
 
 // 详情是聊天旁的一个页面，不再用遮罩和模态弹窗打断交流。
 function showPanel(title, description, body, view = '') {
+  panelRequest++;
   panelView = view;
+  document.querySelector('.app').classList.toggle('artifact-open', view.startsWith('artifact:'));
   $('panel-title').textContent = title;
   $('panel-content').innerHTML = `${description ? `<p class="panel-description">${escapeHTML(description)}</p>` : ''}${body}`;
   $('inspector').hidden = false; document.querySelector('.app').classList.add('panel-open'); $('sidebar').classList.remove('open');
 }
 function closePanel() {
-  $('inspector').hidden = true; document.querySelector('.app').classList.remove('panel-open'); panelView = ''; avatarRequest++; avatarLoading = false;
+  $('inspector').hidden = true; document.querySelector('.app').classList.remove('panel-open','artifact-open'); panelRequest++; panelView = ''; avatarRequest++; avatarLoading = false;
 }
 function formError(form, error) { const el = form.querySelector('.form-error'); el.textContent = error.message; el.hidden = false; }
 function pending(form, text) { const button = form.querySelector('button[type=submit]'); const label = button.textContent; button.textContent = text; button.disabled = true; return () => { button.textContent = label; button.disabled = false; }; }
@@ -285,7 +300,7 @@ function renderActivity() {
   $('work-notice').hidden = !failed;
   $('work-notice').textContent = failed ? `${latest.member_id ? authorName(latest.member_id)+'的' : '上一次'}行动暂时停下了 · 查看已保存的进展 →` : '';
 }
-const actionLabels = {ask_question:'提出问题',search:'搜索网页',read_page:'阅读网页',save_artifact:'保存成果',remember:'更新经历',schedule_exploration:'安排探索',read_history:'回顾聊天',read_artifact:'查看成果',read_tool_result:'核对已有材料',read_memory:'回顾经历',send_private:'发起私聊'};
+const actionLabels = {ask_question:'提出问题',search:'搜索网页',read_page:'阅读网页',save_artifact:'保存成果',remember:'更新经历',schedule_exploration:'安排探索',schedule_followup:'约好稍后再看',cancel_work:'放下不再需要的后续',read_history:'回顾聊天',read_artifact:'查看成果',read_tool_result:'核对已有材料',read_memory:'回顾经历',send_private:'发起私聊'};
 const statusLabels = {pending:'已安排',running:'进行中',waiting_budget:'等待预算恢复',done:'已完成',failed:'暂时中断',paused:'已暂停',stopped:'已停止',superseded:'已根据新消息调整',succeeded:'已完成',cancelled:'已被新消息打断'};
 function showActivity(scroll = true) {
   if (!roomData) return;
@@ -297,10 +312,10 @@ function showActivity(scroll = true) {
   const people = roomData.conversation.member_ids.map(id=>{
     const p=decisions.get(id), action=live.find(a=>a.member_id===id);
     const focus = roomData.member_states?.find(s => s.member_id === id);
-    const label = action?.label || focus?.body || (!p ? '还没有参与记录' : p.action==='pass' ? '暂时没有补充' : p.action==='error' ? '上次判断未完成' : p.selected ? (p.action==='explore' ? '已安排探索' : '最近参与了交流') : '有想法，尚未发言');
-    return `<div class="member-activity">${avatar(member(id),true)}<div><strong>${escapeHTML(authorName(id))}</strong><span>${escapeHTML(label)}</span>${p ? `<details data-detail="person-${id}"><summary>查看最近参与记录</summary><p>${escapeHTML(p.action === 'pass' ? '这次选择保持安静。' : p.action === 'error' ? '这次参与判断未完成。' : p.action === 'explore' ? '这次选择先探索。' : '这次选择参与交流。')}</p><small>${timeLabel(p.created_at)}</small></details>` : ''}</div></div>`;
+    const label = action?.label || focus?.body || (!p ? '还没有参与记录' : p.action==='pass' ? '暂时没有补充' : p.action==='revisit' ? '想稍后再看看' : p.action==='error' ? '上次判断未完成' : p.selected ? (p.action==='explore' ? '已安排探索' : '最近参与了交流') : '有想法，尚未发言');
+    return `<div class="member-activity">${avatar(member(id),true)}<div><strong>${escapeHTML(authorName(id))}</strong><span>${escapeHTML(label)}</span>${p ? `<details data-detail="person-${id}"><summary>查看最近参与记录</summary><p>${escapeHTML(p.action === 'pass' ? '这次选择保持安静。' : p.action === 'error' ? '这次参与判断未完成。' : p.action === 'explore' ? '这次选择先探索。' : p.action === 'revisit' ? '这次想稍后再看看。' : '这次选择参与交流。')}</p><small>${timeLabel(p.created_at)}</small></details>` : ''}</div></div>`;
   }).join('');
-  showPanel('最近动态', '', `<p class="background-note">浏览器关掉后，服务仍会继续探索。电脑睡眠或服务停止时会暂停，重新运行后恢复。每 ${state.explore_interval_minutes || 10} 分钟提供一次自主机会，有新发现才分享。</p><h3 class="section-label">朋友们</h3>${people}<h3 class="section-label">后台行动</h3>${jobs.filter(w=>w.kind==='research' || ['failed','paused','waiting_budget'].includes(w.status)).slice(0,12).map(w=>`<details class="work-item" data-detail="${w.id}"><summary><span>${escapeHTML(w.member_id ? authorName(w.member_id) : '这段交流')}</span><span class="status ${w.status}">${escapeHTML(statusLabels[w.status]||w.status)}</span><strong>${escapeHTML(w.instruction.slice(0,90))}</strong></summary><p>${escapeHTML(w.result || w.reason || '还没有执行结果')}</p>${w.status==='pending' ? `<small>下次机会 ${new Date(w.due_at).toLocaleString('zh-CN')}</small>`:''}${['failed','paused'].includes(w.status) ? `<button class="quiet" data-action="continue-work" data-id="${w.id}">在聊天中继续这个方向 →</button>`:''}</details>`).join('') || '<p class="empty-note">暂时没有安排研究。普通聊天不必变成任务。</p>'}<h3 class="section-label">实际做过的事</h3>${actions.slice(0,15).map(a=>`<button class="action-item" data-action="evidence" data-id="${a.id}"><span>${escapeHTML(authorName(a.member_id))} · ${escapeHTML(actionLabels[a.name]||a.name)}</span><small>${timeLabel(a.created_at)} · ${escapeHTML(statusLabels[a.status]||a.status)} ↗</small></button>`).join('')||'<p class="empty-note">还没有工具行动。</p>'}<p class="budget-note">今日估算 $${(state.usage.cost_micros/1e6).toFixed(2)} / $${(state.daily_budget_micros/1e6).toFixed(2)}</p>`, 'activity');
+  showPanel('最近动态', '', `<p class="background-note">浏览器关掉后，服务仍会继续探索。电脑睡眠或服务停止时会暂停，重新运行后恢复。新消息、约好的后续和闲时好奇都可以带来一次机会，是否继续由朋友们自己决定。</p><h3 class="section-label">朋友们</h3>${people}<h3 class="section-label">后台行动</h3>${jobs.filter(w=>['research','revisit'].includes(w.kind) || ['failed','paused','waiting_budget'].includes(w.status)).slice(0,12).map(w=>`<details class="work-item" data-detail="${w.id}"><summary><span>${escapeHTML(w.member_id ? authorName(w.member_id) : '这段交流')}</span><span class="status ${w.status}">${escapeHTML(statusLabels[w.status]||w.status)}</span><strong>${escapeHTML(w.instruction.slice(0,90))}</strong></summary><p>${escapeHTML(w.result || w.reason || '还没有执行结果')}</p>${w.status==='pending' ? `<small>下次机会 ${new Date(w.due_at).toLocaleString('zh-CN')}</small>`:''}${['failed','paused'].includes(w.status) ? `<button class="quiet" data-action="continue-work" data-id="${w.id}">在聊天中继续这个方向 →</button>`:''}</details>`).join('') || '<p class="empty-note">暂时没有安排研究。普通聊天不必变成任务。</p>'}<h3 class="section-label">实际做过的事</h3>${actions.slice(0,15).map(a=>`<button class="action-item" data-action="evidence" data-id="${a.id}"><span>${escapeHTML(authorName(a.member_id))} · ${escapeHTML(actionLabels[a.name]||a.name)}</span><small>${timeLabel(a.created_at)} · ${escapeHTML(statusLabels[a.status]||a.status)} ↗</small></button>`).join('')||'<p class="empty-note">还没有工具行动。</p>'}<p class="budget-note">今日估算 $${(state.usage.cost_micros/1e6).toFixed(2)} / $${(state.daily_budget_micros/1e6).toFixed(2)}${state.autonomous_daily_budget_micros ? `<br>其中自发探索 $${((state.usage.autonomous_cost_micros || 0)/1e6).toFixed(2)} / $${(state.autonomous_daily_budget_micros/1e6).toFixed(2)} · 为你回来聊天留有余量` : ''}</p>`, 'activity');
   if (!scroll) { $('panel-content').scrollTop = top; for (const d of $('panel-content').querySelectorAll('details[data-detail]')) d.open = expanded.includes(d.dataset.detail); }
 }
 function newGroup() {
@@ -314,7 +329,7 @@ function focusBlock(id) {
 }
 function profile(id) {
   const m = member(id); if (!m) return;
-  showPanel('朋友资料', '', `<div class="profile-head">${avatar(m)}<h3>${escapeHTML(m.name)}</h3><p>AI 朋友 · ${escapeHTML(dateLabel(m.created_at))} 相识</p></div><div class="profile-actions"><button class="primary" data-action="direct" data-id="${m.id}">${icon('message-circle')}单独聊聊</button><button class="secondary" data-action="edit-profile" data-id="${m.id}">${icon('pencil')}编辑</button></div>${focusBlock(id)}<h3 class="section-label">特质与偏好</h3><div class="profile-body">${escapeHTML(m.profile)}</div><p class="profile-caption">你可以随时编辑，也可以在聊天里说「以后……」，让 TA 记住你的偏好。</p><div class="panel-nav"><button data-action="preference" data-id="${m.id}">${icon('circle-help')}聊一个偏好${icon('chevron-right')}</button></div>`, `profile:${id}`);
+  showPanel('朋友资料', '', `<div class="profile-head">${avatar(m)}<h3>${escapeHTML(m.name)}</h3><p>AI 朋友 · ${escapeHTML(dateLabel(m.created_at))} 相识</p></div><div class="profile-actions"><button class="primary" data-action="direct" data-id="${m.id}">${icon('message-circle')}单独聊聊</button><button class="secondary" data-action="edit-profile" data-id="${m.id}">${icon('pencil')}编辑</button></div>${focusBlock(id)}${capabilities(m)}<h3 class="section-label">特质与偏好</h3><div class="profile-body">${escapeHTML(m.profile)}</div><p class="profile-caption">你可以随时编辑，也可以在聊天里说「以后……」，让 TA 记住你的偏好。</p><div class="panel-nav"><button data-action="preference" data-id="${m.id}">${icon('circle-help')}聊一个偏好${icon('chevron-right')}</button></div>`, `profile:${id}`);
   $('panel-content').dataset.profileSignature = JSON.stringify([m, roomData?.member_states?.find(s => s.member_id === id)]);
 }
 function roomDetails(scroll = true) {
@@ -328,13 +343,62 @@ function roomDetails(scroll = true) {
   }).join('')}</div><div class="panel-nav"><button data-action="activity">${icon('activity')}朋友动态${icon('chevron-right')}</button><button data-action="artifacts">${icon('notebook')}聊天成果${icon('chevron-right')}</button></div><p class="profile-caption">有的人爱接话，有的人先观察。安静也可以是一次自己的选择。</p>`, 'room');
   if (!scroll) $('panel-content').scrollTop = top;
 }
+// 工具清单只展示当前真正可用的能力；不让未接通的网页服务看起来已经可用。
+function capabilities(m) {
+  const labels = ['对话选择题', '文字与网页创作'];
+  if (state.search_ready && m.tools?.includes('search')) labels.push('搜索与阅读');
+  labels.push('记住经历', '稍后继续');
+  return `<div class="capability-block"><h3 class="section-label">可以一起做</h3><div class="capability-list">${labels.map(label => `<span>${escapeHTML(label)}</span>`).join('')}</div>`;
+}
+function artifactCard(a) {
+  const html = a.format === 'html';
+  return `<button class="artifact-card" data-action="artifact" data-id="${escapeHTML(a.id)}" data-version="${a.version}"><span class="artifact-card-icon" aria-hidden="true">${icon(html ? 'external-link' : 'notebook')}</span><span class="artifact-card-copy"><span class="artifact-kind">${html ? '网页' : '文稿'} · 第 ${a.version} 版</span><strong>${escapeHTML(a.title)}</strong><span class="artifact-card-caption">${html ? '打开页面，试试里面的想法' : '打开阅读，也可以接着修改'}</span></span>${icon('chevron-right')}</button>`;
+}
 function showArtifacts() {
   if (!roomData) return;
-  showPanel('一起留下的东西', '从聊天里长出来的作品和发现，都可以继续修改。', roomData.artifacts.length ? roomData.artifacts.map(a => `<button class="artifact-item" data-action="artifact" data-id="${a.id}"><strong>${escapeHTML(a.title)} ↗</strong><small>${escapeHTML(authorName(a.member_id))} · 第 ${a.version} 版 · ${dateLabel(a.created_at)}</small></button>`).join('') : '<p class="panel-description">还没有保存的成果。等一个念头长出形状，再把它留在这里。</p>');
+  showPanel('一起留下的东西', '从聊天里长出来的作品和发现，都可以继续修改。', roomData.artifacts.length ? roomData.artifacts.map(a => `<div class="artifact-list-entry">${artifactCard(a)}<p>${escapeHTML(authorName(a.member_id))} · ${dateLabel(a.created_at)} ${timeLabel(a.created_at)}</p></div>`).join('') : '<p class="panel-description">还没有保存的成果。等一个念头长出形状，再把它留在这里。</p>', 'artifacts');
+  $('panel-content').dataset.artifactListSignature = JSON.stringify(roomData.artifacts.map(a => [a.id,a.version,a.title]));
+}
+async function openArtifact(id, version = 0) {
+  const room = selected;
+  showPanel('打开成果', '', '<p class="panel-description" role="status">正在读取保存的版本…</p>', `artifact:${id}`);
+  const request = panelRequest;
+  const data = await api(`/api/artifacts/${encodeURIComponent(id)}`);
+  // 用户可能已切到别的群或关闭详情；迟到的成果不能把新的页面覆盖掉。
+  if (request !== panelRequest || selected !== room) return;
+  if (!data.versions?.length) throw new Error('这个成果暂时没有可查看的版本。');
+  currentVersions = data.versions; artifactMode = 'preview';
+  const index = version ? currentVersions.findIndex(a => a.version === version) : 0;
+  if (index < 0) throw new Error('这条消息分享的版本暂时无法读取。');
+  renderArtifact(index);
 }
 function renderArtifact(index = 0) {
-  const a = currentVersions[index];
-  showPanel(a.title, `由 ${authorName(a.member_id)} 保存 · ${dateLabel(a.created_at)}`, `<div class="artifact-toolbar"><select class="version-select" id="artifact-version" aria-label="选择成果版本">${currentVersions.map((v, i) => `<option value="${i}" ${index === i ? 'selected' : ''}>第 ${v.version} 版 · ${dateLabel(v.created_at)} ${timeLabel(v.created_at)}</option>`).join('')}</select><a href="/api/artifacts/${a.id}?download=1" download>下载最新版</a></div><div class="artifact-content">${richText(a.content)}</div><div class="panel-footer"><button class="primary" data-action="continue-artifact" data-id="${a.id}">继续聊这个成果 ↗</button></div>`);
+  const a = currentVersions[index]; if (!a) return;
+  currentArtifactIndex = index;
+  const html = a.format === 'html', base = `/api/artifacts/${encodeURIComponent(a.id)}`;
+  const tabs = html ? `<div class="artifact-tabs" role="tablist" aria-label="成果查看方式"><button id="artifact-preview-tab" role="tab" data-action="artifact-tab" data-mode="preview" aria-controls="artifact-preview-pane">预览</button><button id="artifact-source-tab" role="tab" data-action="artifact-tab" data-mode="source" aria-controls="artifact-source-pane">源代码</button></div>` : '';
+  // 生成页面始终位于无同源权限的 sandbox。源代码仅作为转义文本展示，不能进入宿主页 DOM。
+  // 切换预览/源码只隐藏已有节点，避免反复重建 iframe 丢失正在试用的小工具状态。
+  const content = html ? `<div id="artifact-preview-pane" role="tabpanel" aria-labelledby="artifact-preview-tab"><iframe class="artifact-preview" title="${escapeHTML(a.title)} · 第 ${a.version} 版预览" src="${base}/preview?version=${a.version}" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe><p class="artifact-preview-note">预览中的修改不会自动保存。想调整作品，可以继续在聊天里说。</p></div><div id="artifact-source-pane" role="tabpanel" aria-labelledby="artifact-source-tab" hidden><div class="source-actions"><button class="quiet" data-action="copy-artifact">复制源代码</button></div><pre class="artifact-source"><code>${escapeHTML(a.content)}</code></pre></div>` : `<div class="artifact-content">${richText(a.content)}</div>`;
+  showPanel(a.title, `由 ${authorName(a.member_id)} 保存 · ${dateLabel(a.created_at)}`, `<button class="artifact-back quiet" data-action="artifacts">${icon('arrow-left')}所有成果</button><div class="artifact-toolbar"><select class="version-select" id="artifact-version" aria-label="选择成果版本">${currentVersions.map((v, i) => `<option value="${i}" ${index === i ? 'selected' : ''}>第 ${v.version} 版 · ${dateLabel(v.created_at)} ${timeLabel(v.created_at)}</option>`).join('')}</select><a class="artifact-download" href="${base}/download?version=${a.version}" download>下载${html ? ' HTML' : '文稿'}</a></div><button id="artifact-new-version" class="artifact-update" data-action="artifact" data-id="${escapeHTML(a.id)}" hidden></button>${tabs}${content}<div class="panel-footer"><button class="primary" data-action="continue-artifact" data-id="${escapeHTML(a.id)}">继续聊这个成果 ${icon('message-circle')}</button></div>`, `artifact:${a.id}`);
+  if (html) selectArtifactTab(artifactMode);
+}
+// 从详情回到聊天只是补上一句引子，用户原来写到一半的内容必须保留。
+function composeFollowup(prompt) {
+  const input = $('message-input');
+  const next = input.value ? `${input.value}\n\n${prompt}` : prompt;
+  closePanel();
+  if (next.length > input.maxLength) { toast('草稿已经很长了，先整理一下再继续这个话题。'); input.focus(); return; }
+  input.value = next; sizeComposer(); rememberDraft(); input.focus(); input.setSelectionRange(next.length, next.length);
+}
+function selectArtifactTab(mode) {
+  artifactMode = mode === 'source' ? 'source' : 'preview';
+  for (const name of ['preview','source']) {
+    const tab = $(`artifact-${name}-tab`), pane = $(`artifact-${name}-pane`);
+    if (!tab || !pane) return;
+    const active = name === artifactMode;
+    tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1; pane.hidden = !active;
+  }
 }
 
 document.addEventListener('click', async event => {
@@ -353,7 +417,7 @@ document.addEventListener('click', async event => {
       if (avatarLoading) { avatarLoading = false; const save = button.closest('form')?.querySelector('button[type=submit]'); if (save) save.disabled = false; }
       avatarIcon = id; avatarData = ''; renderAvatarPreview();
     }
-    if (action === 'continue-work') { const w = roomData.work.find(w => w.id === id); closePanel(); $('message-input').value = `继续这件事：${w.instruction}`; sizeComposer(); $('message-input').focus(); }
+    if (action === 'continue-work') { const w = roomData.work.find(w => w.id === id); if (w) composeFollowup(`继续这件事：${w.instruction}`); }
     if (action === 'reply') { replyTo = messages.find(m => m.id === id); renderReply(); $('message-input').focus(); }
     if (action === 'clear-reply') { replyTo = null; renderReply(); }
     if (action === 'jump-message') await jumpToMessage(id);
@@ -369,8 +433,10 @@ document.addEventListener('click', async event => {
       input.value = prefix + input.value.slice(caret); input.focus(); input.setSelectionRange(prefix.length,prefix.length); $('mention-options').hidden = true; sizeComposer();
     }
     if (action === 'direct') { button.disabled = true; await openDirect(id); }
-    if (action === 'artifact') { const data = await api(`/api/artifacts/${id}`); currentVersions = data.versions; renderArtifact(); }
-    if (action === 'continue-artifact') { const a = currentVersions[0]; closePanel(); $('message-input').value = `关于《${a.title}》，`; sizeComposer(); $('message-input').focus(); }
+    if (action === 'artifact') await openArtifact(id, Number(button.dataset.version || 0));
+    if (action === 'artifact-tab') selectArtifactTab(button.dataset.mode);
+    if (action === 'copy-artifact') { await navigator.clipboard.writeText(currentVersions[currentArtifactIndex].content); toast('源代码已复制。'); }
+    if (action === 'continue-artifact') { const a = currentVersions[currentArtifactIndex]; composeFollowup(`关于《${a.title}》第 ${a.version} 版，`); }
     if (action === 'evidence') {
       const run = await api(`/api/tool-runs/${id}`);
       showPanel(actionLabels[run.name] || '实际行动', `${authorName(run.member_id)} · ${dateLabel(run.created_at)} ${timeLabel(run.created_at)}`, `<div class="evidence"><p>执行结果：${escapeHTML(statusLabels[run.status] || run.status)}</p><div class="action-summary">${Object.entries(run.arguments).map(([key,value]) => `<p>${escapeHTML(String(value))}</p>`).join('')}</div><details><summary>查看完整记录</summary><pre>${escapeHTML(run.result)}</pre></details></div>`);
@@ -427,6 +493,11 @@ document.addEventListener('change', async event => {
   if (event.target.id === 'artifact-version') renderArtifact(Number(event.target.value));
 });
 document.addEventListener('keydown', event => {
+  if (event.target.matches('[data-action="artifact-tab"]') && ['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) {
+    event.preventDefault();
+    const next = event.key === 'Home' ? 'preview' : event.key === 'End' ? 'source' : artifactMode === 'preview' ? 'source' : 'preview';
+    selectArtifactTab(next); $(`artifact-${next}-tab`).focus();
+  }
   if (event.key === 'Escape') {
     if (!$('mention-options').hidden) $('mention-options').hidden = true;
     else if (!$('inspector').hidden) { closePanel(); $('room-details').focus(); }
