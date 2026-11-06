@@ -115,7 +115,9 @@ function renderSidebar() {
   $('conversation-list').innerHTML = conversations.length ? conversations.map(c => {
     const m = c.kind === 'direct' ? member(c.member_ids[0]) : null;
     const unread = c.last_seq > (seen[c.id] || 0) && c.id !== selected;
-    return `<button class="room-button ${c.id === selected ? 'selected' : ''}" data-action="open-room" data-id="${c.id}" ${c.id === selected ? 'aria-current="page"' : ''}>${m ? avatar(m) : groupAvatar(c)}<span class="room-copy"><span class="room-heading"><span class="room-name">${escapeHTML(c.name)}</span><time class="room-time">${c.updated_at ? timeLabel(c.updated_at) : ''}</time></span><span class="room-preview">${escapeHTML(c.last_message || '从一句随口的话开始')}</span></span>${unread ? '<span class="unread" aria-label="有新消息"></span>' : ''}</button>`;
+    // 升级前的日预算提示仍是原始聊天记录，不能在列表里冒充今天的额度状态。
+    const preview = c.last_message === '今日运行预算已用完，未完工作已保留，下一预算日恢复' ? '先前的预算提示 · 当前额度见动态' : c.last_message;
+    return `<button class="room-button ${c.id === selected ? 'selected' : ''}" data-action="open-room" data-id="${c.id}" ${c.id === selected ? 'aria-current="page"' : ''}>${m ? avatar(m) : groupAvatar(c)}<span class="room-copy"><span class="room-heading"><span class="room-name">${escapeHTML(c.name)}</span><time class="room-time">${c.updated_at ? timeLabel(c.updated_at) : ''}</time></span><span class="room-preview">${escapeHTML(preview || '从一句随口的话开始')}</span></span>${unread ? '<span class="unread" aria-label="有新消息"></span>' : ''}</button>`;
   }).join('') : `<p class="side-empty">${query ? '没有找到，换个词试试。' : '还没有聊天。<br>先认识一位新朋友吧。'}</p>`;
   $('member-list').innerHTML = people.length ? people.map(m => `<button class="person-button" data-action="profile" data-id="${m.id}">${avatar(m)}<span class="person-copy"><span class="person-name">${escapeHTML(m.name)}</span><span class="person-note">${escapeHTML(m.direction || '边聊，边认识')}</span></span>${icon('chevron-right')}</button>`).join('') : `<p class="side-empty">${query ? '没有找到这位朋友。' : '一个名字，一个头像。<br>其余的，边聊边认识。'}</p>`;
   $('conversation-list').hidden = sideTab !== 'chats';
@@ -210,6 +212,7 @@ function renderMessages(scrollToBottom) {
   $('messages').innerHTML = messages.length ? messages.map(m => {
     const date = dateLabel(m.created_at), divider = date !== lastDate ? `<div class="date-divider">${date}</div>` : ''; lastDate = date;
     if (m.author_id === 'system') {
+      if (m.id.startsWith('budget_')) return `${divider}<details class="system-message"><summary>${timeLabel(m.created_at)} 的预算记录 · 查看当时提示</summary><p>${escapeHTML(m.body)}</p><button class="quiet" data-action="activity">查看当前周预算</button></details>`;
       if (m.body.startsWith('这次运行暂未完成')) return `${divider}<details class="system-message"><summary>${timeLabel(m.created_at)} 的一次行动中断了 · 查看当时记录</summary><p>${escapeHTML(m.body)}</p><button class="quiet" data-action="activity">查看动态</button></details>`;
       return `${divider}<div class="system-message" role="status">${escapeHTML(m.body)}</div>`;
     }
