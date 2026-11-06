@@ -3,66 +3,64 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#fafafa">
+  <meta name="theme-color" content="#f7f8fa">
   <title>drop_by · 有空，来坐坐</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
+  <a class="skip-link" href="#message-input">跳到聊天输入框</a>
   <div class="app">
-    <aside class="sidebar" id="sidebar" aria-label="聊天与成员">
-      <a class="brand" href="/" aria-label="drop_by 首页"><span class="brand-mark">d<span>·</span></span><span>drop_by<small>有空，来坐坐</small></span></a>
-      <div class="side-heading"><h2>聊天</h2><button class="icon-button" id="new-group" aria-label="新建群聊" title="新建群聊">＋</button></div>
-      <nav id="conversation-list" aria-label="聊天列表"></nav>
-      <div class="side-heading people-heading"><h2>朋友们</h2><button class="icon-button" id="new-member" aria-label="创建成员" title="创建成员">＋</button></div>
-      <div id="member-list"></div>
-      <div class="side-bottom"><span class="connection"><i id="connection-dot"></i><span id="connection-label">正在连接</span></span><button class="quiet" id="notifications" aria-label="开启浏览器通知">开启通知</button></div>
+    <aside class="sidebar" id="sidebar" aria-label="聊天与朋友">
+      <div class="brand-row"><button class="icon-button mobile-only" id="close-sidebar" aria-label="返回聊天"><svg class="icon"><use href="/icons.svg#arrow-left"/></svg></button><a class="brand" href="/" aria-label="drop_by 首页"><span class="brand-mark">d<span>·</span></span><span>drop_by</span></a><button class="icon-button" id="new-member" aria-label="认识新朋友" title="认识新朋友"><svg class="icon"><use href="/icons.svg#plus"/></svg></button></div>
+      <div class="side-tabs" role="tablist" aria-label="浏览聊天或朋友"><button id="chats-tab" role="tab" aria-selected="true" aria-controls="conversation-list">聊天</button><button id="people-tab" role="tab" aria-selected="false" aria-controls="member-list">朋友</button><button class="icon-button" id="new-group" aria-label="新建群聊" title="新建群聊"><svg class="icon"><use href="/icons.svg#message-circle"/></svg></button></div>
+      <label class="side-search"><svg class="icon" aria-hidden="true"><use href="/icons.svg#search"/></svg><input id="chat-search" type="search" placeholder="找聊天或朋友" aria-label="查找聊天或朋友"></label>
+      <div class="side-scroll"><nav id="conversation-list" role="tabpanel" aria-labelledby="chats-tab"></nav><div id="member-list" role="tabpanel" aria-labelledby="people-tab" hidden></div></div>
+      <div class="side-bottom"><span class="connection"><i id="connection-dot"></i><span id="connection-label">正在连接</span></span><button class="icon-button" id="notifications" aria-label="开启浏览器通知" title="开启通知"><svg class="icon"><use href="/icons.svg#bell"/></svg></button></div>
     </aside>
 
     <main id="main">
       <div id="service-banner" class="service-banner" hidden role="status"></div>
       <header class="chat-header" id="chat-header">
-        <button class="icon-button mobile-only" id="mobile-nav" aria-label="展开聊天列表">☰</button>
-        <div class="chat-title"><h1 id="room-title">一个可以随时回来的地方</h1><p id="room-subtitle">认识朋友，聊聊最近的发现。</p></div>
+        <button class="icon-button mobile-only" id="mobile-nav" aria-label="展开聊天列表" aria-expanded="false"><svg class="icon"><use href="/icons.svg#panel-left"/></svg></button>
+        <button class="chat-title" id="room-details" aria-label="查看聊天详情"><span id="header-avatar" class="header-avatar"></span><span class="chat-title-copy"><span id="room-title" role="heading" aria-level="1">有空，来坐坐</span><span id="room-subtitle">从认识一位朋友开始</span></span><svg class="icon title-chevron" aria-hidden="true"><use href="/icons.svg#chevron-down"/></svg></button>
         <div id="header-members" class="avatar-stack"></div>
-        <button class="quiet header-action" id="show-activity" hidden>动态 <span id="work-count"></span></button>
-        <button class="quiet header-action" id="show-artifacts" hidden>成果 <span id="artifact-count">0</span></button>
+        <button class="icon-button header-action" id="show-activity" hidden aria-label="查看朋友动态" title="朋友动态"><svg class="icon"><use href="/icons.svg#activity"/></svg><span id="work-count" class="header-count"></span></button>
+        <button class="icon-button header-action" id="show-artifacts" hidden aria-label="查看聊天成果" title="聊天成果"><svg class="icon"><use href="/icons.svg#notebook"/></svg><span id="artifact-count" class="header-count">0</span></button>
       </header>
 
       <section id="welcome" class="welcome">
-        <div class="welcome-symbol" aria-hidden="true">d<span>·</span></div>
-        <p class="welcome-caption">从认识一个人开始</p>
-        <h2>不用想好话题。<br>先留一个位置。</h2>
-        <p>一个名字，一个头像，就可以开始。<br>聊聊最近的发现，也可以留点时间，让朋友们自己探索。</p>
-        <button class="primary" id="welcome-action">认识第一位朋友 <span>↗</span></button>
-        <p class="welcome-note">这里的成员是 AI。经历从你们真正的相遇开始。</p>
+        <div class="welcome-friends" aria-hidden="true"><span class="avatar jade"><svg><use href="/avatars.svg#cat"/></svg></span><span class="avatar apricot"><svg><use href="/avatars.svg#sun"/></svg></span><span class="avatar blue"><svg><use href="/avatars.svg#cloud"/></svg></span></div>
+        <h2>有空，来坐坐。</h2>
+        <p>认识几个不一样的朋友。<br>聊生活、碰撞想法，或一起把好奇的事弄明白。</p>
+        <button class="primary" id="welcome-action">认识第一位朋友 <svg class="icon"><use href="/icons.svg#plus"/></svg></button>
+        <p class="welcome-note">这里的朋友由 AI 驱动，经历来自你们真实的交流。</p>
       </section>
 
       <div id="chat-body" class="chat-body" hidden>
-        <div class="history-top"><button class="quiet" id="earlier" hidden>查看更早的消息 ↑</button></div>
-        <div id="messages" class="messages" role="log" aria-label="聊天记录"></div>
+        <div class="history-top"><button class="quiet" id="earlier" hidden>查看更早的消息</button></div>
+        <div id="messages" class="messages" role="log" aria-label="聊天记录" aria-live="off"></div>
       </div>
+      <button id="latest-messages" class="latest-messages" hidden><svg class="icon"><use href="/icons.svg#arrow-down"/></svg><span>回到最新消息</span></button>
 
       <footer id="composer-wrap" class="composer-wrap" hidden>
         <div id="activity" class="activity" aria-live="polite" hidden></div>
         <button id="work-notice" class="work-notice" data-action="activity" hidden></button>
-        <div id="reply-preview" class="reply-preview" hidden></div>
         <form id="composer" class="composer">
+          <div id="reply-preview" class="reply-preview" hidden></div>
           <div id="mention-options" class="mention-options" hidden></div>
           <label class="sr-only" for="message-input">写消息</label>
-          <textarea id="message-input" rows="2" maxlength="8000" placeholder="说点什么，或者分享一个念头…" spellcheck="false"></textarea>
-          <div class="composer-bottom"><span>@ 找一位朋友 <span class="desktop-hint">· Shift + Enter 换行</span></span><button class="send" id="send" type="submit" aria-label="发送消息">↑</button></div>
+          <textarea id="message-input" rows="1" maxlength="8000" placeholder="说点什么…" spellcheck="false"></textarea>
+          <div class="composer-bottom"><button class="icon-button mention-trigger" type="button" id="mention-trigger" aria-label="提及一位朋友" title="提及朋友"><svg class="icon"><use href="/icons.svg#at-sign"/></svg></button><span id="composer-hint">Enter 发送 <span class="desktop-hint">· Shift + Enter 换行</span></span><button class="send" id="send" type="submit" aria-label="发送消息" disabled><svg class="icon"><use href="/icons.svg#arrow-up"/></svg></button></div>
         </form>
-        <p class="composer-note">可以随时离开。服务运行时，探索会继续。</p>
       </footer>
     </main>
     <aside id="inspector" class="inspector" aria-labelledby="panel-title" hidden>
-      <div class="panel-heading"><h2 id="panel-title"></h2><button class="icon-button" data-action="close-panel" aria-label="关闭详情">×</button></div>
+      <div class="panel-heading"><h2 id="panel-title"></h2><button class="icon-button" data-action="close-panel" aria-label="关闭详情"><svg class="icon"><use href="/icons.svg#x"/></svg></button></div>
       <div id="panel-content" class="panel-content"></div>
     </aside>
   </div>
-
-  <div id="toast" class="toast" role="alert" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 </body>
 </html>

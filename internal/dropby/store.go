@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS participants(conversation_id TEXT NOT NULL REFERENCES
 CREATE TABLE IF NOT EXISTS messages(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, conversation_id TEXT NOT NULL REFERENCES conversations(id), author_id TEXT NOT NULL,
  body TEXT NOT NULL, reply_to TEXT NOT NULL DEFAULT '', mentions TEXT NOT NULL DEFAULT '[]', evidence TEXT NOT NULL DEFAULT '[]', notify INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS messages_room_seq ON messages(conversation_id,seq);
+CREATE TABLE IF NOT EXISTS message_questions(message_id TEXT PRIMARY KEY REFERENCES messages(id), question TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'open', response_id TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS memories(id TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), conversation_id TEXT NOT NULL, body TEXT NOT NULL, source_id TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS work(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), member_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL,
  instruction TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', source_id TEXT NOT NULL, status TEXT NOT NULL, due_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, result TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
@@ -73,6 +75,10 @@ CREATE TABLE IF NOT EXISTS artifacts(id TEXT NOT NULL, version INTEGER NOT NULL,
 CREATE TABLE IF NOT EXISTS usage(day TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0, cost_micros INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0);
 `)
 	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = s.initParticipation(); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -219,7 +225,7 @@ func (s *Store) Messages(room string, before int64, limit int) ([]Message, error
 	if before <= 0 {
 		before = 1 << 62
 	}
-	rows, e := s.db.Query(`SELECT seq,id,conversation_id,author_id,body,reply_to,mentions,evidence,notify,created_at FROM (SELECT * FROM messages WHERE conversation_id=? AND seq<? ORDER BY seq DESC LIMIT ?) ORDER BY seq`, room, before, limit)
+	rows, e := s.db.Query(`SELECT m.seq,m.id,m.conversation_id,m.author_id,m.body,m.reply_to,m.mentions,m.evidence,m.notify,m.created_at,COALESCE(q.question,''),COALESCE(q.status,'') FROM (SELECT * FROM messages WHERE conversation_id=? AND seq<? ORDER BY seq DESC LIMIT ?) m LEFT JOIN message_questions q ON q.message_id=m.id ORDER BY m.seq`, room, before, limit)
 	if e != nil {
 		return nil, e
 	}
@@ -227,12 +233,17 @@ func (s *Store) Messages(room string, before int64, limit int) ([]Message, error
 	result := []Message{}
 	for rows.Next() {
 		var m Message
-		var mentions, evidence string
-		if e = rows.Scan(&m.Seq, &m.ID, &m.ConversationID, &m.AuthorID, &m.Body, &m.ReplyTo, &mentions, &evidence, &m.Notify, &m.CreatedAt); e != nil {
+		var mentions, evidence, question string
+		if e = rows.Scan(&m.Seq, &m.ID, &m.ConversationID, &m.AuthorID, &m.Body, &m.ReplyTo, &mentions, &evidence, &m.Notify, &m.CreatedAt, &question, &m.QuestionStatus); e != nil {
 			return nil, e
 		}
 		json.Unmarshal([]byte(mentions), &m.Mentions)
 		json.Unmarshal([]byte(evidence), &m.Evidence)
+		if question != "" {
+			if e = json.Unmarshal([]byte(question), &m.Question); e != nil {
+				return nil, e
+			}
+		}
 		result = append(result, m)
 	}
 	return result, rows.Err()
@@ -242,6 +253,11 @@ func insertMessage(tx *sql.Tx, m Message) error {
 	_, e := tx.Exec(`INSERT INTO messages(id,conversation_id,author_id,body,reply_to,mentions,evidence,notify,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, m.ID, m.ConversationID, m.AuthorID, m.Body, m.ReplyTo, asJSON(m.Mentions), asJSON(m.Evidence), m.Notify, m.CreatedAt)
 	if e != nil {
 		return e
+	}
+	if m.Question != nil {
+		if _, e = tx.Exec(`INSERT INTO message_questions(message_id,question,status) VALUES(?,?,'open')`, m.ID, asJSON(m.Question)); e != nil {
+			return e
+		}
 	}
 	_, e = tx.Exec(`UPDATE conversations SET updated_at=? WHERE id=?`, m.CreatedAt, m.ConversationID)
 	return e
@@ -266,6 +282,11 @@ func (s *Store) AddUserMessage(m Message, interval time.Duration) error {
 		}
 	}
 	if e = insertMessage(tx, m); e != nil {
+		return e
+	}
+	// 发自己的话就继续聊天。立即收起选项，避免模型请求尚未完成时问题仍占住界面；
+	// 自由回答是否属于这个问题，稍后由语义判断确认，绝不要求额外点“跳过”。
+	if _, e = tx.Exec(`UPDATE message_questions SET status=CASE WHEN message_id=? THEN 'answered' ELSE 'dismissed' END,response_id=? WHERE status='open' AND message_id IN (SELECT id FROM messages WHERE conversation_id=?)`, m.ReplyTo, m.ID, m.ConversationID); e != nil {
 		return e
 	}
 	if _, e = tx.Exec(`UPDATE conversations SET revision=revision+1,next_explore=? WHERE id=?`, time.Now().Add(interval).UnixMilli(), m.ConversationID); e != nil {

@@ -11,16 +11,17 @@ import (
 // 这里的结构只描述真实记录和执行边界。性格、兴趣、关系与经历保留为自然语言，
 // 不把朋友的变化压成分数，也不把每句话都转换成一个待办。
 type Member struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	Direction string     `json:"direction"`
-	Profile   string     `json:"profile"`
-	Color     string     `json:"color"`
-	Avatar    string     `json:"avatar,omitempty"`
-	Questions []Question `json:"questions"`
-	Answers   []string   `json:"answers"`
-	Tools     []string   `json:"tools"`
-	CreatedAt string     `json:"created_at"`
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	Direction  string     `json:"direction"`
+	Profile    string     `json:"profile"`
+	Color      string     `json:"color"`
+	Avatar     string     `json:"avatar,omitempty"`
+	AvatarIcon string     `json:"avatar_icon,omitempty"`
+	Questions  []Question `json:"questions"`
+	Answers    []string   `json:"answers"`
+	Tools      []string   `json:"tools"`
+	CreatedAt  string     `json:"created_at"`
 }
 
 type Question struct {
@@ -53,6 +54,9 @@ type Message struct {
 	Evidence       []string `json:"evidence"`
 	Notify         bool     `json:"notify"`
 	CreatedAt      string   `json:"created_at"`
+	// 可选问题是聊天消息的一部分；问题关闭后正文仍留在原位置，不能变成弹窗或必答表单。
+	Question       *Question `json:"question,omitempty"`
+	QuestionStatus string    `json:"question_status,omitempty"`
 }
 
 type Memory struct {

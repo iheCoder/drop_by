@@ -32,6 +32,8 @@ func NewHandler(engine *Engine) http.Handler {
 	mux.HandleFunc("GET /api/state", a.state)
 	mux.HandleFunc("POST /api/member-questions", a.questions)
 	mux.HandleFunc("POST /api/members", a.createMember)
+	mux.HandleFunc("PATCH /api/members/{id}", a.updateMember)
+	mux.HandleFunc("POST /api/members/{id}/question", a.memberQuestion)
 	mux.HandleFunc("POST /api/members/{id}/preferences", a.preferences)
 	mux.HandleFunc("POST /api/conversations", a.createConversation)
 	mux.HandleFunc("GET /api/conversations/{id}", a.conversation)
@@ -156,12 +158,13 @@ func (a *API) questions(w http.ResponseWriter, r *http.Request) {
 }
 func (a *API) createMember(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name      string     `json:"name"`
-		Direction string     `json:"direction"`
-		Color     string     `json:"color"`
-		Avatar    string     `json:"avatar"`
-		Questions []Question `json:"questions"`
-		Answers   []string   `json:"answers"`
+		Name       string     `json:"name"`
+		Direction  string     `json:"direction"`
+		Color      string     `json:"color"`
+		Avatar     string     `json:"avatar"`
+		AvatarIcon string     `json:"avatar_icon"`
+		Questions  []Question `json:"questions"`
+		Answers    []string   `json:"answers"`
 	}
 	if !readBody(w, r, &in) {
 		return
@@ -176,6 +179,13 @@ func (a *API) createMember(w http.ResponseWriter, r *http.Request) {
 		respond(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
+	if in.AvatarIcon != "" && !contains(avatarIcons, in.AvatarIcon) {
+		respond(w, 400, map[string]string{"error": "请选择已有头像图案"})
+		return
+	}
+	if in.AvatarIcon == "" {
+		in.AvatarIcon = "cat"
+	}
 	for _, answer := range in.Answers {
 		if len([]rune(answer)) > 2000 {
 			respond(w, 400, map[string]string{"error": "每个回答不超过 2000 字，也可以跳过"})
@@ -187,7 +197,7 @@ func (a *API) createMember(w http.ResponseWriter, r *http.Request) {
 	}
 	// 创建身份不需要等待模型、回答问卷或消耗预算。未知偏好保持未知，
 	// 用户在聊天或自愿补充偏好时再逐步认识；默认提供产品现有的安全工具。
-	m := Member{ID: newID("member"), Name: in.Name, Direction: in.Direction, Color: in.Color, Avatar: in.Avatar, CreatedAt: now(), Questions: in.Questions, Answers: in.Answers, Tools: []string{"search", "read_page", "save_artifact"}, Profile: "性格和兴趣尚未设定，可在实际交流中逐步形成；不虚构过往经历。"}
+	m := Member{ID: newID("member"), Name: in.Name, Direction: in.Direction, Color: in.Color, Avatar: in.Avatar, AvatarIcon: in.AvatarIcon, CreatedAt: now(), Questions: in.Questions, Answers: in.Answers, Tools: []string{"search", "read_page", "save_artifact"}, Profile: "性格和兴趣尚未设定，可在实际交流中逐步形成；不虚构过往经历。"}
 	if in.Direction != "" {
 		m.Profile = "用户希望的起点：" + in.Direction + "\n具体判断可随真实经历变化。"
 	}
@@ -246,19 +256,52 @@ func (a *API) preferences(w http.ResponseWriter, r *http.Request) {
 	}
 	m.Questions = []Question{in.Question}
 	m.Answers = []string{in.Answer}
+	previousProfile := m.Profile
 	// 旧 profile 一并交给模型，只合并这次明确提供的偏好，保留同一身份及经历。
 	m, err = CompleteMember(r.Context(), a.engine.Model, m)
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
-	if _, err = a.engine.Store.db.Exec(`UPDATE members SET data=? WHERE id=?`, asJSON(m), m.ID); err != nil {
+	// 兼容旧界面的接口也不能整份覆盖等待期间的新名字和头像。人物说明已被显式
+	// 修改时拒绝迟到的合并结果，避免旧问题答案悄悄撤销刚保存的新设定。
+	tx, err := a.engine.Store.db.Begin()
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var raw string
+	if err = tx.QueryRow(`SELECT data FROM members WHERE id=?`, m.ID).Scan(&raw); err != nil {
+		a.fail(w, err)
+		return
+	}
+	var current Member
+	if err = json.Unmarshal([]byte(raw), &current); err != nil {
+		a.fail(w, err)
+		return
+	}
+	if current.Profile != previousProfile {
+		respond(w, http.StatusConflict, map[string]string{"error": "人物说明刚刚已修改，请基于最新说明继续聊偏好"})
+		return
+	}
+	current.Profile, current.Tools, current.Questions, current.Answers = m.Profile, m.Tools, m.Questions, m.Answers
+	if _, err = tx.Exec(`UPDATE members SET data=? WHERE id=?`, asJSON(current), current.ID); err != nil {
+		a.fail(w, err)
+		return
+	}
+	if _, err = tx.Exec(`UPDATE conversations SET revision=revision+1 WHERE id IN (SELECT conversation_id FROM participants WHERE member_id=?)`, current.ID); err != nil {
+		a.fail(w, err)
+		return
+	}
+	if err = tx.Commit(); err != nil {
 		a.fail(w, err)
 		return
 	}
 	a.engine.Hub.Publish("")
-	respond(w, 200, m)
+	respond(w, 200, current)
 }
+
 func (a *API) createConversation(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Name      string   `json:"name"`
@@ -305,6 +348,10 @@ func (a *API) createConversation(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
+	if err = a.engine.Store.EnsureWelcome(c); err != nil && !errors.Is(err, ErrStale) {
+		a.fail(w, err)
+		return
+	}
 	a.engine.Hub.Publish(c.ID)
 	respond(w, 201, c)
 }
@@ -344,7 +391,12 @@ func (a *API) conversation(w http.ResponseWriter, r *http.Request) {
 	for i := range runs {
 		runs[i].Result = ""
 	}
-	respond(w, 200, map[string]any{"conversation": c, "messages": messages, "work": jobs, "artifacts": artifacts, "participation": decisions, "tool_runs": runs, "has_earlier": len(messages) == 60})
+	memberStates, err := a.engine.Store.MemberStates(c.ID)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	respond(w, 200, map[string]any{"conversation": c, "messages": messages, "work": jobs, "artifacts": artifacts, "participation": decisions, "tool_runs": runs, "member_states": memberStates, "has_earlier": len(messages) == 60})
 }
 func (a *API) sendMessage(w http.ResponseWriter, r *http.Request) {
 	c, err := a.engine.Store.Conversation(r.PathValue("id"))

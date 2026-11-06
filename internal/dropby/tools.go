@@ -39,6 +39,7 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 		defs = append(defs, definition("schedule_exploration", "安排可真正执行的低风险后台探索。明确方向与实际来由；与已有未完研究相同则不要重复安排。会在预算和运行上限内继续。", map[string]any{"instruction": textField("可用现有工具执行的具体方向，不是泛泛关注"), "reason": textField("来自什么兴趣、经历或新材料"), "delay_seconds": map[string]any{"type": "integer", "minimum": 10, "maximum": 86400}}, "instruction", "reason"))
 	}
 	if !c.DiscussionPaused && w.Kind != "research" {
+		defs = append(defs, definition("ask_question", "在聊天里提出一个可自由回答的选择题。只在这个问题对当前交流确有帮助时使用，不能连着追问或把聊天变成问卷；真人聊别的就自然略过。工具已发布问题，最终回复不要重复它。", map[string]any{"text": textField("一个简短自然的问题"), "options": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "minItems": 2, "maxItems": 4}}, "text", "options"))
 		defs = append(defs, definition("send_private", "有适合单独分享的非敏感内容时主动联系真人。不能绕过停止要求、复制秘密、催促回复；不是每次都要私聊。", map[string]any{"message": textField("自然的私聊内容"), "notify": map[string]string{"type": "boolean"}}, "message", "notify"))
 	}
 	for _, name := range m.Tools {
@@ -55,11 +56,11 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 			defs = append(defs, definition("save_artifact", "保存可查看的文本或 Markdown 成果。修改时提供原 id，新版本关联原作；此工具不运行代码、不发布网站。", map[string]any{"id": textField("修改已有成果的 ID，新建时省略"), "title": textField("具体标题"), "content": textField("实际完整内容；草稿和设想应明确标注")}, "title", "content"))
 		}
 	}
-	// 第一轮只允许安排后台行动，保证搜索、记忆核对和成果生成不拖住接话。
+	// 第一轮保留即时本地提问和安排后台行动，搜索、记忆核对和成果生成不拖住接话。
 	if w.Kind == "first_reply" {
 		first := []ToolDefinition{}
 		for _, def := range defs {
-			if def.Function.Name == "schedule_exploration" {
+			if def.Function.Name == "schedule_exploration" || def.Function.Name == "ask_question" {
 				first = append(first, def)
 			}
 		}
@@ -116,19 +117,21 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 
 func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work, call ToolCall) (any, error) {
 	var args struct {
-		ID           string `json:"id"`
-		Scope        string `json:"scope"`
-		Body         string `json:"body"`
-		Query        string `json:"query"`
-		URL          string `json:"url"`
-		Title        string `json:"title"`
-		Content      string `json:"content"`
-		Instruction  string `json:"instruction"`
-		Reason       string `json:"reason"`
-		DelaySeconds int    `json:"delay_seconds"`
-		Message      string `json:"message"`
-		Notify       bool   `json:"notify"`
-		Offset       int    `json:"offset"`
+		ID           string   `json:"id"`
+		Scope        string   `json:"scope"`
+		Body         string   `json:"body"`
+		Query        string   `json:"query"`
+		URL          string   `json:"url"`
+		Title        string   `json:"title"`
+		Content      string   `json:"content"`
+		Instruction  string   `json:"instruction"`
+		Reason       string   `json:"reason"`
+		DelaySeconds int      `json:"delay_seconds"`
+		Message      string   `json:"message"`
+		Notify       bool     `json:"notify"`
+		Offset       int      `json:"offset"`
+		Text         string   `json:"text"`
+		Options      []string `json:"options"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
 		return nil, fmt.Errorf("工具参数格式不正确")
@@ -141,6 +144,8 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		return nil, ErrStale
 	}
 	switch call.Function.Name {
+	case "ask_question":
+		return t.Store.AskQuestion(c, m, Question{Text: args.Text, Options: args.Options}, args.Text, false)
 	case "read_tool_result":
 		var raw string
 		if err := t.Store.db.QueryRow(`SELECT result FROM tool_runs WHERE id=? AND conversation_id=?`, args.ID, c.ID).Scan(&raw); err != nil {

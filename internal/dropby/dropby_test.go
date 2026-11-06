@@ -751,22 +751,34 @@ func TestGroundingChecksPersistedContentAndFailsClosed(t *testing.T) {
 	}
 }
 
-// 首句的工具范围是真实执行限制：可以排工作，但不能先读网页拖住回复。
+// 首句的工具范围是真实执行限制：可以安排后台工作或发布一个本地问题卡，
+// 但不能先读网页拖住回复。停止研究不应连正常的可选聊天问题也一起禁掉。
 func TestFirstReplyDefersSlowTools(t *testing.T) {
 	s, c, m := fixture(t)
 	e := NewEngine(s, nil, testConfig())
 	first := Work{Kind: "first_reply"}
 	defs := e.Tools.Definitions(m, c, first)
-	if len(defs) != 1 || defs[0].Function.Name != "schedule_exploration" {
+	allowed := map[string]bool{"schedule_exploration": true, "ask_question": true}
+	if len(defs) != len(allowed) {
 		t.Fatalf("首句工具: %+v", defs)
+	}
+	for _, def := range defs {
+		if !allowed[def.Function.Name] {
+			t.Fatalf("首句放行了慢工具 %s", def.Function.Name)
+		}
 	}
 	_, err := e.Tools.Execute(context.Background(), c, m, first, toolCall("search", map[string]string{"query": "chair"}))
 	if err == nil {
 		t.Fatal("首句不应执行搜索")
 	}
 	c.ResearchPaused = true
+	defs = e.Tools.Definitions(m, c, first)
+	if len(defs) != 1 || defs[0].Function.Name != "ask_question" {
+		t.Fatal("研究暂停后只能保留可选聊天问题，不能重新排研究")
+	}
+	c.DiscussionPaused = true
 	if len(e.Tools.Definitions(m, c, first)) != 0 {
-		t.Fatal("研究暂停后不能借首句重新排任务")
+		t.Fatal("讨论也暂停后不能继续发布问题")
 	}
 }
 

@@ -113,11 +113,36 @@ func (e *Engine) dispatch(ctx context.Context) {
 			status, result, due := "done", "", time.Now()
 			if err != nil {
 				result = err.Error()
+				// 复用已有工作结果携带本次重试的原因。即使后来等待预算或服务
+				// 重启，也不能再把原消息里的旧性格设定覆盖回用户的新编辑。
+				if strings.HasPrefix(w.Result, identityRevisionRetry) {
+					result = identityRevisionRetry + "\n" + result
+				}
 				switch {
-				case errors.Is(err, context.Canceled) || errors.Is(err, ErrStale):
+				case errors.Is(err, context.Canceled):
 					if ctx.Err() != nil || w.Kind == "research" {
 						status = "pending"
 						due = time.Now().Add(time.Second)
+					} else {
+						status = "superseded"
+					}
+				case errors.Is(err, ErrStale):
+					if ctx.Err() != nil || w.Kind == "research" {
+						status, due = "pending", time.Now().Add(time.Second)
+						break
+					}
+					// 人物设定修改也会使上下文过时，但没有新的真人消息接替这次
+					// 聊天。保留原机会，用新人物说明重读；不能悄悄丢掉用户问题。
+					retry, retryErr := e.reconsiderAfterStale(w)
+					if retryErr != nil {
+						status, result = "failed", retryErr.Error()
+					} else if retry {
+						status, due = "pending", time.Now().Add(time.Second)
+						result = identityRevisionRetry
+						if w.Attempts >= 2 {
+							status = "paused"
+							result += "\n这次交流连续遇到人物设定变化，已有内容已保留；等设定稳定后可以继续。"
+						}
 					} else {
 						status = "superseded"
 					}
@@ -154,14 +179,37 @@ func (e *Engine) dispatch(ctx context.Context) {
 	}
 }
 
+// 这是既有 Work.Result 中可读的重试说明，同时标识当前人物资料晚于触发消息。
+// 不按 attempts 粗略跳过偏好：首次就遇到预算不足的工作，恢复后仍须理解用户设定。
+const identityRevisionRetry = "人物设定已更新；沿用最新人物说明继续原消息。"
+
+// AddUserMessage 会在同一事务中替代旧的非研究机会，Finish 也只更新 running，
+// 所以检查之后恰好又来新消息时，不会把已被替代的工作重新复活。
+func (e *Engine) reconsiderAfterStale(w Work) (bool, error) {
+	var status, latestHuman string
+	err := e.Store.db.QueryRow(`SELECT status,coalesce((SELECT id FROM messages WHERE conversation_id=? AND author_id='user' ORDER BY seq DESC LIMIT 1),'') FROM work WHERE id=?`, w.ConversationID, w.ID).Scan(&status, &latestHuman)
+	if err != nil {
+		return false, err
+	}
+	if status != "running" {
+		return false, nil
+	}
+	if w.Kind == "chat" {
+		return w.SourceID != "" && latestHuman == w.SourceID, nil
+	}
+	// 分享/自主观察没有新的真人问题作为替代依据；若仍在运行，就按新身份重新看。
+	return w.Kind == "share" || w.Kind == "explore", nil
+}
+
 type Control struct {
-	Discussion  string   `json:"discussion"`
-	Research    string   `json:"research"`
-	Guidance    string   `json:"guidance"`
-	StopIDs     []string `json:"stop_ids"`
-	CompleteIDs []string `json:"complete_ids"`
-	ResumeIDs   []string `json:"resume_ids"`
-	Updates     []struct {
+	PreferenceUpdates []PreferenceUpdate `json:"preference_updates"`
+	Discussion        string             `json:"discussion"`
+	Research          string             `json:"research"`
+	Guidance          string             `json:"guidance"`
+	StopIDs           []string           `json:"stop_ids"`
+	CompleteIDs       []string           `json:"complete_ids"`
+	ResumeIDs         []string           `json:"resume_ids"`
+	Updates           []struct {
 		ID          string `json:"id"`
 		Instruction string `json:"instruction"`
 	} `json:"updates"`
@@ -173,6 +221,7 @@ func (e *Engine) applyControl(ctx context.Context, c Conversation, w Work) error
 		return err
 	}
 	control := Control{Discussion: "resume", Research: "keep", Guidance: c.Guidance}
+	identityUpdated := strings.HasPrefix(w.Result, identityRevisionRetry)
 	// 极明确的停止要求不依赖一次成功的模型调用；故障和预算耗尽也不能阻止用户停止。
 	switch strings.Trim(w.Instruction, " \n\t。！!，,.?") {
 	case "先别聊", "别聊了", "暂停讨论":
@@ -181,6 +230,10 @@ func (e *Engine) applyControl(ctx context.Context, c Conversation, w Work) error
 		control.Research = "pause"
 		control.Guidance = clip(c.Guidance+"\n用户明确要求停止研究；未重新允许前不要自主启动研究。", 5000)
 	default:
+		preferenceContext, err := e.Store.PreferenceContext(c, w.SourceID)
+		if err != nil {
+			return err
+		}
 		messages, err := e.Store.Messages(c.ID, 0, 15)
 		if err != nil {
 			return err
@@ -197,12 +250,22 @@ func (e *Engine) applyControl(ctx context.Context, c Conversation, w Work) error
 普通接话可恢复公开讨论，但不会自动恢复已停止的研究。“先别聊”暂停公开讨论、保留已允许研究；“不用研究”停止对应研究，无限定对象时停止本会话研究。只引用这些词或讨论假设不算停止指令。
 新线索应改写相关未完研究的 instruction；已完成/不需要的工作标记完成/停止。用户明确要求继续才恢复对应失败、暂停或停止工作。不要把随口表达变成任务。
 guidance 是仍有效的用户方向与更正的简短自然语言记录，合并旧记录，删除过时内容；不要收录敏感原文或一次性闲聊。
-返回 {"discussion":"keep|pause|resume","research":"keep|pause|resume","guidance":"...","stop_ids":[],"complete_ids":[],"resume_ids":[],"updates":[{"id":"实际工作ID","instruction":"更新后可执行方向"}]}。数组只引用已有 research 工作。`, map[string]any{"latest_human_message": w.Instruction, "conversation": c, "recent_messages": messages, "work": jobs}, &control)
+长期人物偏好归入 preference_updates，不重复写入 guidance。identity_updated_since_trigger=true 时，现有成员资料是在本条消息之后更新的；保留当前资料，不把原消息中较旧的人物要求重新写入资料或 guidance。
+返回 {"discussion":"keep|pause|resume","research":"keep|pause|resume","guidance":"...","stop_ids":[],"complete_ids":[],"resume_ids":[],"updates":[{"id":"实际工作ID","instruction":"更新后可执行方向"}]}。数组只引用已有 research 工作。`+preferenceControlPrompt, map[string]any{"latest_human_message": w.Instruction, "conversation": c, "recent_messages": messages, "work": jobs, "preference_context": preferenceContext, "identity_updated_since_trigger": identityUpdated}, &control)
 		if err != nil {
 			return err
 		}
 	}
+	if identityUpdated {
+		// 模型仍可重读原消息里的讨论/研究方向，但更晚的人物编辑是确定的事实。
+		// 在执行边界挡住旧偏好重放，不依赖模型每次都正确处理这项先后关系。
+		control.PreferenceUpdates = nil
+	}
 	return e.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
+		// 用户明确提出的持久偏好归到对应成员，不再只留在当前聊天的 guidance。
+		if err := applyPreferenceUpdates(tx, c, w.SourceID, control.PreferenceUpdates); err != nil {
+			return err
+		}
 		discussion, research := c.DiscussionPaused, c.ResearchPaused
 		if control.Discussion == "pause" {
 			discussion = true
@@ -304,25 +367,64 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 	if c.DiscussionPaused && w.Kind != "explore" {
 		return nil
 	}
-	for turn := 0; turn < e.Config.MaxTurns; turn++ {
+	// 一次观察保留所有愿意参与者的意图。实际发言逐个进行，下一个人开口前
+	// 重读刚刚的交流；排队只是一次重新判断的机会，不是必须念出的预写台词。
+	var waiting []participationCandidate
+	var waveSeq int64
+	published := 0
+	// MaxTurns 限制公开消息数，沉默和安静研究不挤掉其他人的发言机会。
+	// 另给模型/工具异常反复制造新事件设有限执行边界，不把它当作成员说话配额。
+	for turn := 0; published < e.Config.MaxTurns && turn < e.Config.MaxTurns*max(1, len(c.MemberIDs)); turn++ {
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		m, decision, err := e.choose(ctx, c, w, turn)
-		if err != nil {
+		if len(waiting) == 0 {
+			if turn > 0 {
+				var latest int64
+				if err = e.Store.db.QueryRow(`SELECT coalesce(max(seq),0) FROM messages WHERE conversation_id=?`, c.ID).Scan(&latest); err != nil {
+					return err
+				}
+				// 沉默与安排工作不会凭空制造新一轮。之后的新消息、研究进展
+				// 或定时观察可以带来新机会，这一轮先正常结束。
+				if latest <= waveSeq {
+					return nil
+				}
+			}
+			waiting, waveSeq, err = e.observeMembers(ctx, c, w, turn)
+			if err != nil {
+				return err
+			}
+			if len(waiting) == 0 {
+				return nil
+			}
+		}
+		candidate := waiting[0]
+		waiting = waiting[1:]
+		m, decision := candidate.Member, candidate.Decision
+		// 探索没有生成正文的步骤；期间有同伴发言时，也让探索者重新判断一次。
+		if decision.Action == "explore" {
+			var latest int64
+			if err = e.Store.db.QueryRow(`SELECT coalesce(max(seq),0) FROM messages WHERE conversation_id=?`, c.ID).Scan(&latest); err != nil {
+				return err
+			}
+			if latest > candidate.SeenSeq {
+				candidate = e.observeMember(ctx, c, w, m.ID, turn, &candidate)
+				if candidate.Err != nil {
+					return candidate.Err
+				}
+				decision = candidate.Decision
+			}
+		}
+		if err = e.recordParticipation(w, candidate, true); err != nil {
 			return err
 		}
-		if m.ID == "" {
-			return nil
+		if decision.Action == "pass" {
+			continue
 		}
-		// 人类刚开口时，愿意研究的成员先接住话题，再实际安排后台工作。
-		if turn == 0 && w.Kind == "chat" && decision.Action == "explore" {
-			decision.Action = "speak"
-		}
-		// 探索意愿可以只产生后台行动，不要求当场说话；其他成员仍有参与机会。
+		// 可以安静地研究，首位成员也不再被迫把探索意愿改成公开回答。
 		if decision.Action == "explore" {
 			if c.ResearchPaused {
-				return nil
+				continue
 			}
 			_, err = e.Tools.Schedule(ctx, c, m, w, decision.Intent, decision.Reason, time.Now().Add(10*time.Second))
 			if err != nil {
@@ -331,10 +433,10 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 			continue
 		}
 		actionWork := w
-		if turn == 0 && w.Kind == "chat" {
+		if published == 0 && w.Kind == "chat" {
 			actionWork.Kind = "first_reply"
 		}
-		out, err := e.act(ctx, c, m, actionWork, "基于刚读到的最新对话参与，意图："+decision.Intent+"。你也可以改变主意保持安静。只有确实值得立即提醒才 notify=true。")
+		out, err := e.actWithDecision(ctx, c, m, actionWork, "阅读这段交流后，以自己的身份决定是否参与。此前意图只是草案；优先回应实际的人和话，不必重新完整回答真人的原问题。只有确实值得立即提醒才 notify=true。", &candidate)
 		if err != nil {
 			if errors.Is(err, ErrRunLimit) && !c.ResearchPaused {
 				_, saveErr := e.Tools.Schedule(ctx, c, m, w, "检查已保存的工具记录，继续未完行动："+decision.Intent, "上一轮实际工具行动达到运行上限", time.Now().Add(e.Config.ExploreInterval))
@@ -355,16 +457,39 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 				return err
 			}
 		}
+		// ask_question 已经在对话中发布真实问题，最终 JSON 可以不再说一遍。
+		// 它属于发言而非沉默，也应占用本轮消息上限。
+		var toolMessages int
+		if err := e.Store.db.QueryRow(`SELECT count(*) FROM messages WHERE conversation_id=? AND author_id=? AND seq>?`, c.ID, m.ID, candidate.SeenSeq).Scan(&toolMessages); err != nil {
+			return err
+		}
+		published += toolMessages
 		if strings.TrimSpace(out.Message) == "" {
+			if toolMessages > 0 {
+				w.Kind = "followup"
+				w.Instruction = "继续观察刚刚的交流；已提出的问题不重复追问，可以等待真人或聊别的。"
+				continue
+			}
+			candidate.Decision.Action = "pass"
+			candidate.Decision.Reason = out.ParticipationReason
+			if candidate.Decision.Reason == "" {
+				candidate.Decision.Reason = "读过最新交流后，这次选择不发言。"
+			}
+			if err = e.recordParticipation(w, candidate, true); err != nil {
+				return err
+			}
+			// 一个人的沉默只结束自己的机会，不结束全群的交流。
+			continue
+		}
+		if published >= e.Config.MaxTurns {
 			return nil
 		}
 		message := Message{ID: newID("msg"), ConversationID: c.ID, AuthorID: m.ID, Body: clip(out.Message, 8000), ReplyTo: out.ReplyTo, Evidence: out.Evidence, Notify: out.Notify, CreatedAt: now()}
 		if err = e.Store.Publish(message, c.Revision); err != nil {
 			return err
 		}
+		published++
 		e.Hub.Publish(c.ID)
-		// 一位成员去研究不代表其他人已经回应。让其他成员基于新消息继续判断，
-		// 仍可 pass；不强迫轮流说话，也不把第一人的后台任务当作全群的结束信号。
 		w.Instruction = "继续观察刚刚发生的交流；可以回应真实论点、接梗或保持安静。不要为了说话而说话。"
 		w.Kind = "followup"
 	}
@@ -372,121 +497,148 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 }
 
 type Decision struct {
-	Action string `json:"action"`
-	Intent string `json:"intent"`
-	Reason string `json:"reason"`
+	Action         string   `json:"action"`
+	Intent         string   `json:"intent"`
+	Reason         string   `json:"reason"`
+	MessageIDs     []string `json:"message_ids,omitempty"`
+	State          *string  `json:"state,omitempty"`
+	StateSourceIDs []string `json:"state_source_ids,omitempty"`
 }
 
+type participationCandidate struct {
+	Member   Member
+	Decision Decision
+	SeenSeq  int64
+	Err      error
+}
+
+// 单次选择的调用仍可使用 choose；群聊主循环保留 observeMembers 的所有意图。
 func (e *Engine) choose(ctx context.Context, c Conversation, w Work, turn int) (Member, Decision, error) {
-	type candidate struct {
-		m   Member
-		d   Decision
-		err error
+	candidates, _, err := e.observeMembers(ctx, c, w, turn)
+	if err != nil || len(candidates) == 0 {
+		return Member{}, Decision{}, err
 	}
-	results := make(chan candidate, len(c.MemberIDs))
-	for _, id := range c.MemberIDs {
-		go func(id string) {
-			m, err := e.Store.Member(id)
-			if err != nil {
-				results <- candidate{err: err}
-				return
-			}
-			label := "正在考虑怎么接话"
-			if w.Kind == "explore" {
-				label = "正在寻找感兴趣的新方向"
-			}
-			if w.Kind == "share" {
-				label = "正在判断哪些发现值得分享"
-			}
-			e.setActivity(c.ID, m.ID, label)
-			input, err := e.contextFor(c, m, w)
-			if err != nil {
-				e.setActivity(c.ID, m.ID, "")
-				results <- candidate{err: err}
-				return
-			}
-			input["initial_reply_opportunity"] = turn == 0
-			var spoken int
-			if w.SourceID != "" {
-				err = e.Store.db.QueryRow(`SELECT count(*) FROM messages WHERE conversation_id=? AND author_id=? AND seq>(SELECT seq FROM messages WHERE id=?)`, c.ID, m.ID, w.SourceID).Scan(&spoken)
-			} else if w.CreatedAt != "" {
-				// 无真人消息的自主机会也要识别自己刚刚说过的话。
-				err = e.Store.db.QueryRow(`SELECT count(*) FROM messages WHERE conversation_id=? AND author_id=? AND created_at>=?`, c.ID, m.ID, w.CreatedAt).Scan(&spoken)
-			}
-			if err != nil {
-				e.setActivity(c.ID, m.ID, "")
-				results <- candidate{m: m, err: err}
-				return
-			}
-			input["already_spoke"] = spoken > 0
-			var d Decision
-			err = modelJSON(ctx, e.Model, memberPrinciples+`\n此时只决定自己的下一步，不能替其他成员作决定。
-返回 {"action":"speak|explore|pass","intent":"这次具体想说或做什么","reason":"简短的实际来由"}。
-普通问题允许全员 pass；明确 @ 自己通常 speak，也可拒绝。文字提名不等于 @。不固定支持/反对，不用事实增量分数过滤接梗和情绪回应。
-explore 必须是能用当前工具池实际开展的方向，不能只“以后关注”；已有同类未完工作不要重复安排。
-没有真人新消息也可以主动探索，或分享一个由兴趣、已读资料、共同经历带来的具体新想法。聊天尚空时可以主动开启一个话题，不要求真人先发问；不因安静而机械问候或催回复。研究完成可以基于实际结果考虑分享，不伪造结果。
-initial_reply_opportunity=false 只表示有人参与过，不代表你已经说过。already_spoke=false 时，你仍可直接回应真人最初的话题、提出不同视角或接别人的话；别人去查资料不要求你一起等。already_spoke=true 时不重复确认、道歉或重述自己的观点，需要具体新贡献才继续。历史 @ 不是新的邀请。
-最近自己已经表达且没有新贡献时 pass。若只是等待用户回应就 pass。公开讨论已暂停时只允许 explore 或 pass。研究已暂停时禁止 explore。`, input, &d)
-			// 先清理再交出结果，避免 goroutine 的延迟 defer 清掉随后开始的实际行动。
-			e.setActivity(c.ID, m.ID, "")
-			results <- candidate{m: m, d: d, err: err}
-		}(id)
+	return candidates[0].Member, candidates[0].Decision, nil
+}
+
+func (e *Engine) observeMember(ctx context.Context, c Conversation, w Work, id string, turn int, previous *participationCandidate) participationCandidate {
+	result := participationCandidate{}
+	m, err := e.Store.Member(id)
+	if err != nil {
+		result.Err = err
+		return result
 	}
-	var chosen candidate
-	var firstErr error
-	var considered []candidate
-	// 决定分别产生；只有最终被选中的成员再生成公开内容，并重读最新消息。
-	// 收齐结果后优先明确 @ 的成员；否则保留实际先完成判断的成员，不按名单轮流出场。
-	mentions := []string{}
+	result.Member = m
+	e.setActivity(c.ID, m.ID, "正在读群里的新消息")
+	defer e.setActivity(c.ID, m.ID, "")
+	input, err := e.contextFor(c, m, w)
+	if err != nil {
+		result.Err = err
+		return result
+	}
+	result.SeenSeq = observedThrough(input)
+	input["initial_reply_opportunity"] = turn == 0
+	var spoken int
 	if w.SourceID != "" {
+		err = e.Store.db.QueryRow(`SELECT count(*) FROM messages WHERE conversation_id=? AND author_id=? AND seq>(SELECT seq FROM messages WHERE id=?)`, c.ID, m.ID, w.SourceID).Scan(&spoken)
+	} else if w.CreatedAt != "" {
+		err = e.Store.db.QueryRow(`SELECT count(*) FROM messages WHERE conversation_id=? AND author_id=? AND created_at>=?`, c.ID, m.ID, w.CreatedAt).Scan(&spoken)
+	}
+	if err != nil {
+		result.Err = err
+		return result
+	}
+	input["already_spoke"] = spoken > 0
+	if previous != nil {
+		input["earlier_intention"] = previous.Decision
+		input["earlier_seen_through_seq"] = previous.SeenSeq
+	}
+	err = modelJSON(ctx, e.Model, memberPrinciples+`\n此时只决定自己的下一步，不能替其他成员作决定。
+你读的是一段多人交流，不是一组等待逐条答复的问题。从自己的性格、此刻在意的事、已有经历/行动和群里实际说过的话出发，选零条、一条或几条想回应的消息；可以接较早的话、综合几个人的话，也可以暂不参与。
+返回 {"action":"speak|explore|pass","intent":"具体想回应谁的哪一点、说或做什么","reason":"给用户看的简短参与来由","message_ids":["选中的当前聊天消息ID，可为空"]}。需要改变持续关注时可加 state 和 state_source_ids。
+先理解每个人已说了什么，以及这些话怎样改变自己的想法。别人已说过原本要说的，可以缩短为自然认同、进一步展开不同细节、换关注点或安静；不要换一套措辞再答一遍。没发过言不构成发言理由，也不必故意反对。认同、玩笑、共情和一起想象都可以有价值，不要求新事实。
+特质影响你的关注和表达，不是固定戏份：安静的人遇到关心的事也会深入聊，主动的人也会发现无需补充。普通问题允许全员 pass；明确 @ 自己可以参与或拒绝，历史 @ 不是新邀请。
+explore 必须是能用当前工具实际开展的方向，已有同类未完工作不要重复安排；可以先去做而不发言。没有真人消息时也可以由兴趣、真实经历或研究进展开启具体话题，不机械问候或催回复。
+already_spoke 只是自己的发言事实，不是说话资格。等待用户、自己的内容已表达完或这次没兴趣就 pass；公开讨论暂停时仅 explore/pass，研究暂停时禁止 explore。
+earlier_intention 如存在只是你读到新消息之前的打算，现在可以改变或撤回。`+statePrompt, input, &result.Decision)
+	if err != nil {
+		result.Err = err
+		return result
+	}
+	d := &result.Decision
+	if d.Action != "speak" && d.Action != "explore" && d.Action != "pass" {
+		result.Err = fmt.Errorf("成员参与判断缺少有效 action")
+		return result
+	}
+	if len(d.MessageIDs) > 12 {
+		result.Err = fmt.Errorf("成员选择的消息数量超过本次上下文范围")
+		return result
+	}
+	if _, err = e.Store.selectedMessages(c.ID, d.MessageIDs); err != nil {
+		result.Err = err
+		return result
+	}
+	if (c.DiscussionPaused && d.Action == "speak") || (c.ResearchPaused && d.Action == "explore") || (d.Action != "pass" && strings.TrimSpace(d.Intent) == "") {
+		d.Action = "pass"
+	}
+	result.Err = e.Store.recordObservation(c, m.ID, result.SeenSeq, d.State, d.StateSourceIDs)
+	return result
+}
+
+func (e *Engine) observeMembers(ctx context.Context, c Conversation, w Work, turn int) ([]participationCandidate, int64, error) {
+	results := make(chan participationCandidate, len(c.MemberIDs))
+	for _, id := range c.MemberIDs {
+		go func(id string) { results <- e.observeMember(ctx, c, w, id, turn, nil) }(id)
+	}
+	mentions := []string{}
+	if turn == 0 && w.SourceID != "" {
 		var raw string
-		if e.Store.db.QueryRow(`SELECT mentions FROM messages WHERE id=?`, w.SourceID).Scan(&raw) == nil {
+		if e.Store.db.QueryRow(`SELECT mentions FROM messages WHERE id=? AND conversation_id=?`, w.SourceID, c.ID).Scan(&raw) == nil {
 			decode(raw, &mentions)
 		}
 	}
+	var firstErr error
+	var seen int64
+	candidates := []participationCandidate{}
 	for range c.MemberIDs {
 		r := <-results
-		considered = append(considered, r)
-		if r.err != nil {
+		seen = max(seen, r.SeenSeq)
+		if err := e.recordParticipation(w, r, false); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if r.Err != nil {
 			if firstErr == nil {
-				firstErr = r.err
+				firstErr = r.Err
 			}
 			continue
 		}
-		if r.d.Action != "speak" && r.d.Action != "explore" {
+		if r.Decision.Action == "pass" {
 			continue
 		}
-		if c.DiscussionPaused && r.d.Action == "speak" {
-			continue
-		}
-		if c.ResearchPaused && r.d.Action == "explore" {
-			continue
-		}
-		if strings.TrimSpace(r.d.Intent) == "" {
-			continue
-		}
-		if chosen.m.ID == "" || (turn == 0 && contains(mentions, r.m.ID) && !contains(mentions, chosen.m.ID)) {
-			chosen = r
+		// 明确邀请只影响先给谁机会，不强制发言；其余保留判断实际完成的顺序。
+		if contains(mentions, r.Member.ID) {
+			candidates = append([]participationCandidate{r}, candidates...)
+		} else {
+			candidates = append(candidates, r)
 		}
 	}
-	// 保存的是模型明确给出的简短参与理由，不是隐式思考过程。selected 区分
-	// “想说但尚未发言”和“实际获得行动机会”，便于排查沉默而不猜测性格。
-	for _, r := range considered {
-		if w.ID == "" || r.m.ID == "" {
-			continue
-		}
-		action, reason := r.d.Action, r.d.Reason
-		if r.err != nil {
-			action, reason = "error", r.err.Error()
-		}
-		if _, err := e.Store.db.Exec(`INSERT INTO participation VALUES(?,?,?,?,?,?)`, w.ID, r.m.ID, action, clip(reason, 500), r.m.ID == chosen.m.ID, now()); err != nil {
-			return Member{}, Decision{}, err
-		}
+	// 判断失败与全员自愿安静不同，必须保留区别；成功的同伴仍可继续行动。
+	if len(candidates) == 0 && firstErr != nil {
+		return nil, seen, firstErr
 	}
-	if chosen.m.ID == "" && firstErr != nil {
-		return Member{}, Decision{}, firstErr
+	return candidates, seen, nil
+}
+
+func (e *Engine) recordParticipation(w Work, candidate participationCandidate, selected bool) error {
+	if w.ID == "" || candidate.Member.ID == "" {
+		return nil
 	}
-	return chosen.m, chosen.d, nil
+	d := candidate.Decision
+	if candidate.Err != nil {
+		d.Action, d.Reason = "error", candidate.Err.Error()
+	}
+	_, err := e.Store.db.Exec(`INSERT INTO participation VALUES(?,?,?,?,?,?)`, w.ID, candidate.Member.ID, d.Action, clip(d.Reason, 500), selected, now())
+	return err
 }
 
 const memberPrinciples = `你是 drop_by 里的一个独立 AI 成员，一名真人和若干 AI 朋友共享这个空间。你只有当前给出的身份、经历和工具，没有未提供的真实行动经历。
@@ -584,7 +736,17 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work) (map[string]any, e
 		}
 	}
 	identity := map[string]any{"id": m.ID, "name": m.Name, "profile": m.Profile, "tools": m.Tools}
-	return map[string]any{"time": now(), "self": identity, "people": people, "conversation": c, "latest_messages": messages, "quoted_message": quoted, "memory": memories, "work": jobs, "trigger": w, "tool_runs": runContext, "artifacts": artifacts}, nil
+	seen, currentState, err := e.Store.observation(c.ID, m.ID)
+	if err != nil {
+		return nil, err
+	}
+	unread := []string{}
+	for _, message := range messages {
+		if message.Seq > seen {
+			unread = append(unread, message.ID)
+		}
+	}
+	return map[string]any{"time": now(), "self": identity, "people": people, "conversation": c, "latest_messages": messages, "quoted_message": quoted, "memory": memories, "work": jobs, "trigger": w, "tool_runs": runContext, "artifacts": artifacts, "seen_through_seq": seen, "new_message_ids": unread, "current_state": currentState}, nil
 }
 
 func explicitStop(body string) (discussion, research bool) {
@@ -598,15 +760,22 @@ func explicitStop(body string) (discussion, research bool) {
 }
 
 type Outcome struct {
-	Message    string   `json:"message"`
-	Outcome    string   `json:"outcome"`
-	Notify     bool     `json:"notify"`
-	Evidence   []string `json:"evidence"`
-	Unfinished bool     `json:"unfinished"`
-	ReplyTo    string   `json:"reply_to,omitempty"`
+	Message             string   `json:"message"`
+	Outcome             string   `json:"outcome"`
+	Notify              bool     `json:"notify"`
+	Evidence            []string `json:"evidence"`
+	Unfinished          bool     `json:"unfinished"`
+	ReplyTo             string   `json:"reply_to,omitempty"`
+	ParticipationReason string   `json:"participation_reason,omitempty"`
+	State               *string  `json:"state,omitempty"`
+	StateSourceIDs      []string `json:"state_source_ids,omitempty"`
 }
 
 func (e *Engine) act(ctx context.Context, c Conversation, m Member, w Work, instruction string) (Outcome, error) {
+	return e.actWithDecision(ctx, c, m, w, instruction, nil)
+}
+
+func (e *Engine) actWithDecision(ctx context.Context, c Conversation, m Member, w Work, instruction string, previous *participationCandidate) (Outcome, error) {
 	// 同一成员可能在多个群被同时叫到。把其实际行动串行化，避免两份旧上下文
 	// 同时改写这位成员的共同经历；等到机会后再读取最新记忆，不阻塞用户发消息。
 	gateValue, _ := e.memberGates.LoadOrStore(m.ID, make(chan struct{}, 1))
@@ -617,11 +786,17 @@ func (e *Engine) act(ctx context.Context, c Conversation, m Member, w Work, inst
 	case <-ctx.Done():
 		return Outcome{}, ctx.Err()
 	}
+	// 等待期间可能有人修改了这位成员的偏好，执行时读取当前身份。
+	var err error
+	m, err = e.Store.Member(m.ID)
+	if err != nil {
+		return Outcome{}, err
+	}
 	e.setActivity(c.ID, m.ID, "正在组织回应")
 	defer e.setActivity(c.ID, m.ID, "")
 	// 首句不等待网页或长篇创作；后续行动和跟进允许更充分推理。
 	if w.Kind == "first_reply" {
-		instruction += "\n这是对用户的第一句回应，用一两句有内容的话接住具体话题。可表达初步看法，但不装作已查证；需要查证、比较、创作或保存成果时，先调用 schedule_exploration 安排具体行动，再自然交代下一步。普通闲聊不必安排任务，不说空洞的收到或请稍候。不要只复述待办；能判断时，回应中包含一个明确的初步观点，并区分初步判断与已查证结果。"
+		instruction += "\n这是本次交流较早的参与机会；如果仍然想开口，用一两句具体的话自然回应，也允许改变主意不发言。可表达初步看法，但不装作已查证；需要查证、比较、创作或保存成果时，可用 schedule_exploration 安排具体行动。普通闲聊不必安排任务，不说空洞的收到或请稍候。区分初步判断与已查证结果。"
 	} else {
 		ctx = context.WithValue(ctx, deepReasoningKey{}, true)
 	}
@@ -629,10 +804,22 @@ func (e *Engine) act(ctx context.Context, c Conversation, m Member, w Work, inst
 	if err != nil {
 		return Outcome{}, err
 	}
+	seen := observedThrough(input)
+	if previous != nil {
+		selected, err := e.Store.selectedMessages(c.ID, previous.Decision.MessageIDs)
+		if err != nil {
+			return Outcome{}, err
+		}
+		input["earlier_intention"] = previous.Decision
+		input["selected_messages"] = selected
+		input["earlier_seen_through_seq"] = previous.SeenSeq
+		instruction += "\n现在真正轮到你了。检查 earlier_seen_through_seq 之后的新发言怎样改变 earlier_intention：别人已讲清时可缩短认同、补充具体差别、换话题关注点，或 message 为空。不要把之前的意图当作必须兑现的台词，不要独立重答同一个问题。可回应选中的几条较早消息，或转而接刚发言的人；引用实际接话对象的消息 ID，勿默认引用最初真人消息。幽默、共情和简短认同不需要包装成新事实。"
+	}
 	messages := []ChatMessage{{Role: "system", Content: memberPrinciples + "\n" + instruction + `
 使用工具完成实际行动；工具可多次调用，但节制使用。记忆只保存足以改变后续的内容，更新过时记忆，不记录每句闲聊。可携带记忆只写自己的非敏感经验，不写其他场景的用户私密原文。
 需要稍后继续时用 schedule_exploration 保存实际方向与来由。研究已有结果就直接结束，不必每次再安排研究。
-最终只返回 JSON {"message":"要公开说的话，或空串","outcome":"本次实际完成或未完成什么，尤其研究必须填写","notify":false,"evidence":["实际 tool_run ID"],"unfinished":false,"reply_to":"可省略，只在需要引用接话时填写当前群已存在的消息ID"}。unfinished 仅在仍有值得继续的具体行动尚未完成时为 true；没有可靠结果也可以结束，不必无限研究。不公开内部调度分析。用户看见的是 message。工具结果会给出可引用 ID；引用网页用 Markdown 链接。保存成果后在消息中说明成果标题。`}, {Role: "user", Content: asJSON(input)}}
+ask_question 工具已在聊天里发出问题，最终 message 可以为空，不重复问题或再补一串追问；用户改聊别的就是自然略过。
+最终只返回 JSON {"message":"要公开说的话，或空串","outcome":"本次实际完成或未完成什么，尤其研究必须填写","notify":false,"evidence":["实际 tool_run ID"],"unfinished":false,"reply_to":"可省略，只在需要引用接话时填写当前群已存在的消息ID","participation_reason":"简短说明为何这样参与或撤回，不写推理过程"}。unfinished 仅在仍有值得继续的具体行动尚未完成时为 true；没有可靠结果也可以结束，不必无限研究。不公开内部调度分析。用户看见的是 message。工具结果会给出可引用 ID；引用网页用 Markdown 链接。保存成果后在消息中说明成果标题。` + statePrompt}, {Role: "user", Content: asJSON(input)}}
 	defs := e.Tools.Definitions(m, c, w)
 	for step := 0; step < e.Config.MaxToolRounds; step++ {
 		if err := ctx.Err(); err != nil {
@@ -685,6 +872,9 @@ func (e *Engine) act(ctx context.Context, c Conversation, m Member, w Work, inst
 				if err != nil {
 					return out, err
 				}
+			}
+			if err = e.Store.recordObservation(c, m.ID, seen, out.State, out.StateSourceIDs); err != nil {
+				return out, err
 			}
 			return out, nil
 		}
