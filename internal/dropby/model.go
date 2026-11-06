@@ -17,6 +17,7 @@ import (
 
 type ChatMessage struct {
 	ResponseItems []json.RawMessage `json:"-"` // Responses 的推理与工具项目仅在本次行动中回传。
+	OutputTokens  int               `json:"-"` // 服务商报告的输出量；加密推理不能按 Base64 字节当作输入 token。
 	Role          string            `json:"role"`
 	Content       string            `json:"content"`
 	ToolCalls     []ToolCall        `json:"tool_calls,omitempty"`
@@ -152,17 +153,23 @@ func (m *HTTPModel) Complete(ctx context.Context, messages []ChatMessage, defs [
 	endpoint, _ := url.Parse(m.Config.BaseURL)
 	useResponses := endpoint.Hostname() == "api.openai.com" || (m.Config.Reasoning != "" && m.Config.Reasoning != "none" && strings.HasPrefix(m.Config.Model, "gpt-5"))
 	encoded, e := json.Marshal(body)
+	// 文本字节用于保守估算；不把加密推理的传输编码误算成用户上下文。
+	inputEstimate := len(encoded)
+	for _, message := range messages {
+		inputEstimate += message.OutputTokens
+	}
 	if useResponses {
 		encoded, e = m.responseBody(messages, defs, jsonOutput)
 	}
 	if e != nil {
 		return ChatMessage{}, e
 	}
-	// 给超长工具输出一个明确边界，避免无限上下文吞掉预算；这不影响原始聊天的保存。
-	if len(encoded) > 180_000 {
-		return ChatMessage{}, fmt.Errorf("本轮上下文过长，请缩小当前探索范围")
+	// 工具文本由行动层保留近期正文并折叠旧结果。这里仅限制异常传输体积，
+	// 不能用 180 KB 的 HTTP 请求大小冒充模型的上下文窗口。
+	if len(encoded) > 8<<20 {
+		return ChatMessage{}, fmt.Errorf("本次行动的内部请求过大，已保存工具记录")
 	}
-	reserve := int64(math.Ceil(float64(len(encoded))*m.Config.InputPrice + float64(m.Config.MaxOutputTokens)*m.Config.OutputPrice))
+	reserve := int64(math.Ceil(float64(inputEstimate)*m.Config.InputPrice + float64(m.Config.MaxOutputTokens)*m.Config.OutputPrice))
 	day, e := m.Store.Reserve(m.Config, reserve)
 	if e != nil {
 		return ChatMessage{}, e
@@ -193,6 +200,7 @@ func (m *HTTPModel) Complete(ctx context.Context, messages []ChatMessage, defs [
 	if strings.TrimSpace(c.Message.Content) == "" && len(c.Message.ToolCalls) == 0 {
 		return ChatMessage{}, fmt.Errorf("模型返回了空内容，本次没有生成消息")
 	}
+	c.Message.OutputTokens = response.Usage.CompletionTokens
 	return c.Message, nil
 }
 
@@ -255,11 +263,11 @@ func CreateQuestions(ctx context.Context, m Model, direction string) ([]Question
 	var out struct {
 		Questions []Question `json:"questions"`
 	}
-	e := modelJSON(ctx, m, `你在帮助用户创造一个独立 AI 朋友。根据用户给出的方向，提出 3 个具体情境问题，了解这个成员如何好奇、作判断和与人相处。不是人格评分，不把成员固定为支持者/反对者。包含选择题和可自填的问题，选择题提供 2-4 个有真实取舍的选项，所有题都可自填。不要虚构共同经历。返回 {"questions":[{"text":"...","options":["...","..."]},{"text":"...","options":[]}]}`, direction, &out)
+	e := modelJSON(ctx, m, `用户自愿想补充一个 AI 朋友的偏好。只提出一个简短、具体、易回答的情境问题，提供 2-4 个自然选项，也允许自填或跳过。没有已知方向时问一个轻松的相处偏好。不是入门测验或人格评分，不固定支持/反对，不虚构共同经历。返回 {"questions":[{"text":"...","options":["...","..."]}]}`, direction, &out)
 	if e != nil {
 		return nil, e
 	}
-	if len(out.Questions) < 2 || len(out.Questions) > 5 {
+	if len(out.Questions) != 1 {
 		return nil, fmt.Errorf("情境问题数量异常")
 	}
 	for _, q := range out.Questions {
@@ -274,16 +282,21 @@ func CompleteMember(ctx context.Context, model Model, m Member) (Member, error) 
 		Profile string   `json:"profile"`
 		Tools   []string `json:"tools"`
 	}
-	e := modelJSON(ctx, model, `根据用户的大方向和情境回答写一份 400 字内的成员起始说明，包含关注点、选择材料的倾向、判断方式、参与意愿、可以自然变化的地方。保留矛盾和余地，不使用性格数值，不固定站队，不编造真实行动或已经发生的关系。工具池只有 search（搜索）、read_page（网页阅读）、save_artifact（保存和修改文本成果），根据成员方向选择合适工具；不需要用户配置模型或工具。返回 {"profile":"自然语言说明","tools":["search","read_page","save_artifact"]}`, m, &out)
+	input := map[string]any{"name": m.Name, "direction": m.Direction, "existing_profile": m.Profile, "questions": m.Questions, "answers": m.Answers}
+	e := modelJSON(ctx, model, `根据已有说明和用户这次自愿提供的情境回答，合并为 400 字内的成员说明。保留既有兴趣，只修改被这次回答影响的部分；未提供的偏好留有余地。包含关注点、判断方式、参与意愿、可以自然变化的地方。不使用性格数值，不固定站队，不编造真实行动或已经发生的关系。工具池只有 search（搜索）、read_page（网页阅读）、save_artifact（保存和修改文本成果），根据成员方向选择合适工具。返回 {"profile":"自然语言说明","tools":["search","read_page","save_artifact"]}`, input, &out)
 	if e != nil {
 		return m, e
 	}
 	if strings.TrimSpace(out.Profile) == "" {
 		return m, fmt.Errorf("成员说明为空")
 	}
-	m.ID = newID("member")
+	if m.ID == "" {
+		m.ID = newID("member")
+	}
 	m.Profile = clip(out.Profile, 3000)
-	m.CreatedAt = now()
+	if m.CreatedAt == "" {
+		m.CreatedAt = now()
+	}
 	m.Tools = []string{}
 	for _, name := range out.Tools {
 		if contains([]string{"search", "read_page", "save_artifact"}, name) && !contains(m.Tools, name) {

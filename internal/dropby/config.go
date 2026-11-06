@@ -29,7 +29,7 @@ func LoadConfig() (Config, error) {
 		Model: env("DROPBY_MODEL", "gpt-5.6-sol"), BaseURL: env("DROPBY_BASE_URL", "https://api.openai.com/v1"),
 		APIKey:    env("DROPBY_API_KEY", os.Getenv("OPENAI_API_KEY")),
 		SearchURL: env("DROPBY_SEARCH_URL", "https://api.deepseek.com/v1/tools"), SearchKey: os.Getenv("DEEPSEEK_API_KEY"),
-		ExploreInterval: 30 * time.Minute, MaxTurns: 5, MaxToolRounds: 8, MaxOutputTokens: 8000, DeepMaxOutputTokens: 25000, Reasoning: env("DROPBY_REASONING", "none"), DeepReasoning: env("DROPBY_DEEP_REASONING", "high"),
+		ExploreInterval: 10 * time.Minute, MaxTurns: 5, MaxToolRounds: 8, MaxOutputTokens: 8000, DeepMaxOutputTokens: 25000, Reasoning: env("DROPBY_REASONING", "none"), DeepReasoning: env("DROPBY_DEEP_REASONING", "high"),
 		DailyCalls: 600, DailyBudgetMicros: 3_000_000,
 		InputPrice: 4, OutputPrice: 20, ToolCostMicros: 750,
 	}

@@ -16,6 +16,7 @@ type Member struct {
 	Direction string     `json:"direction"`
 	Profile   string     `json:"profile"`
 	Color     string     `json:"color"`
+	Avatar    string     `json:"avatar,omitempty"`
 	Questions []Question `json:"questions"`
 	Answers   []string   `json:"answers"`
 	Tools     []string   `json:"tools"`
@@ -92,6 +93,22 @@ type ToolRun struct {
 	CreatedAt      string          `json:"created_at"`
 }
 
+// Activity 是进程此刻真实执行的动作；Participation 是可回看的一次参与判断。
+// 判断记录解释这次为何参与或安静，不把成员的性格固化成活跃度分数。
+type Activity struct {
+	ConversationID string `json:"conversation_id"`
+	MemberID       string `json:"member_id"`
+	Label          string `json:"label"`
+}
+type Participation struct {
+	WorkID    string `json:"work_id"`
+	MemberID  string `json:"member_id"`
+	Action    string `json:"action"`
+	Reason    string `json:"reason"`
+	Selected  bool   `json:"selected"`
+	CreatedAt string `json:"created_at"`
+}
+
 type Artifact struct {
 	ID             string `json:"id"`
 	ConversationID string `json:"conversation_id"`
@@ -106,7 +123,7 @@ type Artifact struct {
 var (
 	ErrStale       = errors.New("用户已补充新消息，本次结果不再适用")
 	ErrBudget      = errors.New("今日运行预算已用完，未完工作已保留，下一预算日恢复")
-	ErrUnavailable = errors.New("尚未配置模型服务，请设置 DROPBY_API_KEY 或 DEEPSEEK_API_KEY")
+	ErrUnavailable = errors.New("尚未配置模型服务，请设置 OPENAI_API_KEY 或 DROPBY_API_KEY")
 	ErrRunLimit    = errors.New("本次工具运行已达到上限，未完工作已保留")
 )
 

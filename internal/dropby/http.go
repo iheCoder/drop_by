@@ -1,10 +1,15 @@
 package dropby
 
 import (
+	"bytes"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -27,6 +32,7 @@ func NewHandler(engine *Engine) http.Handler {
 	mux.HandleFunc("GET /api/state", a.state)
 	mux.HandleFunc("POST /api/member-questions", a.questions)
 	mux.HandleFunc("POST /api/members", a.createMember)
+	mux.HandleFunc("POST /api/members/{id}/preferences", a.preferences)
 	mux.HandleFunc("POST /api/conversations", a.createConversation)
 	mux.HandleFunc("GET /api/conversations/{id}", a.conversation)
 	mux.HandleFunc("POST /api/conversations/{id}/messages", a.sendMessage)
@@ -120,11 +126,15 @@ func (a *API) state(w http.ResponseWriter, r *http.Request) {
 	}
 	a.engine.mu.Lock()
 	active := []string{}
+	activities := []Activity{}
 	for id := range a.engine.running {
 		active = append(active, id)
 	}
+	for _, activity := range a.engine.activities {
+		activities = append(activities, activity)
+	}
 	a.engine.mu.Unlock()
-	respond(w, 200, map[string]any{"members": members, "conversations": rooms, "active_rooms": active, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "daily_budget_micros": a.engine.Config.DailyBudgetMicros, "daily_calls": a.engine.Config.DailyCalls})
+	respond(w, 200, map[string]any{"members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "daily_budget_micros": a.engine.Config.DailyBudgetMicros, "daily_calls": a.engine.Config.DailyCalls, "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
 }
 func (a *API) questions(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -133,8 +143,8 @@ func (a *API) questions(w http.ResponseWriter, r *http.Request) {
 	if !readBody(w, r, &in) {
 		return
 	}
-	if len([]rune(strings.TrimSpace(in.Direction))) < 2 || len([]rune(in.Direction)) > 2000 {
-		respond(w, 400, map[string]string{"error": "请用 2 到 2000 个字描述成员的大方向"})
+	if len([]rune(in.Direction)) > 2000 {
+		respond(w, 400, map[string]string{"error": "偏好描述不超过 2000 字"})
 		return
 	}
 	questions, err := CreateQuestions(r.Context(), a.engine.Model, in.Direction)
@@ -149,6 +159,7 @@ func (a *API) createMember(w http.ResponseWriter, r *http.Request) {
 		Name      string     `json:"name"`
 		Direction string     `json:"direction"`
 		Color     string     `json:"color"`
+		Avatar    string     `json:"avatar"`
 		Questions []Question `json:"questions"`
 		Answers   []string   `json:"answers"`
 	}
@@ -157,30 +168,96 @@ func (a *API) createMember(w http.ResponseWriter, r *http.Request) {
 	}
 	in.Name = strings.TrimSpace(in.Name)
 	in.Direction = strings.TrimSpace(in.Direction)
-	if in.Name == "" || len([]rune(in.Name)) > 24 || in.Direction == "" || len([]rune(in.Direction)) > 2000 || len(in.Questions) < 2 || len(in.Questions) > 5 || len(in.Answers) != len(in.Questions) {
-		respond(w, 400, map[string]string{"error": "请填写名字、大方向，并完成情境问题"})
+	if in.Name == "" || len([]rune(in.Name)) > 24 || len([]rune(in.Direction)) > 2000 || len(in.Questions) > 5 || len(in.Answers) != len(in.Questions) {
+		respond(w, 400, map[string]string{"error": "请填写 1 到 24 个字的名字，其他信息可以稍后再补充"})
+		return
+	}
+	if err := validateAvatar(in.Avatar); err != nil {
+		respond(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
 	for _, answer := range in.Answers {
-		if strings.TrimSpace(answer) == "" || len([]rune(answer)) > 2000 {
-			respond(w, 400, map[string]string{"error": "请回答每一个情境问题（每题不超过 2000 字）"})
+		if len([]rune(answer)) > 2000 {
+			respond(w, 400, map[string]string{"error": "每个回答不超过 2000 字，也可以跳过"})
 			return
 		}
 	}
 	if !contains([]string{"jade", "apricot", "blue", "rose", "violet", "moss"}, in.Color) {
 		in.Color = "jade"
 	}
-	m, err := CompleteMember(r.Context(), a.engine.Model, Member{Name: in.Name, Direction: in.Direction, Color: in.Color, Questions: in.Questions, Answers: in.Answers})
-	if err != nil {
-		a.fail(w, err)
-		return
+	// 创建身份不需要等待模型、回答问卷或消耗预算。未知偏好保持未知，
+	// 用户在聊天或自愿补充偏好时再逐步认识；默认提供产品现有的安全工具。
+	m := Member{ID: newID("member"), Name: in.Name, Direction: in.Direction, Color: in.Color, Avatar: in.Avatar, CreatedAt: now(), Questions: in.Questions, Answers: in.Answers, Tools: []string{"search", "read_page", "save_artifact"}, Profile: "性格和兴趣尚未设定，可在实际交流中逐步形成；不虚构过往经历。"}
+	if in.Direction != "" {
+		m.Profile = "用户希望的起点：" + in.Direction + "\n具体判断可随真实经历变化。"
 	}
-	if err = a.engine.Store.AddMember(m); err != nil {
+	if len(in.Answers) > 0 {
+		m.Profile += "\n用户自愿提供的情境偏好：" + asJSON(map[string]any{"questions": in.Questions, "answers": in.Answers})
+	}
+	if err := a.engine.Store.AddMember(m); err != nil {
 		a.fail(w, err)
 		return
 	}
 	a.engine.Hub.Publish("")
 	respond(w, 201, m)
+}
+
+// 头像只允许小型本地栅格图片，避免远程追踪地址或可执行的 SVG 混入聊天。
+func validateAvatar(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	prefix, encoded, ok := strings.Cut(raw, ",")
+	if !ok || (prefix != "data:image/png;base64" && prefix != "data:image/jpeg;base64") {
+		return fmt.Errorf("头像请使用 PNG 或 JPEG 图片")
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(data) > 64<<10 {
+		return fmt.Errorf("头像图片过大或无效")
+	}
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || (format != "png" && format != "jpeg") || cfg.Width > 512 || cfg.Height > 512 {
+		return fmt.Errorf("头像需要是有效的小尺寸图片")
+	}
+	return nil
+}
+
+func (a *API) preferences(w http.ResponseWriter, r *http.Request) {
+	m, err := a.engine.Store.Member(r.PathValue("id"))
+	if err != nil {
+		respond(w, 404, map[string]string{"error": "成员不存在"})
+		return
+	}
+	var in struct {
+		Question Question `json:"question"`
+		Answer   string   `json:"answer"`
+	}
+	if !readBody(w, r, &in) {
+		return
+	}
+	in.Answer = strings.TrimSpace(in.Answer)
+	if in.Answer == "" {
+		respond(w, 200, m)
+		return
+	} // 跳过不修改身份，不触发模型。
+	if len([]rune(in.Answer)) > 2000 || len([]rune(in.Question.Text)) > 500 || len(in.Question.Options) > 6 {
+		respond(w, 400, map[string]string{"error": "偏好内容过长"})
+		return
+	}
+	m.Questions = []Question{in.Question}
+	m.Answers = []string{in.Answer}
+	// 旧 profile 一并交给模型，只合并这次明确提供的偏好，保留同一身份及经历。
+	m, err = CompleteMember(r.Context(), a.engine.Model, m)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	if _, err = a.engine.Store.db.Exec(`UPDATE members SET data=? WHERE id=?`, asJSON(m), m.ID); err != nil {
+		a.fail(w, err)
+		return
+	}
+	a.engine.Hub.Publish("")
+	respond(w, 200, m)
 }
 func (a *API) createConversation(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -253,7 +330,21 @@ func (a *API) conversation(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	respond(w, 200, map[string]any{"conversation": c, "messages": messages, "work": jobs, "artifacts": artifacts, "has_earlier": len(messages) == 60})
+	decisions, err := a.engine.Store.Participations(c.ID)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	runs, err := a.engine.Store.ToolRuns(c.ID, "")
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	// 列表只传动作摘要；完整结果按 ID 打开，避免 SSE 每次刷新重传所有网页正文。
+	for i := range runs {
+		runs[i].Result = ""
+	}
+	respond(w, 200, map[string]any{"conversation": c, "messages": messages, "work": jobs, "artifacts": artifacts, "participation": decisions, "tool_runs": runs, "has_earlier": len(messages) == 60})
 }
 func (a *API) sendMessage(w http.ResponseWriter, r *http.Request) {
 	c, err := a.engine.Store.Conversation(r.PathValue("id"))

@@ -63,6 +63,9 @@ CREATE TABLE IF NOT EXISTS memories(id TEXT PRIMARY KEY, member_id TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS work(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), member_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL,
  instruction TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', source_id TEXT NOT NULL, status TEXT NOT NULL, due_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, result TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS work_due ON work(status,due_at);
+CREATE TABLE IF NOT EXISTS participation(work_id TEXT NOT NULL REFERENCES work(id), member_id TEXT NOT NULL, action TEXT NOT NULL,
+ reason TEXT NOT NULL, selected INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS participation_work ON participation(work_id);
 CREATE TABLE IF NOT EXISTS tool_runs(id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work(id), conversation_id TEXT NOT NULL, member_id TEXT NOT NULL, name TEXT NOT NULL, arguments TEXT NOT NULL,
  result TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS artifacts(id TEXT NOT NULL, version INTEGER NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id), member_id TEXT NOT NULL,
@@ -144,7 +147,8 @@ func (s *Store) CreateConversation(name, kind string, ids []string, interval tim
 			return c, e
 		}
 	}
-	_, e = tx.Exec(`INSERT INTO conversations(id,name,kind,next_explore,updated_at) VALUES(?,?,?,?,?)`, c.ID, name, kind, time.Now().Add(interval).UnixMilli(), c.UpdatedAt)
+	// 新相识不必等真人先开口；一分钟后给成员第一次自主判断机会。
+	_, e = tx.Exec(`INSERT INTO conversations(id,name,kind,next_explore,updated_at) VALUES(?,?,?,?,?)`, c.ID, name, kind, time.Now().Add(min(interval, time.Minute)).UnixMilli(), c.UpdatedAt)
 	if e != nil {
 		return c, e
 	}
@@ -381,6 +385,23 @@ func (s *Store) Works(room string) ([]Work, error) {
 	}
 	return list, rows.Err()
 }
+
+func (s *Store) Participations(room string) ([]Participation, error) {
+	rows, err := s.db.Query(`SELECT p.work_id,p.member_id,p.action,p.reason,p.selected,p.created_at FROM participation p JOIN work w ON w.id=p.work_id WHERE w.conversation_id=? ORDER BY p.rowid DESC LIMIT 40`, room)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []Participation{}
+	for rows.Next() {
+		var p Participation
+		if err := rows.Scan(&p.WorkID, &p.MemberID, &p.Action, &p.Reason, &p.Selected, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, p)
+	}
+	return list, rows.Err()
+}
 func (s *Store) DueWorks() ([]Work, error) {
 	rows, e := s.db.Query(`SELECT `+workColumns+` FROM work WHERE status IN ('pending','waiting_budget') AND due_at<=? ORDER BY CASE kind WHEN 'chat' THEN 0 WHEN 'research' THEN 1 ELSE 2 END,created_at LIMIT 100`, time.Now().UnixMilli())
 	if e != nil {
@@ -417,7 +438,9 @@ func (s *Store) ScheduleExploration(interval time.Duration) error {
 		return e
 	}
 	defer tx.Rollback()
-	rows, e := tx.Query(`SELECT c.id FROM conversations c WHERE c.next_explore<=? AND c.research_paused=0 AND EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id) AND NOT EXISTS(SELECT 1 FROM work w WHERE w.conversation_id=c.id AND w.status IN ('pending','running','waiting_budget'))`, time.Now().UnixMilli())
+	// 未到时间的研究不能冻结整个聊天。只避开正在执行、待处理的聊天机会和预算暂停，
+	// 让其他成员仍能独立发现事情；已有研究作为上下文，避免重复安排同一方向。
+	rows, e := tx.Query(`SELECT c.id FROM conversations c WHERE c.next_explore<=? AND c.research_paused=0 AND NOT EXISTS(SELECT 1 FROM work w WHERE w.conversation_id=c.id AND (w.status IN ('running','waiting_budget') OR (w.status='pending' AND w.kind IN ('chat','explore'))))`, time.Now().UnixMilli())
 	if e != nil {
 		return e
 	}
@@ -436,7 +459,7 @@ func (s *Store) ScheduleExploration(interval time.Duration) error {
 		return e
 	}
 	for _, id := range ids {
-		w := Work{ID: newID("work"), ConversationID: id, Kind: "explore", Instruction: "结合自己的兴趣、最近共同经历和已有工作，看看是否有值得实际探索的方向。没有合适的事情就保持安静。不是催促回复，也不是定时问候。", Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
+		w := Work{ID: newID("work"), ConversationID: id, Kind: "explore", Instruction: "这是没有新真人消息时的一次自主机会。结合自己的兴趣、共同经历和已有工作，推进值得探索的方向，或分享一个具体的新想法。刚被邀请而聊天尚空时，也可以自然开启一个具体话题。不需要真人先说话；没有合适内容就安静结束，不定时问候，不催回复。", Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
 		if e = insertWork(tx, w); e != nil {
 			return e
 		}
