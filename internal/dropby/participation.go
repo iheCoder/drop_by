@@ -22,7 +22,10 @@ func (s *Store) initParticipation() error {
 	 conversation_id TEXT NOT NULL REFERENCES conversations(id), member_id TEXT NOT NULL REFERENCES members(id),
 	 seen_seq INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT '', sources TEXT NOT NULL DEFAULT '[]',
 	 updated_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(conversation_id, member_id));`)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.initContextWindow()
 }
 
 func (s *Store) observation(room, member string) (int64, MemberState, error) {
@@ -87,7 +90,7 @@ func (s *Store) recordObservation(c Conversation, member string, seen int64, sta
 				return nil
 			}
 		}
-		_, err := tx.Exec(`UPDATE member_observations SET state=?,sources=?,updated_at=? WHERE conversation_id=? AND member_id=?`, clip(body, 600), asJSON(sources), now(), c.ID, member)
+		_, err := tx.Exec(`UPDATE member_observations SET state=?,sources=?,updated_at=? WHERE conversation_id=? AND member_id=?`, clip(body, 1600), asJSON(sources), now(), c.ID, member)
 		return err
 	})
 }
@@ -114,7 +117,7 @@ func (s *Store) selectedMessages(room string, ids []string) ([]Message, error) {
 		if err != nil {
 			return nil, err
 		}
-		m.Body = clip(m.Body, 1600)
+		m.Body = contextExcerpt(m.Body, 1600)
 		if question != "" {
 			var q Question
 			decode(question, &q)

@@ -48,7 +48,7 @@ func (m *reviewModel) Complete(_ context.Context, messages []ChatMessage, _ []To
 }
 func jsonReply(v any) ChatMessage { return ChatMessage{Role: "assistant", Content: asJSON(v)} }
 func testConfig() Config {
-	return Config{Address: "127.0.0.1:8090", APIKey: "test-only", Model: "test", BaseURL: "http://localhost", SearchKey: "test-only", ExploreInterval: time.Hour, MaxTurns: 3, MaxToolRounds: 4, MaxOutputTokens: 400, DailyCalls: 100, DailyBudgetMicros: 1_000_000, InputPrice: 1, OutputPrice: 3, ToolCostMicros: 750}
+	return Config{Address: "127.0.0.1:8090", APIKey: "test-only", Model: "test", BaseURL: "http://localhost", SearchKey: "test-only", ExploreInterval: time.Hour, MaxTurns: 3, MaxToolRounds: 4, MaxOutputTokens: 400, WeeklyCalls: 100, WeeklyBudgetMicros: 1_000_000, InputPrice: 1, OutputPrice: 3, ToolCostMicros: 750}
 }
 func fixture(t *testing.T) (*Store, Conversation, Member) {
 	t.Helper()
@@ -177,15 +177,15 @@ func TestScopedCorrectionChangesOnlyRelatedWork(t *testing.T) {
 
 func TestBudgetReservationsAreAtomicAndSurviveRestart(t *testing.T) {
 	// 20 个并发请求争用仅够 3 次的预算。请求前预留必须使最多 3 次获准，
-	// 关闭再打开数据库后也不能得到一个“全新”的日预算。
+	// 关闭再打开数据库后也不能得到一个“全新”的周预算。
 	dir := t.TempDir()
 	s, err := OpenStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	c := testConfig()
-	c.DailyBudgetMicros = 300
-	c.DailyCalls = 20
+	c.WeeklyBudgetMicros = 300
+	c.WeeklyCalls = 20
 	var granted atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
@@ -276,7 +276,7 @@ func TestNoMemberNeedsToSpeakAndRunLimitIsNotPermanent(t *testing.T) {
 	}
 	// 后续事件改变判断。这一次只发一条，然后再次选择安静。
 	model = modelFunc(func(_ context.Context, msgs []ChatMessage, _ []ToolDefinition, jsonOnly bool) (ChatMessage, error) {
-		if jsonOnly {
+		if strings.Contains(msgs[0].Content, "此时只决定自己的下一步") {
 			history, _ := s.Messages(c.ID, 0, 20)
 			if len(history) == 0 {
 				return jsonReply(Decision{Action: "speak", Intent: "分享新材料"}), nil
@@ -758,7 +758,7 @@ func TestFirstReplyDefersSlowTools(t *testing.T) {
 	e := NewEngine(s, nil, testConfig())
 	first := Work{Kind: "first_reply"}
 	defs := e.Tools.Definitions(m, c, first)
-	allowed := map[string]bool{"schedule_exploration": true, "schedule_followup": true, "cancel_work": true, "ask_question": true}
+	allowed := map[string]bool{"schedule_exploration": true, "schedule_followup": true, "cancel_work": true, "ask_question": true, "read_tool_result": true, "read_memory": true, "search_memory": true, "read_history": true, "read_work": true, "read_artifact": true}
 	if len(defs) != len(allowed) {
 		t.Fatalf("首句工具: %+v", defs)
 	}
@@ -773,13 +773,17 @@ func TestFirstReplyDefersSlowTools(t *testing.T) {
 	}
 	c.ResearchPaused = true
 	defs = e.Tools.Definitions(m, c, first)
-	if len(defs) != 2 || defs[0].Function.Name != "cancel_work" || defs[1].Function.Name != "ask_question" {
-		t.Fatal("研究暂停后仍可取消自己的旧工作和提出问题，但不能安排新研究")
+	for _, def := range defs {
+		if !recallTool(def.Function.Name) && def.Function.Name != "cancel_work" && def.Function.Name != "ask_question" {
+			t.Fatalf("暂停研究后越权：%s", def.Function.Name)
+		}
 	}
 	c.DiscussionPaused = true
 	defs = e.Tools.Definitions(m, c, first)
-	if len(defs) != 1 || defs[0].Function.Name != "cancel_work" {
-		t.Fatal("讨论也暂停后只能清理旧安排，不能继续发布问题")
+	for _, def := range defs {
+		if !recallTool(def.Function.Name) && def.Function.Name != "cancel_work" {
+			t.Fatalf("暂停讨论后越权：%s", def.Function.Name)
+		}
 	}
 }
 

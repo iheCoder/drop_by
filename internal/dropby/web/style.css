@@ -219,8 +219,8 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: r
 .panel-footer { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 24px; }
 .field { display: flex; flex-direction: column; gap: 9px; margin-bottom: 23px; }
 .field > span, .field-label { font-size: 13px; font-weight: 500; display: block; }
-.field input, .field textarea, .version-select { border: 1px solid #dce1e8; border-radius: 10px; min-height: 44px; background: var(--surface); color: var(--ink); padding: 11px 12px; width: 100%; line-height: 1.6; }
-.field input:focus, .field textarea:focus { border-color: #8baef0; outline: 3px solid rgb(40 100 220 / 8%); outline-offset: 0; }
+.field input, .field textarea, .field select, .version-select { border: 1px solid #dce1e8; border-radius: 10px; min-height: 44px; background: var(--surface); color: var(--ink); padding: 11px 12px; width: 100%; line-height: 1.6; }
+.field input:focus, .field textarea:focus, .field select:focus { border-color: #8baef0; outline: 3px solid rgb(40 100 220 / 8%); outline-offset: 0; }
 .field textarea { resize: vertical; min-height: 150px; font-size: 13px; }
 .field-hint { color: var(--muted); font-size: 12px; line-height: 1.8; font-weight: 400; }
 .form-error { font-size: 12px; color: var(--danger); line-height: 1.7; padding: 10px 12px; margin-bottom: 14px; background: #fff1f1; border-radius: 9px; }
@@ -272,6 +272,15 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: r
 .room-details-head .group-portrait .avatar { width: 50px; height: 50px; border-radius: 18px; }
 .room-details-head h3 { font-size: 20px; margin: 0 0 8px; }
 .room-details-head p { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 0; }
+/* 群协调是一个可撤销的会话设置；保存留在原位，避免弹窗和侧栏重建打断选择。 */
+.coordinator-form { border-top: 1px solid var(--line); padding-top: 21px; margin-top: 20px; }
+.coordinator-form .field { margin-bottom: 12px; }
+.coordinator-form select { font-size: 13px; }
+.coordinator-current { color: var(--muted); font-size: 11px; line-height: 1.8; margin: 0 0 13px; }
+.coordinator-save { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.coordinator-save button { flex: 0 0 auto; }
+.form-status { color: var(--muted); font-size: 11px; line-height: 1.7; }
+.coordinator-badge { display: inline-block; margin-left: 8px; padding: 2px 6px; border-radius: 5px; font-size: 10px; line-height: 1.5; font-weight: 400; color: #466397; background: var(--blue-soft); vertical-align: middle; }
 .panel-nav { display: flex; flex-direction: column; gap: 6px; margin: 20px 0; border-top: 1px solid var(--line); padding-top: 18px; }
 .panel-nav button { display: flex; align-items: center; gap: 10px; text-align: left; padding: 11px 8px; border-radius: 10px; min-height: 44px; font-size: 13px; }
 .panel-nav button:hover { background: var(--hover); }
@@ -293,6 +302,7 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: r
 .work-item summary > strong { display: block; margin-top: 9px; line-height: 1.7; font-weight: 500; }
 .work-item p { color: var(--muted); font-size: 12px; white-space: pre-wrap; line-height: 1.8; }
 .work-item small { color: var(--muted); font-size: 11px; }
+.work-assignment { font-size: 11px; color: var(--muted); line-height: 1.7; margin-top: 10px; }
 .status { float: right; font-size: 10px; color: var(--muted); }
 .status.running { color: var(--blue); }
 .status.failed, .status.paused { color: #a16926; }

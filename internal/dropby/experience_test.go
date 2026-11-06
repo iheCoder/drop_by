@@ -210,7 +210,7 @@ func TestLargeEncryptedReasoningIsNotUserContextOrBudget(t *testing.T) {
 	cfg.Model = "gpt-5.6-sol"
 	cfg.Reasoning = "high"
 	cfg.BaseURL = server.URL
-	cfg.DailyBudgetMicros = 50_000
+	cfg.WeeklyBudgetMicros = 50_000
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	messages := []ChatMessage{{Role: "user", Content: "核对这件事"}, {Role: "assistant", OutputTokens: 100, ResponseItems: []json.RawMessage{json.RawMessage(asJSON(map[string]any{"type": "reasoning", "id": "rs_long", "encrypted_content": opaque, "summary": []any{}})), json.RawMessage(`{"type":"function_call","id":"fc_long","call_id":"call_long","name":"read_history","arguments":"{}"}`)}}, {Role: "tool", ToolCallID: "call_long", Content: "已保存的事实"}}
 	if _, err := model.Complete(context.Background(), messages, nil, false); err != nil {

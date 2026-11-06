@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -83,6 +84,10 @@ CREATE TABLE IF NOT EXISTS usage(day TEXT PRIMARY KEY, calls INTEGER NOT NULL DE
 		return nil, err
 	}
 	if err = s.initProactivity(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = s.initCoordination(); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -176,7 +181,7 @@ func (s *Store) CreateConversation(name, kind string, ids []string, interval tim
 
 func (s *Store) Conversation(id string) (Conversation, error) {
 	var c Conversation
-	e := s.db.QueryRow(`SELECT id,name,kind,revision,discussion_paused,research_paused,guidance,updated_at FROM conversations WHERE id=?`, id).Scan(&c.ID, &c.Name, &c.Kind, &c.Revision, &c.DiscussionPaused, &c.ResearchPaused, &c.Guidance, &c.UpdatedAt)
+	e := s.db.QueryRow(`SELECT id,name,kind,revision,discussion_paused,research_paused,guidance,updated_at,coordinator_id FROM conversations WHERE id=?`, id).Scan(&c.ID, &c.Name, &c.Kind, &c.Revision, &c.DiscussionPaused, &c.ResearchPaused, &c.Guidance, &c.UpdatedAt, &c.CoordinatorID)
 	if e != nil {
 		return c, e
 	}
@@ -409,15 +414,15 @@ func insertWork(tx *sql.Tx, w Work) error {
 			return errAutonomyLimit
 		}
 	}
-	_, e := tx.Exec(`INSERT INTO work(id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,created_at,root_id,autonomous) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, w.ID, w.ConversationID, w.MemberID, w.Kind, w.Instruction, w.Reason, w.SourceID, w.Status, w.DueAt, w.CreatedAt, w.RootID, w.Autonomous)
+	_, e := tx.Exec(`INSERT INTO work(id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,created_at,root_id,autonomous,assigned_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, w.ID, w.ConversationID, w.MemberID, w.Kind, w.Instruction, w.Reason, w.SourceID, w.Status, w.DueAt, w.CreatedAt, w.RootID, w.Autonomous, w.AssignedBy)
 	return e
 }
 
-const workColumns = `id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,attempts,result,created_at,root_id,autonomous`
+const workColumns = `id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,attempts,result,created_at,root_id,autonomous,assigned_by`
 
 func scanWork(rows interface{ Scan(...any) error }) (Work, error) {
 	var w Work
-	e := rows.Scan(&w.ID, &w.ConversationID, &w.MemberID, &w.Kind, &w.Instruction, &w.Reason, &w.SourceID, &w.Status, &w.DueAt, &w.Attempts, &w.Result, &w.CreatedAt, &w.RootID, &w.Autonomous)
+	e := rows.Scan(&w.ID, &w.ConversationID, &w.MemberID, &w.Kind, &w.Instruction, &w.Reason, &w.SourceID, &w.Status, &w.DueAt, &w.Attempts, &w.Result, &w.CreatedAt, &w.RootID, &w.Autonomous, &w.AssignedBy)
 	return w, e
 }
 func (s *Store) Works(room string) ([]Work, error) {
@@ -478,8 +483,39 @@ func (s *Store) Claim(id string) (bool, error) {
 	return n == 1, e
 }
 func (s *Store) Finish(w Work, status, result string, due time.Time) error {
-	_, e := s.db.Exec(`UPDATE work SET status=?,result=CASE WHEN ?='' THEN result ELSE ? END,due_at=? WHERE id=? AND status='running'`, status, result, result, due.UnixMilli(), w.ID)
-	return e
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if result != "" && !strings.HasPrefix(result, identityRevisionRetry) {
+		// 人物编辑可能晚于本轮工作开始，甚至发生在网络请求返回错误的同时。
+		// 保存错误不能冲掉更新事务写下的先后关系，否则预算恢复会重放旧偏好。
+		var previous string
+		err := tx.QueryRow(`SELECT result FROM work WHERE id=?`, w.ID).Scan(&previous)
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(previous, identityRevisionRetry) {
+			result = identityRevisionRetry + "\n" + result
+		}
+	}
+	changed, err := tx.Exec(`UPDATE work SET status=?,result=CASE WHEN ?='' THEN result ELSE ? END,due_at=? WHERE id=? AND status='running'`, status, result, result, due.UnixMilli(), w.ID)
+	if err != nil {
+		return err
+	}
+	count, err := changed.RowsAffected()
+	if err != nil {
+		return err
+	}
+	// 正常研究在保存结果的事务里回报；运行异常也应让协调者知道实际阻碍。
+	// 只在本次确实结束工作时通知，被真人停止或已保存的任务不能被旧执行复活。
+	if count > 0 && (status == "failed" || status == "paused") {
+		if err := queueCoordinationReview(tx, w, status, result); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Memories(member, room string) ([]Memory, error) {

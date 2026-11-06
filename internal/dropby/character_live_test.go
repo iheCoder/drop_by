@@ -36,8 +36,8 @@ func TestLiveCharacterConversation(t *testing.T) {
 	defer s.Close()
 	// 单个验收最多使用这份独立账本中的 1.25 美元；保留生产选用的模型和推理强度。
 	// 不通过降低模型档次制造“快速”，也不清空既有账本后反复绕过预算。
-	if cfg.DailyBudgetMicros > 1_250_000 {
-		cfg.DailyBudgetMicros = 1_250_000
+	if cfg.WeeklyBudgetMicros > 1_250_000 {
+		cfg.WeeklyBudgetMicros = 1_250_000
 	}
 	cfg.MaxTurns = 4
 	people := []Member{

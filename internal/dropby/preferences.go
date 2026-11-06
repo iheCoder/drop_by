@@ -96,14 +96,20 @@ func applyPreferenceUpdates(tx *sql.Tx, c Conversation, sourceID string, updates
 		if err := json.Unmarshal([]byte(raw), &m); err != nil {
 			return err
 		}
+		profileChanged := m.Profile != strings.TrimSpace(update.Profile)
 		m.Profile = strings.TrimSpace(update.Profile)
 		if _, err := tx.Exec(`UPDATE members SET data=? WHERE id=?`, asJSON(m), m.ID); err != nil {
 			return err
 		}
 		// 人物说明属于同一个成员，其他房间中尚未发出的旧性格草稿也需要重新考虑。
 		// 当前房间的控制阶段尚未开始生成，保留其修订，后续会直接读取新说明。
-		if _, err := tx.Exec(`UPDATE conversations SET revision=revision+1 WHERE id<>? AND id IN (SELECT conversation_id FROM participants WHERE member_id=?)`, c.ID, m.ID); err != nil {
-			return err
+		if profileChanged {
+			if _, err := tx.Exec(`UPDATE conversations SET revision=revision+1 WHERE id<>? AND id IN (SELECT conversation_id FROM participants WHERE member_id=?)`, c.ID, m.ID); err != nil {
+				return err
+			}
+			if err := markIdentityRetry(tx, m.ID, c.ID); err != nil {
+				return err
+			}
 		}
 		// 自由回答只有被确认为相处偏好后才记作已回答；改聊其他内容保留 dismissed。
 		if _, err := tx.Exec(`UPDATE message_questions SET status='answered' WHERE response_id=? AND message_id IN (SELECT id FROM messages WHERE author_id=? AND conversation_id=?)`, sourceID, m.ID, c.ID); err != nil {
@@ -111,6 +117,17 @@ func applyPreferenceUpdates(tx *sql.Tx, c Conversation, sourceID string, updates
 		}
 	}
 	return nil
+}
+
+// 只有实际的人物说明更新才说明“原真人消息里的旧偏好已被更晚编辑覆盖”。
+// 把这件事实与资料写入放在同一事务，避免把协调者变化等普通修订误判为
+// 人物编辑，也避免请求恰好等待预算/退出时丢掉先后关系。
+func markIdentityRetry(tx *sql.Tx, memberID, exceptRoom string) error {
+	_, err := tx.Exec(`UPDATE work SET result=? || CASE WHEN result='' THEN '' ELSE char(10)||result END
+WHERE kind='chat' AND status IN ('pending','running','waiting_budget','paused') AND conversation_id<>?
+AND conversation_id IN (SELECT conversation_id FROM participants WHERE member_id=?)
+AND substr(result,1,length(?))<>?`, identityRevisionRetry, exceptRoom, memberID, identityRevisionRetry, identityRevisionRetry)
+	return err
 }
 
 var avatarIcons = []string{"orbit", "cat", "fox", "bear", "rabbit", "owl", "sprout", "flower", "sun", "moon", "cloud", "ghost"}
@@ -173,7 +190,8 @@ func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	contextChanged := (in.Name != nil && *in.Name != m.Name) || (in.Profile != nil && *in.Profile != m.Profile)
+	profileChanged := in.Profile != nil && *in.Profile != m.Profile
+	contextChanged := (in.Name != nil && *in.Name != m.Name) || profileChanged
 	if in.Name != nil {
 		m.Name = *in.Name
 	}
@@ -201,6 +219,12 @@ func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 	// 单独更换头像/颜色不影响成员正在想说的话，也不取消聊天中的后台行动。
 	if contextChanged {
 		if _, err = tx.Exec(`UPDATE conversations SET revision=revision+1 WHERE id IN (SELECT conversation_id FROM participants WHERE member_id=?)`, m.ID); err != nil {
+			a.fail(w, err)
+			return
+		}
+	}
+	if profileChanged {
+		if err := markIdentityRetry(tx, m.ID, ""); err != nil {
 			a.fail(w, err)
 			return
 		}

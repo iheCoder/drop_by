@@ -47,6 +47,25 @@ function groupAvatar(c) {
 function timeLabel(date) { return new Date(date).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }); }
 function dateLabel(date) { return new Date(date).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' }); }
 
+// 周边界由服务端统一计算；界面只呈现它返回的重置时刻，不按浏览器时区另算一周。
+function budgetResetLabel() {
+  const reset = new Date(state.usage?.reset_at);
+  if (!Number.isFinite(reset.getTime())) return '';
+  const timeZone = state.usage.time_zone;
+  const format = {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'};
+  try {
+    return `${reset.toLocaleString('zh-CN', {...format,...(timeZone ? {timeZone} : {})})}${timeZone ? `（${timeZone}）` : '（本地时间）'}`;
+  } catch {
+    // 未配置时区的服务可能返回 Local；仍显示同一绝对时刻，并明确这是浏览器本地时间。
+    return `${reset.toLocaleString('zh-CN', format)}（本地时间）`;
+  }
+}
+function weeklyBudgetNote() {
+  const usage = state.usage || {}, reset = budgetResetLabel();
+  const dollars = value => (Number(value || 0) / 1e6).toFixed(2);
+  return `<p class="budget-note">本周估算 $${dollars(usage.cost_micros)} / $${dollars(state.weekly_budget_micros)}${state.autonomous_weekly_budget_micros > 0 ? `<br>其中自发探索 $${dollars(usage.autonomous_cost_micros)} / $${dollars(state.autonomous_weekly_budget_micros)} · 为你回来聊天留有余量` : '<br>自发探索额度未开启'}${usage.week_start ? `<br>本周从 ${escapeHTML(String(usage.week_start).split('T')[0])} 开始` : ''}${reset ? `<br>额度重置 ${escapeHTML(reset)}` : ''}</p>`;
+}
+
 // 先转义，再只允许 HTTP(S) 链接；模型产出的 HTML、脚本和任意协议都不会执行。
 function richText(text) {
   const inline = value => escapeHTML(value).replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
@@ -79,7 +98,9 @@ async function refresh() {
     }
     initialLoad = false;
     renderSidebar();
-    const banner = !state.model_ready ? '模型服务尚未配置。设置服务端的 OPENAI_API_KEY 后重启即可聊天，创建成员仍然可用。' : state.usage.calls >= state.daily_calls || state.usage.cost_micros >= state.daily_budget_micros ? '今日运行预算已用完。聊天和成果仍可查看，未完工作会在下一预算日恢复。' : !state.search_ready ? '网页探索尚未接通，成员目前不能进行真实搜索或读取网页。' : '';
+    const budgetPause = state.usage.cost_micros >= state.weekly_budget_micros ? '本周运行预算已用完' : state.usage.calls >= state.weekly_calls ? '本周调用次数已达到上限' : '';
+    const reset = budgetResetLabel();
+    const banner = !state.model_ready ? '模型服务尚未配置。设置服务端的 OPENAI_API_KEY 后重启即可聊天，创建成员仍然可用。' : budgetPause ? `${budgetPause}。聊天和成果仍可查看，未完工作会在${reset || '下一预算周'}恢复。` : !state.search_ready ? '网页探索尚未接通，成员目前不能进行真实搜索或读取网页。' : '';
     $('service-banner').textContent = banner; $('service-banner').hidden = !banner;
     if (!selected || !state.conversations.some(c => c.id === selected)) selected = state.conversations[0]?.id || '';
     if (selected) await loadConversation(selected, true); else renderWelcome();
@@ -300,7 +321,7 @@ function renderActivity() {
   $('work-notice').hidden = !failed;
   $('work-notice').textContent = failed ? `${latest.member_id ? authorName(latest.member_id)+'的' : '上一次'}行动暂时停下了 · 查看已保存的进展 →` : '';
 }
-const actionLabels = {ask_question:'提出问题',search:'搜索网页',read_page:'阅读网页',save_artifact:'保存成果',remember:'更新经历',schedule_exploration:'安排探索',schedule_followup:'约好稍后再看',cancel_work:'放下不再需要的后续',read_history:'回顾聊天',read_artifact:'查看成果',read_tool_result:'核对已有材料',read_memory:'回顾经历',send_private:'发起私聊'};
+const actionLabels = {ask_question:'提出问题',search:'搜索网页',read_page:'阅读网页',save_artifact:'保存成果',remember:'更新经历',schedule_exploration:'安排探索',schedule_followup:'安排定时跟进',cancel_work:'放下不再需要的后续',read_history:'回顾聊天',read_artifact:'查看成果',read_tool_result:'核对已有材料',read_memory:'回顾经历',search_memory:'寻找相关经历',read_work:'查看工作进展',delegate_work:'委托朋友协作',send_private:'发起私聊'};
 const statusLabels = {pending:'已安排',running:'进行中',waiting_budget:'等待预算恢复',done:'已完成',failed:'暂时中断',paused:'已暂停',stopped:'已停止',superseded:'已根据新消息调整',succeeded:'已完成',cancelled:'已被新消息打断'};
 function showActivity(scroll = true) {
   if (!roomData) return;
@@ -315,7 +336,7 @@ function showActivity(scroll = true) {
     const label = action?.label || focus?.body || (!p ? '还没有参与记录' : p.action==='pass' ? '暂时没有补充' : p.action==='revisit' ? '想稍后再看看' : p.action==='error' ? '上次判断未完成' : p.selected ? (p.action==='explore' ? '已安排探索' : '最近参与了交流') : '有想法，尚未发言');
     return `<div class="member-activity">${avatar(member(id),true)}<div><strong>${escapeHTML(authorName(id))}</strong><span>${escapeHTML(label)}</span>${p ? `<details data-detail="person-${id}"><summary>查看最近参与记录</summary><p>${escapeHTML(p.action === 'pass' ? '这次选择保持安静。' : p.action === 'error' ? '这次参与判断未完成。' : p.action === 'explore' ? '这次选择先探索。' : p.action === 'revisit' ? '这次想稍后再看看。' : '这次选择参与交流。')}</p><small>${timeLabel(p.created_at)}</small></details>` : ''}</div></div>`;
   }).join('');
-  showPanel('最近动态', '', `<p class="background-note">浏览器关掉后，服务仍会继续探索。电脑睡眠或服务停止时会暂停，重新运行后恢复。新消息、约好的后续和闲时好奇都可以带来一次机会，是否继续由朋友们自己决定。</p><h3 class="section-label">朋友们</h3>${people}<h3 class="section-label">后台行动</h3>${jobs.filter(w=>['research','revisit'].includes(w.kind) || ['failed','paused','waiting_budget'].includes(w.status)).slice(0,12).map(w=>`<details class="work-item" data-detail="${w.id}"><summary><span>${escapeHTML(w.member_id ? authorName(w.member_id) : '这段交流')}</span><span class="status ${w.status}">${escapeHTML(statusLabels[w.status]||w.status)}</span><strong>${escapeHTML(w.instruction.slice(0,90))}</strong></summary><p>${escapeHTML(w.result || w.reason || '还没有执行结果')}</p>${w.status==='pending' ? `<small>下次机会 ${new Date(w.due_at).toLocaleString('zh-CN')}</small>`:''}${['failed','paused'].includes(w.status) ? `<button class="quiet" data-action="continue-work" data-id="${w.id}">在聊天中继续这个方向 →</button>`:''}</details>`).join('') || '<p class="empty-note">暂时没有安排研究。普通聊天不必变成任务。</p>'}<h3 class="section-label">实际做过的事</h3>${actions.slice(0,15).map(a=>`<button class="action-item" data-action="evidence" data-id="${a.id}"><span>${escapeHTML(authorName(a.member_id))} · ${escapeHTML(actionLabels[a.name]||a.name)}</span><small>${timeLabel(a.created_at)} · ${escapeHTML(statusLabels[a.status]||a.status)} ↗</small></button>`).join('')||'<p class="empty-note">还没有工具行动。</p>'}<p class="budget-note">今日估算 $${(state.usage.cost_micros/1e6).toFixed(2)} / $${(state.daily_budget_micros/1e6).toFixed(2)}${state.autonomous_daily_budget_micros ? `<br>其中自发探索 $${((state.usage.autonomous_cost_micros || 0)/1e6).toFixed(2)} / $${(state.autonomous_daily_budget_micros/1e6).toFixed(2)} · 为你回来聊天留有余量` : ''}</p>`, 'activity');
+  showPanel('最近动态', '', `<p class="background-note">浏览器关掉后，服务仍会继续探索。电脑睡眠或服务停止时会暂停，重新运行后恢复。新消息、约好的后续和闲时好奇都可以带来一次机会，是否继续由朋友们自己决定。</p><h3 class="section-label">朋友们</h3>${people}<h3 class="section-label">后台行动</h3>${jobs.filter(w=>['research','revisit'].includes(w.kind) || ['failed','paused','waiting_budget'].includes(w.status)).slice(0,12).map(w=>`<details class="work-item" data-detail="${w.id}"><summary><span>${escapeHTML(w.member_id ? authorName(w.member_id) : '这段交流')}</span><span class="status ${w.status}">${escapeHTML(statusLabels[w.status]||w.status)}</span><strong>${escapeHTML(w.instruction.slice(0,90))}</strong></summary>${w.assigned_by ? `<div class="work-assignment">${escapeHTML(authorName(w.assigned_by))} 委托 · ${escapeHTML(new Date(w.created_at).toLocaleString('zh-CN'))}</div>` : ''}<p>${escapeHTML(w.result || w.reason || '还没有执行结果')}</p>${w.status==='pending' ? `<small>${w.kind === 'revisit' ? '下次考虑' : '安排执行'} ${new Date(w.due_at).toLocaleString('zh-CN')}</small>`:''}${['failed','paused'].includes(w.status) ? `<button class="quiet" data-action="continue-work" data-id="${w.id}">在聊天中继续这个方向 →</button>`:''}</details>`).join('') || '<p class="empty-note">暂时没有安排研究。普通聊天不必变成任务。</p>'}<h3 class="section-label">实际做过的事</h3>${actions.slice(0,15).map(a=>`<button class="action-item" data-action="evidence" data-id="${a.id}"><span>${escapeHTML(authorName(a.member_id))} · ${escapeHTML(actionLabels[a.name]||a.name)}</span><small>${timeLabel(a.created_at)} · ${escapeHTML(statusLabels[a.status]||a.status)} ↗</small></button>`).join('')||'<p class="empty-note">还没有工具行动。</p>'}${weeklyBudgetNote()}`, 'activity');
   if (!scroll) { $('panel-content').scrollTop = top; for (const d of $('panel-content').querySelectorAll('details[data-detail]')) d.open = expanded.includes(d.dataset.detail); }
 }
 function newGroup() {
@@ -337,17 +358,60 @@ function roomDetails(scroll = true) {
   const c = roomData.conversation;
   if (c.kind === 'direct') { profile(c.member_ids[0]); return; }
   const top = $('panel-content').scrollTop;
-  showPanel('聊天详情', '', `<div class="room-details-head">${groupAvatar(c)}<h3>${escapeHTML(c.name)}</h3><p>你和 ${c.member_ids.map(authorName).map(escapeHTML).join('、')}</p></div><h3 class="section-label">在这里的朋友</h3><div class="room-members">${c.member_ids.map(id => {
+  const members = c.member_ids.map(id => {
     const m = member(id), focus = roomData.member_states?.find(s => s.member_id === id);
-    return `<button class="person-button" data-action="profile" data-id="${id}">${avatar(m)}<span class="person-copy"><span class="person-name">${escapeHTML(authorName(id))}</span><span class="person-note">${escapeHTML(focus?.body || m?.direction || '边聊，边认识')}</span></span>${icon('chevron-right')}</button>`;
-  }).join('')}</div><div class="panel-nav"><button data-action="activity">${icon('activity')}朋友动态${icon('chevron-right')}</button><button data-action="artifacts">${icon('notebook')}聊天成果${icon('chevron-right')}</button></div><p class="profile-caption">有的人爱接话，有的人先观察。安静也可以是一次自己的选择。</p>`, 'room');
+    return `<button class="person-button" data-action="profile" data-id="${id}">${avatar(m)}<span class="person-copy"><span class="person-name">${escapeHTML(authorName(id))}${id === c.coordinator_id ? '<span class="coordinator-badge">协调者</span>' : ''}</span><span class="person-note">${escapeHTML(focus?.body || m?.direction || '边聊，边认识')}</span></span>${icon('chevron-right')}</button>`;
+  }).join('');
+  const current = c.coordinator_id ? `目前由 ${authorName(c.coordinator_id)} 协调这个群。` : '目前由大家各自参与，没有指定协调者。';
+  const existing = $('coordinator-form');
+  // 后台动态只更新阅读内容，不能重建正在选择的下拉框或丢掉尚未保存的选择。
+  if (!scroll && existing?.dataset.room === c.id) {
+    $('room-detail-name').textContent = c.name;
+    $('room-detail-people').textContent = `你和 ${c.member_ids.map(authorName).join('、')}`;
+    if ($('room-members').innerHTML !== members && !$('room-members').contains(document.activeElement)) $('room-members').innerHTML = members;
+    $('coordinator-current').textContent = current;
+    const select = existing.elements.member_id;
+    if (existing.dataset.saving !== 'true' && document.activeElement !== select && select.value === existing.dataset.savedId) {
+      // 只有用户未改动的表单才跟随服务端设置；另一个窗口的修改不覆盖本地未保存选择。
+      select.value = c.coordinator_id || '';
+      existing.dataset.savedId = select.value;
+      existing.querySelector('button[type=submit]').disabled = true;
+    }
+    $('panel-content').scrollTop = top;
+    return;
+  }
+  showPanel('聊天详情', '', `<div class="room-details-head">${groupAvatar(c)}<h3 id="room-detail-name">${escapeHTML(c.name)}</h3><p id="room-detail-people">你和 ${c.member_ids.map(authorName).map(escapeHTML).join('、')}</p></div><h3 class="section-label">在这里的朋友</h3><div class="room-members" id="room-members">${members}</div><form id="coordinator-form" class="coordinator-form" data-room="${escapeHTML(c.id)}" data-saved-id="${escapeHTML(c.coordinator_id || '')}"><label class="field" for="coordinator-select"><span>群里的协调者</span><select id="coordinator-select" name="member_id" aria-describedby="coordinator-hint coordinator-current"><option value="">各自参与</option>${c.member_ids.map(id => `<option value="${escapeHTML(id)}" ${id === c.coordinator_id ? 'selected' : ''}>${escapeHTML(authorName(id))}</option>`).join('')}</select><small class="field-hint" id="coordinator-hint">让一位朋友帮忙分工、跟进和衔接进展。其他人仍按自己的特质参与，也可以提出不同意见。只在这个群生效。</small></label><p class="coordinator-current" id="coordinator-current">${escapeHTML(current)}</p><div class="form-error" hidden role="alert"></div><div class="coordinator-save"><span class="form-status" role="status"></span><button class="secondary" type="submit" disabled>保存设置</button></div></form><div class="panel-nav"><button data-action="activity">${icon('activity')}朋友动态${icon('chevron-right')}</button><button data-action="artifacts">${icon('notebook')}聊天成果${icon('chevron-right')}</button></div><p class="profile-caption">有的人爱接话，有的人先观察。安静也可以是一次自己的选择。</p>`, 'room');
   if (!scroll) $('panel-content').scrollTop = top;
+}
+
+async function saveCoordinator(form) {
+  if (form.dataset.saving === 'true') return;
+  const room = form.dataset.room, select = form.elements.member_id, id = select.value;
+  const button = form.querySelector('button[type=submit]'), status = form.querySelector('.form-status');
+  form.dataset.saving = 'true'; select.disabled = true; button.disabled = true;
+  button.textContent = '正在保存…'; form.querySelector('.form-error').hidden = true; status.textContent = '';
+  try {
+    await api(`/api/conversations/${room}/coordinator`, {method:'PATCH',body:JSON.stringify({member_id:id})});
+    // 保存仅更新群设置，不改写聊天草稿；用户若已关闭或切换侧栏，也不把它重新打开。
+    if (roomData?.conversation.id === room) roomData.conversation.coordinator_id = id;
+    const c = state.conversations.find(c => c.id === room); if (c) c.coordinator_id = id;
+    if (form.isConnected) { form.dataset.savedId = id; status.textContent = '已保存'; }
+    await refresh();
+  } catch (error) {
+    if (form.isConnected) formError(form,error); else toast(error.message);
+  } finally {
+    if (form.isConnected) {
+      form.dataset.saving = 'false'; select.disabled = false; button.textContent = '保存设置';
+      button.disabled = select.value === form.dataset.savedId;
+    }
+  }
 }
 // 工具清单只展示当前真正可用的能力；不让未接通的网页服务看起来已经可用。
 function capabilities(m) {
   const labels = ['对话选择题', '文字与网页创作'];
   if (state.search_ready && m.tools?.includes('search')) labels.push('搜索与阅读');
-  labels.push('记住经历', '稍后继续');
+  labels.push('检索与记住经历', '定时跟进');
+  if (roomData?.conversation.kind === 'group' && roomData.conversation.coordinator_id === m.id) labels.push('协调这个群');
   return `<div class="capability-block"><h3 class="section-label">可以一起做</h3><div class="capability-list">${labels.map(label => `<span>${escapeHTML(label)}</span>`).join('')}</div>`;
 }
 function artifactCard(a) {
@@ -446,6 +510,9 @@ document.addEventListener('click', async event => {
 
 document.addEventListener('submit', async event => {
   const form = event.target;
+  if (form.id === 'coordinator-form') {
+    event.preventDefault(); await saveCoordinator(form); return;
+  }
   if (!['member-form','profile-form','group-form'].includes(form.id)) return;
   event.preventDefault(); if (avatarLoading && form.id !== 'group-form') return;
   const reset = pending(form, form.id === 'profile-form' ? '正在保存…' : '正在准备…');
@@ -469,6 +536,12 @@ document.addEventListener('submit', async event => {
 
 // 只发送裁剪后的缩略图，原始照片和 EXIF 信息保留在本机。
 document.addEventListener('change', async event => {
+  if (event.target.id === 'coordinator-select') {
+    const form = event.target.form, changed = event.target.value !== form.dataset.savedId;
+    form.querySelector('button[type=submit]').disabled = !changed;
+    form.querySelector('.form-error').hidden = true;
+    form.querySelector('.form-status').textContent = changed ? '修改尚未保存' : '';
+  }
   if (event.target.id === 'avatar-file') {
     const file = event.target.files[0], form = event.target.closest('form'); if (!file) return;
     const request = ++avatarRequest, save = form.querySelector('button[type=submit]');

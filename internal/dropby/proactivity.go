@@ -15,12 +15,28 @@ type autonomyKey struct{}
 // 每位成员每个根任务最多安排六次实际后续；分享已完成结果不占这个名额。
 const maxChainedActions = 6
 
+// 自然语言里的“明早九点”由模型根据当前时区转成绝对时刻，执行层只核对
+// 时间格式与真实未来时间，不用字符串猜日期。现有相对预约仍然兼容。
+func followupTime(at time.Time, delay int, absolute string) (time.Time, error) {
+	if absolute == "" {
+		return at.Add(time.Duration(max(60, min(delay, 604800))) * time.Second), nil
+	}
+	if delay != 0 {
+		return time.Time{}, fmt.Errorf("定时时刻和相对延时只能填写一个")
+	}
+	due, err := time.Parse(time.RFC3339, absolute)
+	if err != nil || !due.After(at) {
+		return time.Time{}, fmt.Errorf("定时需要带时区的未来时刻，请重新核对时间")
+	}
+	return due, nil
+}
+
 func autonomousWork(w Work) bool {
 	return w.Autonomous || w.Kind == "revisit" || (w.Kind != "chat" && w.SourceID == "")
 }
 
 var errAutonomyLimit = errors.New("这次自主交流已达到运行边界，保留进展并安静结束")
-var errAutonomyBudget = fmt.Errorf("今日自主探索额度已用完，真人聊天仍可继续：%w", ErrBudget)
+var errAutonomyBudget = fmt.Errorf("本周自主探索额度不足，真人聊天仍可继续：%w", ErrBudget)
 
 func autonomyRoot(ctx context.Context) string {
 	root, _ := ctx.Value(autonomyKey{}).(string)

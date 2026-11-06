@@ -16,7 +16,7 @@ func TestAutonomousBudgetReservesForegroundAndSettles(t *testing.T) {
 	// 20 个后台请求争用 50 个费用单位，只能成功 5 次；前台仍能使用余下总额度。
 	s, _, _ := fixture(t)
 	cfg := testConfig()
-	cfg.DailyBudgetMicros = 300
+	cfg.WeeklyBudgetMicros = 300
 	cfg.AutonomousBudgetMicros = 50
 	ctx := context.WithValue(context.Background(), autonomyKey{}, "root")
 	var successes atomic.Int32

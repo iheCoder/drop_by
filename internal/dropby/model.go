@@ -3,9 +3,7 @@ package dropby
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -56,66 +54,105 @@ type HTTPModel struct {
 }
 
 type Usage struct {
+	WeekStart            string `json:"week_start"`
+	ResetAt              string `json:"reset_at"`
+	TimeZone             string `json:"time_zone"`
 	AutonomousCostMicros int64  `json:"autonomous_cost_micros"`
-	Day                  string `json:"day"`
 	Calls                int    `json:"calls"`
 	CostMicros           int64  `json:"cost_micros"`
 	InputTokens          int    `json:"input_tokens"`
 	OutputTokens         int    `json:"output_tokens"`
 }
 
-// 预算按上海日期结算，重启不会清空。请求前按输入字节数和最大输出 token 预留，
-// 并发请求不能各自以为自己还有完整余额。未知结果保留预留额，宁可少用也不越界。
-func budgetDay() string {
-	return time.Now().In(time.FixedZone("Asia/Shanghai", 8*3600)).Format("2006-01-02")
+// 账本仍按日期保存，让升级前本周的真实消费自动计入新额度，不清零、不复制账目。
+// 预算范围按服务进程本地时区的周一 00:00 计算；AddDate 保留夏令时切换时的本地午夜。
+func budgetDay() string { return time.Now().Format("2006-01-02") }
+
+func budgetWeek(at time.Time) (time.Time, time.Time) {
+	midnight := time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, at.Location())
+	daysSinceMonday := (int(at.Weekday()) + 6) % 7
+	start := midnight.AddDate(0, 0, -daysSinceMonday)
+	return start, start.AddDate(0, 0, 7)
 }
-func nextBudgetDay() time.Time {
-	t := time.Now().In(time.FixedZone("Asia/Shanghai", 8*3600))
-	return time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, t.Location())
+
+func nextBudgetWeek() time.Time {
+	_, end := budgetWeek(time.Now())
+	return end
 }
+
+// 本次请求放不下，并不代表额度已经用完。错误保留准确余额和预留要求，
+// 同时仍能被调度器按 ErrBudget 识别；后台子上限也能单独识别而不阻断真人交流。
+type budgetRejection struct {
+	message    string
+	autonomous bool
+}
+
+func (e *budgetRejection) Error() string { return e.message }
+func (e *budgetRejection) Unwrap() error { return ErrBudget }
+func (e *budgetRejection) Is(target error) bool {
+	return e.autonomous && target == errAutonomyBudget
+}
+
 func (s *Store) Reserve(c Config, cost int64) (string, error) {
 	return s.ReserveContext(context.Background(), c, cost)
 }
 
-// 同一次请求同时预留总预算和自主预算；并发检查也不能吃掉留给真人的额度。
+// 同一次请求在事务中汇总本周全部日期，再同时预留总预算和自主预算。
+// 保留日期作为结算凭据，跨周返回的响应仍结算到它实际开始调用的那一天。
 func (s *Store) ReserveContext(ctx context.Context, c Config, cost int64) (string, error) {
-	day := budgetDay()
+	return s.reserveContextAt(ctx, c, cost, time.Now())
+}
+
+func (s *Store) reserveContextAt(ctx context.Context, c Config, cost int64, at time.Time) (string, error) {
+	at = at.In(time.Local)
+	day := at.Format("2006-01-02")
+	start, end := budgetWeek(at)
 	autonomous := autonomyRoot(ctx) != ""
 	var autoCost int64
 	if autonomous {
 		autoCost = cost
 	}
-	tx, e := s.db.Begin()
-	if e != nil {
-		return day, e
+	if cost < 0 {
+		return day, fmt.Errorf("预算预留不能为负数")
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return day, err
 	}
 	defer tx.Rollback()
-	if _, e = tx.Exec(`INSERT OR IGNORE INTO usage(day) VALUES(?)`, day); e != nil {
-		return day, e
+	// 先持有写事务，避免多个调用先读到同一个旧余额再各自获准。
+	if _, err = tx.Exec(`INSERT OR IGNORE INTO usage(day) VALUES(?)`, day); err != nil {
+		return day, err
 	}
-	r, e := tx.Exec(`UPDATE usage SET calls=calls+1,cost_micros=cost_micros+?,autonomous_cost_micros=autonomous_cost_micros+? WHERE day=? AND calls<? AND cost_micros+?<=? AND (?=0 OR autonomous_cost_micros+?<=?)`, cost, autoCost, day, c.DailyCalls, cost, c.DailyBudgetMicros, autoCost, autoCost, c.AutonomousBudgetMicros)
-	if e != nil {
-		return day, e
+	var calls int
+	var total, background int64
+	if err = tx.QueryRow(`SELECT coalesce(sum(calls),0),coalesce(sum(cost_micros),0),coalesce(sum(autonomous_cost_micros),0) FROM usage WHERE day>=? AND day<?`, start.Format("2006-01-02"), end.Format("2006-01-02")).Scan(&calls, &total, &background); err != nil {
+		return day, err
 	}
-	n, e := r.RowsAffected()
-	if e != nil {
-		return day, e
+
+	// 先判断整体额度，避免总额度也不足时误报“只有自主探索受限”。
+	reset := end.Format("1月2日 15:04 MST")
+	if calls >= c.WeeklyCalls {
+		return day, &budgetRejection{message: fmt.Sprintf("本周已达到 %d 次调用上限，未完工作已保留，%s 恢复。", c.WeeklyCalls, reset)}
 	}
-	if n == 0 {
-		if autonomous {
-			var calls int
-			var total, background int64
-			if err := tx.QueryRow(`SELECT calls,cost_micros,autonomous_cost_micros FROM usage WHERE day=?`, day).Scan(&calls, &total, &background); err != nil {
-				return day, err
-			}
-			if calls < c.DailyCalls && total+cost <= c.DailyBudgetMicros && background+cost > c.AutonomousBudgetMicros {
-				return day, errAutonomyBudget
-			}
-		}
-		return day, ErrBudget
+	remaining := max(int64(0), c.WeeklyBudgetMicros-total)
+	if remaining == 0 {
+		return day, &budgetRejection{message: fmt.Sprintf("本周 $%.2f 运行预算已用完，未完工作已保留，%s 恢复。", float64(c.WeeklyBudgetMicros)/1e6, reset)}
+	}
+	if cost > remaining {
+		return day, &budgetRejection{message: fmt.Sprintf("本周可用预算还剩 $%.3f，本次调用需预留 $%.3f，暂时无法开始；未完工作已保留，%s 恢复周额度。", float64(remaining)/1e6, float64(cost)/1e6, reset)}
+	}
+	if autonomous && cost > max(int64(0), c.AutonomousBudgetMicros-background) {
+		autoRemaining := max(int64(0), c.AutonomousBudgetMicros-background)
+		return day, &budgetRejection{message: fmt.Sprintf("本周自主探索可用额度还剩 $%.3f，本次需预留 $%.3f，已保留后续；真人聊天仍可使用总预算余量，%s 恢复自主额度。", float64(autoRemaining)/1e6, float64(cost)/1e6, reset), autonomous: true}
+	}
+	if _, err = tx.Exec(`UPDATE usage SET calls=calls+1,cost_micros=cost_micros+?,autonomous_cost_micros=autonomous_cost_micros+? WHERE day=?`, cost, autoCost, day); err != nil {
+		return day, err
 	}
 	return day, tx.Commit()
 }
+
 func (s *Store) Settle(day string, reserved, actual int64, input, output int) error {
 	return s.SettleContext(context.Background(), day, reserved, actual, input, output)
 }
@@ -127,13 +164,15 @@ func (s *Store) SettleContext(ctx context.Context, day string, reserved, actual 
 	_, e := s.db.Exec(`UPDATE usage SET cost_micros=max(0,cost_micros-?+?),autonomous_cost_micros=max(0,autonomous_cost_micros+?),input_tokens=input_tokens+?,output_tokens=output_tokens+? WHERE day=?`, reserved, actual, autoDelta, input, output, day)
 	return e
 }
-func (s *Store) Usage() (Usage, error) {
-	u := Usage{Day: budgetDay()}
-	e := s.db.QueryRow(`SELECT calls,cost_micros,input_tokens,output_tokens,autonomous_cost_micros FROM usage WHERE day=?`, u.Day).Scan(&u.Calls, &u.CostMicros, &u.InputTokens, &u.OutputTokens, &u.AutonomousCostMicros)
-	if errors.Is(e, sql.ErrNoRows) {
-		e = nil
-	}
-	return u, e
+
+func (s *Store) Usage() (Usage, error) { return s.weeklyUsageAt(time.Now()) }
+
+func (s *Store) weeklyUsageAt(at time.Time) (Usage, error) {
+	at = at.In(time.Local)
+	start, end := budgetWeek(at)
+	u := Usage{WeekStart: start.Format(time.RFC3339), ResetAt: end.Format(time.RFC3339), TimeZone: at.Location().String()}
+	err := s.db.QueryRow(`SELECT coalesce(sum(calls),0),coalesce(sum(cost_micros),0),coalesce(sum(input_tokens),0),coalesce(sum(output_tokens),0),coalesce(sum(autonomous_cost_micros),0) FROM usage WHERE day>=? AND day<?`, start.Format("2006-01-02"), end.Format("2006-01-02")).Scan(&u.Calls, &u.CostMicros, &u.InputTokens, &u.OutputTokens, &u.AutonomousCostMicros)
+	return u, err
 }
 
 type modelResult struct {
@@ -180,15 +219,15 @@ func (m *HTTPModel) Complete(ctx context.Context, messages []ChatMessage, defs [
 	}
 	endpoint, _ := url.Parse(m.Config.BaseURL)
 	useResponses := endpoint.Hostname() == "api.openai.com" || (m.Config.Reasoning != "" && m.Config.Reasoning != "none" && strings.HasPrefix(m.Config.Model, "gpt-5"))
-	encoded, e := json.Marshal(body)
-	// 文本字节用于保守估算；不把加密推理的传输编码误算成用户上下文。
-	inputEstimate := len(encoded)
-	for _, message := range messages {
-		inputEstimate += message.OutputTokens
-	}
-	if useResponses {
-		encoded, e = m.responseBody(messages, defs, jsonOutput)
-	}
+	// 在模型边界统一检查完整请求，参与判断、行动和发布核对都不能绕过此处。
+	// 只折叠已经存档的工具正文；身份、目标、原话以及调用/推理协议保持完整。
+	encoded, inputEstimate, e := boundedRequest(messages, m.Config.ContextTokenBudget, m.Config.MaxOutputTokens, func(input []ChatMessage) ([]byte, error) {
+		if useResponses {
+			return m.responseBody(input, defs, jsonOutput)
+		}
+		body["messages"] = input
+		return json.Marshal(body)
+	})
 	if e != nil {
 		return ChatMessage{}, e
 	}

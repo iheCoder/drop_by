@@ -37,6 +37,7 @@ func NewHandler(engine *Engine) http.Handler {
 	mux.HandleFunc("POST /api/members/{id}/preferences", a.preferences)
 	mux.HandleFunc("POST /api/conversations", a.createConversation)
 	mux.HandleFunc("GET /api/conversations/{id}", a.conversation)
+	mux.HandleFunc("PATCH /api/conversations/{id}/coordinator", a.coordinator)
 	mux.HandleFunc("POST /api/conversations/{id}/messages", a.sendMessage)
 	mux.HandleFunc("GET /api/artifacts/{id}", a.artifact)
 	mux.HandleFunc("GET /api/artifacts/{id}/preview", a.artifactPreview)
@@ -138,7 +139,7 @@ func (a *API) state(w http.ResponseWriter, r *http.Request) {
 		activities = append(activities, activity)
 	}
 	a.engine.mu.Unlock()
-	respond(w, 200, map[string]any{"members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "daily_budget_micros": a.engine.Config.DailyBudgetMicros, "autonomous_daily_budget_micros": a.engine.Config.AutonomousBudgetMicros, "daily_calls": a.engine.Config.DailyCalls, "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
+	respond(w, 200, map[string]any{"members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "weekly_budget_micros": a.engine.Config.WeeklyBudgetMicros, "autonomous_weekly_budget_micros": a.engine.Config.AutonomousBudgetMicros, "weekly_calls": a.engine.Config.WeeklyCalls, "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
 }
 func (a *API) questions(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -399,6 +400,29 @@ func (a *API) conversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, 200, map[string]any{"conversation": c, "messages": messages, "work": jobs, "artifacts": artifacts, "participation": decisions, "tool_runs": runs, "member_states": memberStates, "has_earlier": len(messages) == 60})
+}
+
+func (a *API) coordinator(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		MemberID string `json:"member_id"`
+	}
+	if !readBody(w, r, &in) {
+		return
+	}
+	c, err := a.engine.Store.Conversation(r.PathValue("id"))
+	if err != nil {
+		respond(w, 404, map[string]string{"error": "聊天不存在"})
+		return
+	}
+	// 修订号会让旧职责的副作用失效，并由现有 ErrStale 分支重读上下文。
+	// 不以普通取消中断聊天，否则会把尚未回答的真人问题误标为已被新消息替代。
+	updated, err := a.engine.Store.SetCoordinator(c, in.MemberID)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	a.engine.Hub.Publish(c.ID)
+	respond(w, 200, updated)
 }
 func (a *API) sendMessage(w http.ResponseWriter, r *http.Request) {
 	c, err := a.engine.Store.Conversation(r.PathValue("id"))
