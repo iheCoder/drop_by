@@ -32,6 +32,7 @@ func textField(desc string) any { return map[string]string{"type": "string", "de
 
 func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition {
 	defs := []ToolDefinition{
+		definition("organize_context", "整理本人在当前场景的工作上下文。用续接便笺和选中的完整原文替换旧窗口，随后继续行动；不删除历史、不修改人物或任务状态。省略引用则只留便笺。", map[string]any{"note": textField("接下来仍有用的理解、分歧、更正或未完打算，自由撰写"), "keep_message_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "需要继续保留完整原话的当前聊天消息 ID"}, "keep_tool_run_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "需要继续保留完整结果的可见工具记录 ID"}}, "note"),
 		definition("send_message", "发送消息后可继续行动。可发到自己所在的聊天；个人活动省略目的地时发给真人私聊。", map[string]any{"conversation_id": textField("目的聊天 ID，普通聊天省略则发在当前聊天"), "message": textField("自己的消息"), "reply_to": textField("可选的目的聊天消息 ID"), "evidence": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "可选成果 tool_run ID"}, "notify": map[string]any{"type": "boolean", "description": "额外系统通知，默认 false"}}, "message"),
 		definition("read_tool_result", "分段查看当前聊天已保存的完整工具结果，供旧正文折叠后核对。", map[string]any{"id": textField("真实 tool_run ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}, "id"),
 		definition("read_memory", "读取个人记忆及来源；默认最新版本，revision 可指定历史版本。", map[string]any{"id": textField("已有记忆 ID"), "revision": map[string]any{"type": "integer", "minimum": 0, "description": "通常省略；回查历史版本时才填写"}}, "id"),
@@ -176,7 +177,7 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 		}
 	}
 	if t.Activity != nil {
-		labels := map[string]string{"search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_message": "正在发送消息", "read_conversation": "正在看聊天近况", "send_private": "正在准备私聊", "read_history": "正在翻阅聊天记录", "read_artifact": "正在查看成果", "read_tool_result": "正在核对已有材料", "read_memory": "正在回顾经历", "search_memory": "正在找回相关经历", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
+		labels := map[string]string{"organize_context": "正在整理思路", "search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_message": "正在发送消息", "read_conversation": "正在看聊天近况", "send_private": "正在准备私聊", "read_history": "正在翻阅聊天记录", "read_artifact": "正在查看成果", "read_tool_result": "正在核对已有材料", "read_memory": "正在回顾经历", "search_memory": "正在找回相关经历", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
 		t.Activity(c.ID, m.ID, labels[call.Function.Name])
 	}
 	var result any
@@ -273,6 +274,8 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 	}
 
 	switch call.Function.Name {
+	case "organize_context":
+		return t.Store.organizeContext(c, m, call.Function.Arguments)
 	case "send_message":
 		return t.sendMessage(ctx, c, m, w, call, args.ConversationID, args.Message, args.ReplyTo, args.Evidence, args.Notify)
 	case "read_conversation":
@@ -560,7 +563,7 @@ func decode(s string, out any) { _ = json.Unmarshal([]byte(s), out) }
 // 这些现有工具只读取数据；结果未落盘的读取可以重做。写入/发送不走这条路径。
 func readOnlyTool(name string) bool {
 	switch name {
-	case "search", "read_page", "read_conversation", "read_history", "read_memory", "search_memory", "read_work", "read_artifact", "read_tool_result":
+	case "organize_context", "search", "read_page", "read_conversation", "read_history", "read_memory", "search_memory", "read_work", "read_artifact", "read_tool_result":
 		return true
 	}
 	return false

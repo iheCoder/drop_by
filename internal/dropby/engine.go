@@ -78,15 +78,16 @@ func (e *Engine) Submit(m Message) error {
 	if err := e.Store.AddUserMessage(m, e.Config.ExploreInterval); err != nil {
 		return err
 	}
-	if cancel := e.running[m.ConversationID]; cancel != nil {
-		cancel()
-	}
-	// 真人正在对这几位成员说话时，让他们先接当前交流。个人行动断点保留，
-	// 稍后接着做；不停止其他成员，也不因为闲时网络请求让真人一直等待。
-	if c, err := e.Store.Conversation(m.ConversationID); err == nil {
-		for _, member := range c.MemberIDs {
-			if cancel := e.running["member:"+member]; cancel != nil {
-				cancel()
+	// 只有明确停止立即取消执行；普通补充留给成员接续，不浪费已开始的推理。
+	if discussion, research := explicitStop(m.Body); discussion || research {
+		if cancel := e.running[m.ConversationID]; cancel != nil {
+			cancel()
+		}
+		if c, err := e.Store.Conversation(m.ConversationID); err == nil {
+			for _, member := range c.MemberIDs {
+				if cancel := e.running["member:"+member]; cancel != nil {
+					cancel()
+				}
 			}
 		}
 	}
@@ -188,8 +189,8 @@ func (e *Engine) dispatch(ctx context.Context) {
 // 不按 attempts 粗略跳过偏好：首次就遇到预算不足的工作，恢复后仍须理解用户设定。
 const identityRevisionRetry = "人物设定已更新；沿用最新人物说明继续原消息。"
 
-// AddUserMessage 会在同一事务中替代旧的非研究机会，Finish 也只更新 running，
-// 所以检查之后恰好又来新消息时，不会把已被替代的工作重新复活。
+// 用户停止与资料编辑可使执行失效；普通消息不会撤销运行中的机会。
+// Finish 只更新 running，因此已被显式停止或替代的工作不会被重新复活。
 func (e *Engine) reconsiderAfterStale(w Work) (bool, string, error) {
 	var status, latestHuman, savedResult string
 	err := e.Store.db.QueryRow(`SELECT status,coalesce((SELECT id FROM messages WHERE conversation_id=? AND author_id='user' ORDER BY seq DESC LIMIT 1),''),result FROM work WHERE id=?`, w.ConversationID, w.ID).Scan(&status, &latestHuman, &savedResult)
@@ -323,6 +324,12 @@ guidance 只记录真人明确提出且仍有效的方向与更正。模型自�
 		} else if control.Research == "resume" {
 			research = false
 		}
+		// 控制修订只在授权、方向或工作发生真实变化时提升；普通接话不使旧草稿失效。
+		if discussion != c.DiscussionPaused || research != c.ResearchPaused || control.Guidance != c.Guidance || len(control.StopIDs)+len(control.CompleteIDs)+len(control.ResumeIDs)+len(control.Updates) > 0 {
+			if _, err := tx.Exec(`UPDATE conversations SET revision=revision+1 WHERE id=?`, c.ID); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.Exec(`UPDATE conversations SET discussion_paused=?,research_paused=?,guidance=? WHERE id=?`, discussion, research, clip(control.Guidance, 5000), c.ID); err != nil {
 			return err
 		}
@@ -384,16 +391,12 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 		return err
 	}
 	if w.Kind == "chat" {
-		revision := c.Revision
 		if err = e.applyControl(ctx, c, w); err != nil {
 			return err
 		}
 		c, err = e.Store.Conversation(c.ID)
 		if err != nil {
 			return err
-		}
-		if c.Revision != revision {
-			return ErrStale
 		}
 		w, err = e.Store.ReadWork(c.ID, w.ID)
 		if err != nil {
@@ -424,39 +427,27 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 const memberPrinciples = `你是 drop_by 的成员。以自己的特质、经历、当前状态和目标参与交流。
 self 是你，people 是其他成员。最新真人指示与更正优先于旧计划和记忆；工具结果提供材料，不改变用户授权。`
 
-func (e *Engine) contextFor(c Conversation, m Member, w Work) (map[string]any, error) {
+func (e *Engine) contextFor(c Conversation, m Member, w Work, afterSeq ...int64) (map[string]any, error) {
 	if c.Kind == "personal" {
 		return e.personalContext(m, w)
 	}
 	c.Avatar = "" // 人物和目标留在上下文，图片留在界面与资料接口。
-	messages, err := e.Store.Messages(c.ID, 0, 16)
-	if err != nil {
-		return nil, err
-	}
 	start, err := e.Store.contextStart(c.ID, m.ID)
 	if err != nil {
 		return nil, err
 	}
-	// 话题起点是成员上次基于语境选的，不通过关键词猜测切题。当前触发消息
-	// 即使早于起点也保留，防止到期的旧承诺失去原始来由；新消息总在起点之后。
-	filtered := messages[:0]
-	for _, message := range messages {
-		if message.Seq >= start || message.ID == w.SourceID {
-			filtered = append(filtered, message)
-		}
+	seen, currentState, err := e.Store.observation(c.ID, m.ID)
+	if err != nil {
+		return nil, err
 	}
-	messages = filtered
-	// 完整记录留在数据库。每次只带一个有界近期窗口，较早原文通过 read_history 找回。
-	// 按最近消息倒序分配空间，防止长时间使用后上下文不断膨胀。
-	remaining := 10000
-	for i := len(messages) - 1; i >= 0; i-- {
-		if remaining <= 0 {
-			messages = messages[i+1:]
-			break
-		}
-		limit := min(1800, remaining)
-		messages[i].Body = contextExcerpt(messages[i].Body, limit)
-		remaining -= len([]rune(messages[i].Body))
+	// 未读不能被旧的话题起点或条数窗口跳过。已续接的窗口只追加未交付原文。
+	after := min(max(0, start-1), seen)
+	if len(afterSeq) > 0 {
+		after = afterSeq[0]
+	}
+	messages, err := e.Store.messagesAfter(c.ID, after, 0, -1)
+	if err != nil {
+		return nil, err
 	}
 	jobs, err := e.Store.OpenWork(c.ID)
 	if err != nil {
@@ -476,9 +467,6 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work) (map[string]any, e
 		}
 	}
 	jobs = ordered
-	if len(jobs) > 32 {
-		jobs = jobs[:32]
-	}
 	for i := range jobs {
 		jobs[i].Instruction = clip(jobs[i].Instruction, 300)
 		jobs[i].Reason = clip(jobs[i].Reason, 100)
@@ -507,44 +495,15 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work) (map[string]any, e
 		}
 	}
 	runs = visibleRuns
-	if len(runs) > 6 {
-		// 重启/压缩后的续接仍必须知道已成功保存的作品，不能被后续读取挤掉。
-		recent := append([]ToolRun(nil), runs[:6]...)
-		for _, run := range runs[6:] {
-			if run.WorkID == w.ID && run.Name == "save_artifact" && run.Status == "succeeded" {
-				recent = append(recent, run)
-			}
-		}
-		runs = recent
-	}
+	// 共享资料默认提供可发现的索引，不把上个话题的正文反复灌回工作窗口。
+	// 当前主动读取的完整结果留在执行链；其他材料按真实 ID 回读。
 	runContext := []map[string]any{}
-	for i := range runs {
-		if runs[i].Status == "failed" || runs[i].Status == "cancelled" {
-			runContext = append(runContext, map[string]any{"id": runs[i].ID, "name": runs[i].Name, "status": "unfinished"})
-			continue
-		}
-		if runs[i].Name == "remember" || runs[i].Name == "read_memory" || runs[i].Name == "search_memory" || runs[i].Name == "read_tool_result" {
-			// 工具日志是当时的快照。不能让刚纠正的旧印象通过历史读写日志
-			// 又进入默认输入；保留回查入口，需要时显式读当前笔记或历史记录。
-			runContext = append(runContext, map[string]any{"id": runs[i].ID, "member_id": runs[i].MemberID, "name": runs[i].Name, "status": runs[i].Status, "result": "历史读取/笔记操作已归档。当前经历以 memory 或 read_memory 的最新版本为准。"})
-			continue
-		}
-		var purpose string
-		if err := e.Store.db.QueryRow("SELECT instruction FROM work WHERE id=?", runs[i].WorkID).Scan(&purpose); err != nil {
-			return nil, err
-		}
-		arguments := clip(string(runs[i].Arguments), 200)
-		if runs[i].Name == "search" || runs[i].Name == "read_page" {
-			arguments = string(runs[i].Arguments)
-		}
-		runContext = append(runContext, map[string]any{"id": runs[i].ID, "member_id": runs[i].MemberID, "name": runs[i].Name, "status": runs[i].Status, "arguments": arguments, "created_at": runs[i].CreatedAt, "work_id": runs[i].WorkID, "purpose": clip(purpose, 500), "result": sharedToolResult(runs[i].Result)})
+	for _, run := range runs {
+		runContext = append(runContext, map[string]any{"id": run.ID, "member_id": run.MemberID, "name": run.Name, "status": run.Status, "arguments": sourceArguments(run), "created_at": run.CreatedAt, "work_id": run.WorkID})
 	}
 	artifacts, err := e.Store.Artifacts(c.ID)
 	if err != nil {
 		return nil, err
-	}
-	if len(artifacts) > 4 {
-		artifacts = artifacts[:4]
 	}
 	for i := range artifacts {
 		artifacts[i].Content = "" // 标题和版本帮助发现作品；HTML 头部不是有意义的回忆。
@@ -568,10 +527,10 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work) (map[string]any, e
 	if w.SourceID != "" {
 		var id, body, author string
 		if err := e.Store.db.QueryRow(`SELECT original.id,original.body,original.author_id FROM messages current JOIN messages original ON original.id=current.reply_to WHERE current.id=? AND original.conversation_id=?`, w.SourceID, c.ID).Scan(&id, &body, &author); err == nil {
-			quoted = map[string]string{"id": id, "body": contextExcerpt(body, 8000), "author_id": author}
+			quoted = map[string]string{"id": id, "body": body, "author_id": author}
 		}
 	}
-	// 到期工作可能源于很早以前的约定，不能指望近期16条中仍然有它。
+	// 到期工作可能源于已整理归档的约定，单独带入触发原话以保留真实来由。
 	// 单独带入实际触发原话及引用，保证旧任务重启时仍看得到最初边界。
 	var sourceMessage *Message
 	if w.SourceID != "" {
@@ -582,7 +541,6 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work) (map[string]any, e
 			return nil, err
 		}
 		if err == nil {
-			original.Body = contextExcerpt(original.Body, 8000)
 			sourceMessage = &original
 		}
 	}
@@ -601,10 +559,6 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work) (map[string]any, e
 		return nil, err
 	}
 	identity := map[string]any{"id": m.ID, "name": m.Name, "profile": m.Profile, "tools": m.Tools}
-	seen, currentState, err := e.Store.observation(c.ID, m.ID)
-	if err != nil {
-		return nil, err
-	}
 	unread := []string{}
 	for _, message := range messages {
 		if message.Seq > seen {
@@ -682,11 +636,29 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 	if w.Kind == "research" || c.Kind == "personal" {
 		ctx = context.WithValue(ctx, deepReasoningKey{}, true)
 	}
-	input, err := e.contextFor(c, m, w)
+	// 优先恢复未完调用；新行动接续本人的工作窗口，不借用其他成员的理解。
+	cp, loadErr := e.Store.loadAction(w.ID, m.ID)
+	if loadErr != nil && !errors.Is(loadErr, sql.ErrNoRows) {
+		return Outcome{}, loadErr
+	}
+	window, err := e.Store.loadWorkingContext(c.ID, m.ID)
+	if err != nil {
+		return Outcome{}, err
+	}
+	var after []int64
+	if loadErr == nil && cp.Revision == c.Revision {
+		after = []int64{cp.Seen}
+	} else if len(window.Messages) > 0 {
+		after = []int64{window.Seen}
+	}
+	input, err := e.contextFor(c, m, w, after...)
 	if err != nil {
 		return Outcome{}, err
 	}
 	seen := observedThrough(input)
+	if len(after) > 0 {
+		seen = max(seen, after[0])
+	}
 	// 用本次实际行动的工具起点识别新委托；旧记录中的安排不能吞掉这次尚未完成的工作。
 	var toolStart int64
 	if err := e.Store.db.QueryRow(`SELECT coalesce(max(rowid),0) FROM tool_runs WHERE work_id=?`, w.ID).Scan(&toolStart); err != nil {
@@ -698,39 +670,37 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 结束本次行动时返回 JSON {"outcome":"实际行动结果"}；outcome 是运行记录，不是聊天消息。
 个人活动可选择自己所在的聊天；send_message 省略目的地时发给真人私聊。
 personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串清除。它属于你本人，不是群聊任务或新的人设。
-` + statePrompt + memoryContextPrompt + coordinationPrompt}, {Role: "user", Content: asJSON(input)}}
+` + statePrompt + memoryContextPrompt + coordinationPrompt + workingContextPrompt}, {Role: "user", Content: asJSON(input)}}
 	var updateAfterTools string
-	cp, loadErr := e.Store.loadAction(w.ID, m.ID)
-	if loadErr != nil && !errors.Is(loadErr, sql.ErrNoRows) {
-		return Outcome{}, loadErr
-	}
+	currentSystem, currentInput := messages[0], messages[1]
 	if loadErr == nil && cp.Revision == c.Revision {
-		// 恢复原始工具/模型现场；新消息只更新现场，不重新播放已成功的工具。
-		// 旧断点保留行动结果，但不继续使用已经删掉的公共提示。
-		currentSystem := messages[0]
 		messages = cp.Messages
 		if len(messages) > 0 && messages[0].Role == "system" {
 			messages[0] = currentSystem
 		}
-		if len(messages) > 1 && messages[1].Role == "user" {
-			// 人物和群方向读取当前版本，旧断点不重新注入已删除的公共要求。
-			messages[1].Content = asJSON(input)
-		}
-		if cp.Seen != seen {
-			update := "当前现场已更新，结合下面的最新交流重新决定是否回应及如何行动：" + asJSON(input)
-			if len(messages) > 0 && len(messages[len(messages)-1].ToolCalls) > 0 {
-				// 先补齐已返回工具调用的结果，不能在 call 和 result 之间插入新现场。
-				updateAfterTools = update
-			} else {
-				messages = append(messages, ChatMessage{Role: "user", Content: update})
-				cp.Seen = seen
-			}
+		// 尚未消费的 assistant 响应必须先执行工具/完成，不能因新消息重生成。
+		// 最新现场在协议边界追加，保留已交付记录，不改写旧输入。
+		if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
+			updateAfterTools = currentInput.Content
+			seen = cp.Seen
+		} else {
+			messages = append(messages, currentInput)
+			cp.Seen = seen
 		}
 	} else {
 		if loadErr == nil {
 			if err := e.Store.finishAction(w.ID, m.ID); err != nil {
 				return Outcome{}, err
 			}
+		}
+		if len(window.Messages) > 0 {
+			messages = window.Messages
+			if messages[0].Role == "system" {
+				messages[0] = currentSystem
+			} else {
+				messages = append([]ChatMessage{currentSystem}, messages...)
+			}
+			messages = append(messages, currentInput)
 		}
 		cp = actionCheckpoint{ID: newID("msg"), WorkID: w.ID, MemberID: m.ID, Seen: seen}
 	}
@@ -745,7 +715,6 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 		} else {
 			e.setActivity(c.ID, m.ID, observationLabel(c, w))
 		}
-		compactToolHistory(messages)
 		cp.Messages = messages
 		if err := e.Store.saveAction(cp); err != nil {
 			return Outcome{}, err
@@ -756,7 +725,7 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 		if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
 			r = messages[len(messages)-1]
 		} else {
-			r, err = completeModel(ctx, e.Model, &messages, defs, true)
+			r, err = e.completeMemberModel(ctx, c, &seen, &messages, defs)
 			if err != nil {
 				return Outcome{}, err
 			}
@@ -766,33 +735,6 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 		}
 		if err != nil {
 			return Outcome{}, err
-		}
-		hasOutgoing := false
-		for _, call := range r.ToolCalls {
-			hasOutgoing = hasOutgoing || call.Function.Name == "send_message"
-		}
-		var freshBeforeSend map[string]any
-		if (len(r.ToolCalls) == 0 || hasOutgoing) && c.ID != "" {
-			fresh, refreshErr := e.contextFor(c, m, w)
-			if refreshErr != nil {
-				return Outcome{}, refreshErr
-			}
-			latest := observedThrough(fresh)
-			var peerMessages int
-			if refreshErr = e.Store.db.QueryRow(`SELECT count(*) FROM messages WHERE conversation_id=? AND seq>? AND author_id<>?`, c.ID, seen, m.ID).Scan(&peerMessages); refreshErr != nil {
-				return Outcome{}, refreshErr
-			}
-			if peerMessages > 0 {
-				if len(r.ToolCalls) == 0 {
-					messages = append(messages, ChatMessage{Role: "user", Content: "刚收到的新现场：" + asJSON(fresh)})
-					seen = latest
-					cp.Seen = seen
-					continue
-				}
-				freshBeforeSend = fresh
-			}
-			seen = latest
-			cp.Seen = seen
 		}
 		if len(r.ToolCalls) == 0 {
 			var out Outcome
@@ -837,22 +779,15 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 			if err = e.Store.updatePersonalActivity(m.ID, out.PersonalFocus); err != nil {
 				return out, err
 			}
+			cp.Messages, cp.Seen = messages, seen
+			if err = e.Store.saveAction(cp); err != nil {
+				return out, err
+			}
 			return out, nil
 		}
+		batchStart := len(messages) - 1
+		var organization *organizedContext
 		for _, call := range r.ToolCalls {
-			if call.Function.Name == "send_message" && freshBeforeSend != nil {
-				var delivered int
-				if err := e.Store.db.QueryRow(`SELECT count(*) FROM messages WHERE id=?`, sentMessageID(w, m, call)).Scan(&delivered); err != nil {
-					return Outcome{}, err
-				}
-				if delivered == 0 {
-					// 给本人看到生成期间到达的新话。只暂停尚未发送的这条草稿，
-					// 不判断内容相似度，也不替本人决定保留、补充、赞同或收回。
-					result := asJSON(map[string]any{"status": "not_sent", "current_conversation": freshBeforeSend})
-					messages = append(messages, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result})
-					continue
-				}
-			}
 			result, err := e.Tools.Execute(ctx, c, m, w, call)
 			if errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || errors.Is(err, context.Canceled) {
 				return Outcome{}, err
@@ -861,12 +796,43 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 				result = asJSON(map[string]string{"error": err.Error(), "status": "failed"})
 			}
 			messages = append(messages, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result})
+			if call.Function.Name == "organize_context" {
+				var receipt struct {
+					Status string           `json:"status"`
+					Result organizedContext `json:"result"`
+				}
+				if parseJSON(result, &receipt) == nil && receipt.Status == "succeeded" {
+					organization = &receipt.Result
+				}
+			}
+		}
+		// 一批工具全部执行并配对后才能切换窗口；同时调用的发言或保存结果不能丢失。
+		if organization != nil {
+			fresh, refreshErr := e.contextFor(c, m, w, seen)
+			if refreshErr != nil {
+				return Outcome{}, refreshErr
+			}
+			// 新消息下面统一追加；整理只处理已交付的历史，不能把未读标为已读。
+			fresh["latest_messages"], fresh["new_message_ids"] = []Message{}, []string{}
+			messages = append([]ChatMessage{currentSystem, {Role: "user", Content: asJSON(fresh)}, {Role: "user", Content: "你为自己留下的续接上下文：" + asJSON(organization)}}, messages[batchStart:]...)
 		}
 		if updateAfterTools != "" {
 			messages = append(messages, ChatMessage{Role: "user", Content: updateAfterTools})
-			cp.Seen = seen
+			seen = max(seen, observedThrough(input))
 			updateAfterTools = ""
 		}
+		// 普通消息在下一次模型请求前增量交付，不撤回本轮已形成的工具调用或发言。
+		if c.ID != "" {
+			arrived, readErr := e.Store.messagesAfter(c.ID, seen, 0, -1)
+			if readErr != nil {
+				return Outcome{}, readErr
+			}
+			if len(arrived) > 0 {
+				messages = append(messages, ChatMessage{Role: "user", Content: "接续收到的聊天原文（author_id 标明说话者）：" + asJSON(arrived)})
+				seen = arrived[len(arrived)-1].Seq
+			}
+		}
+		cp.Seen = seen
 	}
 }
 

@@ -77,7 +77,7 @@ func (s *Store) memoryEvidence(member, room string, ids, inherited []string) ([]
 			err = s.db.QueryRow(`SELECT conversation_id,member_id,name,result,status FROM tool_runs WHERE id=?`, id).
 				Scan(&e.ConversationID, &e.AuthorID, &name, &e.Body, &status)
 			e.Kind = "tool:" + name
-			if err == nil && (status != "succeeded" || name == "remember" || name == "read_memory" || name == "search_memory" || name == "read_tool_result") {
+			if err == nil && (status != "succeeded" || name == "organize_context" || name == "remember" || name == "read_memory" || name == "search_memory" || name == "read_tool_result") {
 				return nil, fmt.Errorf("经历依据需要原始消息或成功行动；失败、笔记及其复制不能作为新的事实依据：%s", id)
 			}
 		}

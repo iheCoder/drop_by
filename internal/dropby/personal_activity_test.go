@@ -206,8 +206,8 @@ func TestPersonalRelationshipRecallUsesCorrection(t *testing.T) {
 	}
 }
 
-// 快成员发言时另一位还在生成，发送工具不能绕过新的现场；是否改口仍由本人决定。
-func TestSendMessageLetsAuthorReadNewPeerBeforePosting(t *testing.T) {
+// 生成期间收到同伴发言，先发送已形成的消息，下一次请求再读增量并自行决定补充。
+func TestSendMessagePostsThenReadsNewPeer(t *testing.T) {
 	s, c, people := groupWithMembers(t, 2)
 	m := people[1]
 	w := addWork(t, s, c, m, "followup")
@@ -221,7 +221,7 @@ func TestSendMessageLetsAuthorReadNewPeerBeforePosting(t *testing.T) {
 			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("send_message", map[string]string{"message": "尚未看见同伴时的草稿"})}}, nil
 		}
 		if calls == 2 {
-			if !strings.Contains(messages[len(messages)-1].Content, `"status":"not_sent"`) || !strings.Contains(messages[len(messages)-1].Content, "声音能改变视觉") {
+			if strings.Contains(asJSON(messages), `"status":"not_sent"`) || !strings.Contains(messages[len(messages)-1].Content, "声音能改变视觉") {
 				t.Error("新现场没有交给发言本人")
 			}
 			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("send_message", map[string]string{"message": "我想反过来试试，画面会怎样改变声音。"})}}, nil
@@ -232,8 +232,8 @@ func TestSendMessageLetsAuthorReadNewPeerBeforePosting(t *testing.T) {
 		t.Fatal(err)
 	}
 	messages, _ := s.Messages(c.ID, 0, 10)
-	if len(messages) != 2 || strings.Contains(messages[1].Body, "草稿") {
-		t.Fatalf("已经过时的草稿仍被直接发出: %+v", messages)
+	if len(messages) != 3 || !strings.Contains(messages[1].Body, "草稿") {
+		t.Fatalf("普通新消息不应撤回已形成的草稿: %+v", messages)
 	}
 }
 

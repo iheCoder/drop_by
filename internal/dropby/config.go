@@ -12,6 +12,7 @@ import (
 )
 
 type Config struct {
+	MidTurnSteering                                                bool   // GPT-6 Responses WebSocket；仅用于持续成员行动。
 	ChatModel                                                      string // 普通交流的行动模型；不另设参与分类节点。
 	DeepMaxOutputTokens, ContextTokenBudget                        int
 	Reasoning, DeepReasoning                                       string
@@ -27,7 +28,8 @@ type Config struct {
 // 密钥只从环境读取，既不持久化到数据库，也不出现在配置响应或日志中。
 func LoadConfig() (Config, error) {
 	c := Config{
-		Address: env("DROPBY_ADDR", "127.0.0.1:8090"), DataDir: env("DROPBY_DATA_DIR", "data"),
+		MidTurnSteering: true,
+		Address:         env("DROPBY_ADDR", "127.0.0.1:8090"), DataDir: env("DROPBY_DATA_DIR", "data"),
 		Model: env("DROPBY_MODEL", "gpt-6.1-sol"), BaseURL: env("DROPBY_BASE_URL", "https://api.openai.com/v1"),
 		// 聊天与个人探索使用相应行动模型，没有单独的参与分类模型。
 		ChatModel: env("DROPBY_CHAT_MODEL", "gpt-6.1-terra"),
@@ -37,6 +39,13 @@ func LoadConfig() (Config, error) {
 		ExploreInterval:    30 * time.Minute, MaxOutputTokens: 8000, DeepMaxOutputTokens: 25000, Reasoning: env("DROPBY_REASONING", "low"), DeepReasoning: env("DROPBY_DEEP_REASONING", "high"),
 		WeeklyBudgetMicros: 20_000_000,
 		ToolCostMicros:     750,
+	}
+	if value := os.Getenv("DROPBY_MID_TURN_STEERING"); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return c, fmt.Errorf("DROPBY_MID_TURN_STEERING 必须为 true 或 false")
+		}
+		c.MidTurnSteering = enabled
 	}
 	for _, model := range []string{c.Model, c.ChatModel} {
 		if _, err := priceForModel(model); err != nil {

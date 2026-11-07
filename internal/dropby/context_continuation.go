@@ -77,7 +77,7 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 		return nil, 0, nil, err
 	}
 	compactBody, _ := json.Marshal(map[string]any{"model": m.Config.Model, "input": request["input"],
-		"instructions": "保留人物身份、最新真人约束与更正、当前目标、明确授权和职责范围、尚未完成的步骤。保留已成功工具和成果的真实 ID、版本与状态，已完成的搜索/保存不要再次执行。旧长工具正文与已保存作品用可回读的引用代替，失败不能总结成成功。压缩后继续原任务，不要求用户缩短消息。"})
+		"instructions": "整理这位成员接下来继续交流所需的上下文。结合当前关注保留有用的原话、不同人的看法、更正、明确授权与未完事项。保持说话者、自己的判断、他人的说法和已确认事实各自的含义，不合并分歧，不把一次表达写成永久特质。暂时无关的长正文可用真实消息或工具 ID、取得时间、版本和状态替代；失败不能写成成功。原文仍可回读，整理后继续当前行动。"})
 	price, err := priceForModel(m.Config.Model)
 	if err != nil {
 		return nil, 0, nil, err

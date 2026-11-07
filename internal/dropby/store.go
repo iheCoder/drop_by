@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS work(id TEXT PRIMARY KEY, conversation_id TEXT NOT NU
 CREATE INDEX IF NOT EXISTS work_due ON work(status,due_at);
 CREATE TABLE IF NOT EXISTS participation(work_id TEXT NOT NULL REFERENCES work(id), member_id TEXT NOT NULL, action TEXT NOT NULL,
  reason TEXT NOT NULL, selected INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS working_contexts(conversation_id TEXT NOT NULL, member_id TEXT NOT NULL REFERENCES members(id), seen INTEGER NOT NULL, messages TEXT NOT NULL, PRIMARY KEY(conversation_id,member_id));
 CREATE TABLE IF NOT EXISTS action_checkpoints(id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work(id), member_id TEXT NOT NULL, revision INTEGER NOT NULL, seen INTEGER NOT NULL, messages TEXT NOT NULL, UNIQUE(work_id,member_id));
 CREATE INDEX IF NOT EXISTS participation_work ON participation(work_id);
 CREATE TABLE IF NOT EXISTS tool_runs(id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work(id), conversation_id TEXT NOT NULL, member_id TEXT NOT NULL, name TEXT NOT NULL, arguments TEXT NOT NULL,
@@ -274,10 +275,15 @@ func (s *Store) Conversations() ([]Conversation, error) {
 }
 
 func (s *Store) Messages(room string, before int64, limit int) ([]Message, error) {
+	return s.messagesAfter(room, 0, before, limit)
+}
+
+// 行动读取按已交付位置续接；limit=-1 使用 SQLite 的无条数上限查询。
+func (s *Store) messagesAfter(room string, after, before int64, limit int) ([]Message, error) {
 	if before <= 0 {
 		before = 1 << 62
 	}
-	rows, e := s.db.Query(`SELECT m.seq,m.id,m.conversation_id,m.author_id,m.body,m.reply_to,m.mentions,m.evidence,m.notify,m.created_at,COALESCE(q.question,''),COALESCE(q.status,'') FROM (SELECT * FROM messages WHERE conversation_id=? AND seq<? AND NOT (author_id='system' AND substr(id,1,7)='budget_') ORDER BY seq DESC LIMIT ?) m LEFT JOIN message_questions q ON q.message_id=m.id ORDER BY m.seq`, room, before, limit)
+	rows, e := s.db.Query(`SELECT m.seq,m.id,m.conversation_id,m.author_id,m.body,m.reply_to,m.mentions,m.evidence,m.notify,m.created_at,COALESCE(q.question,''),COALESCE(q.status,'') FROM (SELECT * FROM messages WHERE conversation_id=? AND seq>? AND seq<? AND NOT (author_id='system' AND substr(id,1,7)='budget_') ORDER BY seq DESC LIMIT ?) m LEFT JOIN message_questions q ON q.message_id=m.id ORDER BY m.seq`, room, after, before, limit)
 	if e != nil {
 		return nil, e
 	}
@@ -323,8 +329,8 @@ func insertMessage(tx *sql.Tx, m Message) error {
 	return e
 }
 
-// 新用户消息、修订号和待处理事件在同一事务落盘。生成过程只能提交到它读过的修订，
-// 即使 HTTP 取消来不及生效，也不会把过时回复发到群里。
+// 普通新消息只追加待读内容与持久唤醒，不撤销正在形成的回复。
+// 明确停止仍在事务内提升控制修订，使旧执行无法越过用户控制。
 func (s *Store) AddUserMessage(m Message, interval time.Duration) error {
 	tx, e := s.db.Begin()
 	if e != nil {
@@ -349,12 +355,13 @@ func (s *Store) AddUserMessage(m Message, interval time.Duration) error {
 	if _, e = tx.Exec(`UPDATE message_questions SET status=CASE WHEN message_id=? THEN 'answered' ELSE 'dismissed' END,response_id=? WHERE status='open' AND message_id IN (SELECT id FROM messages WHERE conversation_id=?)`, m.ReplyTo, m.ID, m.ConversationID); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(`UPDATE conversations SET revision=revision+1 WHERE id=?`, m.ConversationID); e != nil {
-		return e
-	}
 	// 极明确的停止在接收消息的事务中立即生效，不等待模型、预算或后台轮询。
 	// 这也让正在执行的研究在看到新修订后无法发布旧结果。
-	if discussion, research := explicitStop(m.Body); discussion || research {
+	discussion, research := explicitStop(m.Body)
+	if discussion || research {
+		if _, e = tx.Exec(`UPDATE conversations SET revision=revision+1 WHERE id=?`, m.ConversationID); e != nil {
+			return e
+		}
 		if discussion {
 			if _, e = tx.Exec(`UPDATE conversations SET discussion_paused=1 WHERE id=?`, m.ConversationID); e != nil {
 				return e
@@ -369,7 +376,7 @@ func (s *Store) AddUserMessage(m Message, interval time.Duration) error {
 			}
 		}
 	}
-	if _, e = tx.Exec(`UPDATE work SET status='superseded' WHERE conversation_id=? AND kind NOT IN ('research','revisit') AND status IN ('pending','running','waiting_budget')`, m.ConversationID); e != nil {
+	if _, e = tx.Exec(`UPDATE work SET status='superseded' WHERE conversation_id=? AND kind NOT IN ('research','revisit') AND (status IN ('pending','waiting_budget') OR (? AND status='running'))`, m.ConversationID, discussion || research); e != nil {
 		return e
 	}
 	w := Work{ID: newID("work"), ConversationID: m.ConversationID, Kind: "chat", Instruction: m.Body, SourceID: m.ID, Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}

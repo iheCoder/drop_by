@@ -43,6 +43,8 @@ nohup ./bin/dropby >data/server.log 2>&1 &
 
 可用环境变量见 [.env.example](.env.example)。程序**不自动加载 `.env` 文件**，请由启动环境设置变量。当前生成接口只使用 Responses API。`DROPBY_BASE_URL` 与 `DROPBY_API_KEY` 指向正在使用的网关，交流与探索模型分别配置；搜索服务独立配置。
 
+成员上下文的续接、主动整理、容量兜底与 GPT-6 Steering 见[上下文管理说明](docs/context-management.md)。
+
 | 变量 | 默认值 | 含义 |
 | --- | --- | --- |
 | `DROPBY_ADDR` | `127.0.0.1:8090` | 只允许本机回环监听 |

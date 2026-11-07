@@ -12,9 +12,9 @@ import (
 	"testing"
 )
 
-func TestRequestCapacityCompactsToolTextWithoutLosingIdentityOrProtocol(t *testing.T) {
-	// 长工具结果触发请求总量保护；角色设定、状态和目标是受保护的原始输入，
-	// 工具正文可以折叠，但回读 ID、函数调用配对和加密推理必须仍在真实 HTTP 请求中。
+func TestActualCountKeepsCompleteToolTextAndProtocol(t *testing.T) {
+	// 字节估算超出但真实 token 可容纳时，正文、身份和协议均应完整进入实际请求。
+	// 验证先计数再决定压缩，不能为了通过字节估算先裁掉正文。
 	s, _, _ := fixture(t)
 	core := "角色：好奇但克制；当前目标：核对引用；约定：不要重复刚才的答案。"
 	opaque := strings.Repeat("encrypted-state", 20000)
@@ -35,13 +35,17 @@ func TestRequestCapacityCompactsToolTextWithoutLosingIdentityOrProtocol(t *testi
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Add(1)
 		raw, _ := io.ReadAll(r.Body)
-		for _, mustKeep := range []string{core, opaque, "tool_older", "tool_newer", "call_older", "call_newer", "function_call_output", "read_tool_result"} {
+		if r.URL.Path == "/responses/input_tokens" {
+			io.WriteString(w, `{"input_tokens":200}`)
+			return
+		}
+		for _, mustKeep := range []string{core, opaque, "tool_older", "tool_newer", "call_older", "call_newer", "function_call_output"} {
 			if !bytes.Contains(raw, []byte(mustKeep)) {
 				t.Errorf("压缩丢失身份、工具回读线索或协议: %s", clip(mustKeep, 80))
 			}
 		}
-		if bytes.Contains(raw, []byte(strings.Repeat("旧资料有很多细节。", 1000))) || bytes.Contains(raw, []byte(strings.Repeat("最新资料也很长。", 1000))) {
-			t.Error("真实请求仍带着过长工具正文")
+		if !bytes.Contains(raw, []byte(strings.Repeat("旧资料有很多细节。", 1000))) || !bytes.Contains(raw, []byte(strings.Repeat("最新资料也很长。", 1000))) {
+			t.Error("真实可容纳的请求丢失完整工具正文")
 		}
 		io.WriteString(w, `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"已核对"}]}],"usage":{"input_tokens":200,"output_tokens":10}}`)
 	}))
@@ -53,7 +57,7 @@ func TestRequestCapacityCompactsToolTextWithoutLosingIdentityOrProtocol(t *testi
 	if _, err := model.Complete(context.Background(), messages, nil, false); err != nil {
 		t.Fatal(err)
 	}
-	if received.Load() != 1 || messages[3].Content != first || messages[4].Content != second {
+	if received.Load() != 2 || messages[3].Content != first || messages[4].Content != second {
 		t.Fatal("没有发送真实请求，或者压缩修改了行动层持有的原始消息")
 	}
 }

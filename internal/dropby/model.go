@@ -220,7 +220,7 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 		return ChatMessage{}, ErrUnavailable
 	}
 	// 在模型边界统一检查完整请求，参与判断与行动共用此处。
-	// 只折叠已经存档的工具正文；身份、目标、原话以及调用/推理协议保持完整。
+	// 不先截短工具正文；保守估算超出时使用实际计数与原生压缩。
 	encoded, inputEstimate, e := boundedRequest(messages, m.Config.ContextTokenBudget, m.Config.MaxOutputTokens, func(input []ChatMessage) ([]byte, error) {
 		return m.responseBody(input, defs, jsonOutput)
 	})
@@ -238,35 +238,35 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	if e != nil {
 		return ChatMessage{}, e
 	}
-	// 工具文本由行动层保留近期正文并折叠旧结果。这里仅限制异常传输体积，
-	// 不能用 180 KB 的 HTTP 请求大小冒充模型的上下文窗口。
-	if len(encoded) > 8<<20 {
-		return ChatMessage{}, fmt.Errorf("本次行动的内部请求过大，已保存工具记录")
-	}
 	reserve := price.reserveMicros(inputEstimate, m.Config.MaxOutputTokens)
 	var response modelResult
 	// 每个真正发出的请求单独预留、结算。网络结果未知的旧请求不冒充免费；
 	// 自动恢复只重发模型请求，已完成的本地工具不会再执行。
-	e = retryRequest(ctx, func() error {
-		day, err := m.Store.ReserveContext(ctx, m.Config, reserve)
-		if err != nil {
-			return &modelAccountingError{err}
-		}
-		response, err = m.responses(ctx, encoded)
-		if err != nil {
-			return err
-		}
-		if response.Usage.InputTokens+response.Usage.OutputTokens > 0 {
-			actual, err := response.Usage.costMicros(price)
+	steering, _ := ctx.Value(steeringKey{}).(*steeringInput)
+	if steering != nil && m.Config.MidTurnSteering {
+		response, e = m.steeredResponse(ctx, encoded, price, reserve, inputEstimate, steering, chain)
+	} else {
+		e = retryRequest(ctx, func() error {
+			day, err := m.Store.ReserveContext(ctx, m.Config, reserve)
+			if err != nil {
+				return &modelAccountingError{err}
+			}
+			response, err = m.responses(ctx, encoded)
 			if err != nil {
 				return err
 			}
-			if err = m.Store.SettleContext(ctx, day, reserve, actual, response.Usage.InputTokens, response.Usage.OutputTokens); err != nil {
-				return &modelAccountingError{err}
+			if response.Usage.InputTokens+response.Usage.OutputTokens > 0 {
+				actual, err := response.Usage.costMicros(price)
+				if err != nil {
+					return err
+				}
+				if err = m.Store.SettleContext(ctx, day, reserve, actual, response.Usage.InputTokens, response.Usage.OutputTokens); err != nil {
+					return &modelAccountingError{err}
+				}
 			}
-		}
-		return nil
-	})
+			return nil
+		})
+	}
 	if e != nil {
 		return ChatMessage{}, e
 	}
@@ -442,14 +442,25 @@ func (m *HTTPModel) responseBody(messages []ChatMessage, defs []ToolDefinition, 
 }
 func (m *HTTPModel) responses(ctx context.Context, raw []byte) (modelResult, error) {
 	var err error
-	var out struct {
-		Status string            `json:"status"`
-		Output []json.RawMessage `json:"output"`
-		Usage  responseUsage     `json:"usage"`
-	}
+	var out responseEnvelope
 	if err = requestJSON(ctx, m.Client, m.Config.BaseURL+"/responses", m.Config.APIKey, raw, &out); err != nil {
 		return modelResult{}, err
 	}
+	return decodeResponse(out)
+}
+
+type responseEnvelope struct {
+	ID                string            `json:"id"`
+	Status            string            `json:"status"`
+	Output            []json.RawMessage `json:"output"`
+	Usage             responseUsage     `json:"usage"`
+	IncompleteDetails struct {
+		Reason string `json:"reason"`
+	} `json:"incomplete_details"`
+}
+
+func decodeResponse(out responseEnvelope) (modelResult, error) {
+	var err error
 	result := modelResult{}
 	result.Usage = out.Usage
 	msg := ChatMessage{Role: "assistant", ResponseItems: out.Output}

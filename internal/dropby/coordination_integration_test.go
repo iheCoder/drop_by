@@ -37,8 +37,16 @@ func TestCoordinatorAPIAndTwoStagePeerHandoff(t *testing.T) {
 			Self    Member `json:"self"`
 			Trigger Work   `json:"trigger"`
 		}
-		if err := json.Unmarshal([]byte(messages[1].Content), &input); err != nil {
-			return ChatMessage{}, err
+		for _, message := range messages {
+			if message.Role == "user" && strings.HasPrefix(message.Content, "{") {
+				var current struct {
+					Self    Member `json:"self"`
+					Trigger Work   `json:"trigger"`
+				}
+				if json.Unmarshal([]byte(message.Content), &current) == nil && current.Self.ID != "" {
+					input = current
+				}
+			}
 		}
 
 		if (input.Self.ID != members[0].ID && input.Trigger.Kind != "research") || input.Trigger.Kind == "share" {
@@ -49,7 +57,7 @@ func TestCoordinatorAPIAndTwoStagePeerHandoff(t *testing.T) {
 				return ChatMessage{}, fmt.Errorf("completion callback changed budget root: %q", autonomyRoot(ctx))
 			}
 			mu.Lock()
-			if len(messages) == 2 {
+			if steps[input.Trigger.ID] == 0 {
 				reviewWakeups++
 			}
 			mu.Unlock()

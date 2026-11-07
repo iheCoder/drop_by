@@ -2,23 +2,6 @@ package dropby
 
 import "encoding/json"
 
-// 同一行动可能连续读很多网页。完整记录保留在 SQLite；较早的工具结果只回传
-// 有来源的摘录。保留每个 call_id 和所有 Responses 推理项目，避免破坏工具协议。
-func compactToolHistory(messages []ChatMessage) {
-	remaining := 4
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != "tool" {
-			continue
-		}
-		limit := 700
-		if remaining > 0 {
-			remaining--
-			continue
-		}
-		messages[i].Content = toolExcerpt(messages[i].Content, limit)
-	}
-}
-
 func toolExcerpt(raw string, limit int) string {
 	if overview, ok := searchOverview(raw); ok {
 		return overview

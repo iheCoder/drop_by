@@ -17,40 +17,17 @@ func boundedRequest(messages []ChatMessage, capacity, output int, encode func([]
 		return nil, 0, fmt.Errorf("上下文容量配置 %d 不足以预留本次 %d 个输出 token，本次未发送模型请求", capacity, output)
 	}
 
-	// 不修改行动层保存的原始消息；本次压缩也不影响下一轮按工具 ID 回读正文。
-	working := append([]ChatMessage(nil), messages...)
-	estimate, err := requestInputUpperBound(working, encode)
+	// 字节上界只负责快速放行；超过时交给真实 token 计数与原生压缩，
+	// 不能在计数前擅自截短刚读取的正文。
+	estimate, err := requestInputUpperBound(messages, encode)
 	if err != nil {
 		return nil, 0, err
 	}
 	if estimate <= inputLimit {
-		raw, err := encode(working)
+		raw, err := encode(messages)
 		return raw, estimate, err
 	}
-
-	// 先从较早的工具结果收缩，一旦能放下就停止，尽量保留眼前正在使用的材料。
-	// 每个摘录仍有 tool_run_id；角色可用 read_tool_result 按需取回，原记录不会被删除。
-	for _, limit := range []int{4000, 1200, 400, 100} {
-		for i := range working {
-			if working[i].Role != "tool" {
-				continue
-			}
-			folded := toolExcerpt(working[i].Content, limit)
-			if len(folded) >= len(working[i].Content) {
-				continue
-			}
-			working[i].Content = folded
-			estimate, err = requestInputUpperBound(working, encode)
-			if err != nil {
-				return nil, 0, err
-			}
-			if estimate <= inputLimit {
-				raw, err := encode(working)
-				return raw, estimate, err
-			}
-		}
-	}
-	return nil, estimate, fmt.Errorf("当前请求的固定内容超出上下文容量：输入保守估算 %d，加输出预留 %d，超过配置 %d；人物设定、当前目标和原始记录已保留，本次未发送模型请求", estimate, output, capacity)
+	return nil, estimate, fmt.Errorf("输入需要核对实际 token 容量")
 }
 
 func requestInputUpperBound(messages []ChatMessage, encode func([]ChatMessage) ([]byte, error)) (int, error) {

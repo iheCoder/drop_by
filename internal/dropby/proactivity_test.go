@@ -229,17 +229,21 @@ func TestIndependentBackgroundWorkDoesNotOccupyHumanResponse(t *testing.T) {
 	t.Fatal("只有控制判断成功，实际回复仍被其他人的工作挡住")
 }
 
-func TestRunningFollowupSurvivesInterruptionByHuman(t *testing.T) {
-	// 模拟成员刚醒来、用户又插话：旧推理应取消，具体挂念仍保留并重读新消息。
+func TestRunningFollowupContinuesWithoutHumanInterruption(t *testing.T) {
+	// 成员正在推进挂念时，普通真人补充不能取消这次推理；原行动自然结束。
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "revisit")
 	started := make(chan struct{})
+	release := make(chan struct{})
 	var calls atomic.Int32
 	e := NewEngine(s, modelFunc(func(ctx context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		if autonomyRoot(ctx) == w.ID && calls.Add(1) == 1 {
 			close(started)
-			<-ctx.Done()
-			return ChatMessage{}, ctx.Err()
+			select {
+			case <-ctx.Done():
+				return ChatMessage{}, ctx.Err()
+			case <-release:
+			}
 		}
 		if strings.HasPrefix(ms[0].Content, "你只解释") {
 			return jsonReply(Control{Discussion: "keep", Research: "keep"}), nil
@@ -258,13 +262,14 @@ func TestRunningFollowupSurvivesInterruptionByHuman(t *testing.T) {
 	if err := e.Submit(userMessage(c, "先补充一点情况")); err != nil {
 		t.Fatal(err)
 	}
+	close(release)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		var status string
 		if err := s.db.QueryRow(`SELECT status FROM work WHERE id=?`, w.ID).Scan(&status); err != nil {
 			t.Fatal(err)
 		}
-		if status == "done" && calls.Load() >= 2 {
+		if status == "done" && calls.Load() == 1 {
 			return
 		}
 		if status == "superseded" {

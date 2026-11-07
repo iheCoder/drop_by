@@ -63,11 +63,11 @@ func toolCall(name string, args any) ToolCall {
 }
 
 func TestUserInterruptionRejectsStaleReplyAndSideEffects(t *testing.T) {
-	// 场景：成员基于旧消息完成生成时，用户已给出相反的新线索。
+	// 场景：成员基于旧消息完成生成时，用户已经明确停止研究。
 	// 不依赖网络取消成功；事务里的修订检查必须挡住旧回复与旧成果。
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "research")
-	if err := s.AddUserMessage(userMessage(c, "刚才记错了，是红色的"), time.Hour); err != nil {
+	if err := s.AddUserMessage(userMessage(c, "停止研究"), time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	stale := Message{ID: newID("msg"), ConversationID: c.ID, AuthorID: m.ID, Body: "仍然按蓝色继续", CreatedAt: now()}
@@ -596,8 +596,8 @@ func TestGracefulShutdownKeepsAcceptedUserWork(t *testing.T) {
 	}
 }
 
-func TestContextIsBoundedWithoutDiscardingOriginalHistory(t *testing.T) {
-	// 历史增长后，模型窗口仍然有界；压缩只发生在请求构造，不改写原始聊天。
+func TestContextDoesNotDropUnreadHistoryByCountOrLength(t *testing.T) {
+	// 未读消息不按条数或字符数裁剪；真正的容量处理留给模型请求边界。
 	s, c, m := fixture(t)
 	body := strings.Repeat("完整原文", 1800)
 	for i := 0; i < 80; i++ {
@@ -612,8 +612,12 @@ func TestContextIsBoundedWithoutDiscardingOriginalHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if size := len(asJSON(input)); size > 80_000 {
-		t.Fatalf("上下文未收束: %d bytes", size)
+	delivered := input["latest_messages"].([]Message)
+	if len(delivered) != 80 || delivered[0].Body != body || delivered[79].Body != body {
+		t.Fatal("未读原文被条数或字符数截断")
+	}
+	if strings.Contains(asJSON(input["tool_runs"]), strings.Repeat("结果", 1000)) {
+		t.Fatal("旧工具正文被自动重新注入")
 	}
 	var saved string
 	if err = s.db.QueryRow(`SELECT body FROM messages WHERE id='long_0'`).Scan(&saved); err != nil {

@@ -148,9 +148,9 @@ func TestExplorationQueueHonorsPausesAndDoesNotAccumulate(t *testing.T) {
 	}
 }
 
-func TestToolHistoryCompactionKeepsRecoverableResults(t *testing.T) {
-	// 模拟第一句话之后连续读 17 份长网页：保留每个工具协议 ID，近期正文与旧摘录
-	// 有界；反复压缩不套娃。SQLite 的原文可分段找回，但不能跨聊天读取。
+func TestToolExcerptKeepsRecoverableResults(t *testing.T) {
+	// 资料索引展示摘录时保留回读 ID，重复生成摘录不套娃。
+	// SQLite 原文可分段找回，行动链不再按最近工具条数自动裁剪。
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "research")
 	messages := []ChatMessage{{Role: "user", Content: "最近这件事结果出来了呀"}}
@@ -163,9 +163,9 @@ func TestToolHistoryCompactionKeepsRecoverableResults(t *testing.T) {
 		}
 		messages = append(messages, ChatMessage{Role: "tool", ToolCallID: callID, Content: asJSON(map[string]any{"tool_run_id": id, "status": "succeeded", "result": raw})})
 	}
-	compactToolHistory(messages)
+	messages[1].Content = toolExcerpt(messages[1].Content, 700)
 	before := asJSON(messages)
-	compactToolHistory(messages)
+	messages[1].Content = toolExcerpt(messages[1].Content, 700)
 	if asJSON(messages) != before {
 		t.Fatal("反复压缩改变已形成的摘录")
 	}

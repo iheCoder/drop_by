@@ -116,7 +116,7 @@ func (s *Store) workSummary(w Work) (ActivitySummary, error) {
 }
 
 var actionTitles = map[string]string{
-	"delegate_work": "安排朋友协作", "close_responsibility": "结束临时分工", "cancel_work": "取消后续安排",
+	"organize_context": "整理思路", "delegate_work": "安排朋友协作", "close_responsibility": "结束临时分工", "cancel_work": "取消后续安排",
 	"search": "搜索网页", "read_page": "阅读网页", "save_artifact": "保存成果", "remember": "整理经历",
 	"schedule_exploration": "安排探索", "schedule_followup": "留个后续", "ask_question": "提出问题",
 	"send_message": "发送消息", "read_conversation": "看看聊天近况", "send_private": "发起私聊", "read_history": "回顾聊天", "read_artifact": "查看成果",

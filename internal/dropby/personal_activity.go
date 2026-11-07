@@ -206,13 +206,13 @@ func (e *Engine) personalContext(m Member, w Work) (map[string]any, error) {
 	}
 	activity := []map[string]any{}
 	for _, r := range runs {
-		if r.Name == "remember" || r.Name == "read_memory" || r.Name == "search_memory" || r.Name == "read_tool_result" {
+		if r.Name == "organize_context" || r.Name == "remember" || r.Name == "read_memory" || r.Name == "search_memory" || r.Name == "read_tool_result" {
 			continue
 		}
 		if r.Status == "failed" || r.Status == "cancelled" {
 			continue
 		}
-		activity = append(activity, map[string]any{"id": r.ID, "name": r.Name, "arguments": string(r.Arguments), "status": r.Status, "created_at": r.CreatedAt, "result": sharedToolResult(r.Result)})
+		activity = append(activity, map[string]any{"id": r.ID, "name": r.Name, "arguments": sourceArguments(r), "status": r.Status, "created_at": r.CreatedAt})
 	}
 	// 未完成事项只是自己的背景之一；不作为这次探索必须延续的命题。
 	jobs, err := e.Store.OpenWork("")

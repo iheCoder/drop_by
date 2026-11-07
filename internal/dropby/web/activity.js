@@ -78,7 +78,7 @@ function showActivity(scroll=true) {
   const jobs=(roomData.work || []).filter(backgroundWork).sort((a,b)=>b.created_at.localeCompare(a.created_at)), current=jobs.filter(w=>openWorkStatuses.includes(w.status)||w.status==='failed');
   const actions=[...(roomData.tool_runs || [])].sort((a,b)=>b.created_at.localeCompare(a.created_at));
   // 读记录、整理经历保留在第二层；用户先看到真正的安排、产出和收尾。
-  const meaningful=actions.filter(a=>!['read_work','read_history','read_memory','read_tool_result','read_artifact','search_memory','remember'].includes(a.name));
+  const meaningful=actions.filter(a=>!['organize_context','read_work','read_history','read_memory','read_tool_result','read_artifact','search_memory','remember'].includes(a.name));
   const other=actions.filter(a=>!meaningful.includes(a));
   const failedChat=roomData.work.find(w=>w.kind==='chat' && w.status==='failed' && w.id===roomData.work[0]?.id);
   const replyIssue=failedChat && ![...decisions.values()].some(p=>p.work_id===failedChat.id && p.action==='error') ? `<div class="reply-issue"><p>这次回应未生成，已有消息保留。</p><div class="activity-links">${sourceLink(failedChat.source_id)}<button class="quiet" data-action="continue-work" data-id="${escapeHTML(failedChat.id)}">接着聊 ${icon('arrow-up')}</button></div>${technicalRecord({reason:failedChat.result},'reply-error')}</div>` : '';

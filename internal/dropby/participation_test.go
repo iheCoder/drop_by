@@ -48,7 +48,7 @@ func latestChatWork(t *testing.T, s *Store, room string) Work {
 }
 
 func TestConcurrentMembersSeePeersWithoutWaitingForSlowMember(t *testing.T) {
-	// B 已经在思考时 A 发来新消息；B 发布前能看到它。C 的慢请求不形成队列屏障。
+	// B 正在思考时 A 发来新消息；B 保留已形成的回复，C 的慢请求不形成队列屏障。
 	s, c, members := groupWithMembers(t, 3)
 	msg := userMessage(c, "这周很累，不太想再做计划。")
 	s.AddUserMessage(msg, time.Hour)
@@ -132,8 +132,8 @@ func TestConcurrentMembersSeePeersWithoutWaitingForSlowMember(t *testing.T) {
 		t.Fatal("C 故障没有记录")
 	}
 	messages, _ := s.Messages(c.ID, 0, 20)
-	if len(messages) != 3 || messages[2].ReplyTo != messages[1].ID || strings.Contains(messages[2].Body, "旧草稿") {
-		t.Fatalf("新现场没进入本人行动: %+v", messages)
+	if len(messages) != 3 || !strings.Contains(messages[2].Body, "旧草稿") {
+		t.Fatalf("已形成的表达被新消息撤回: %+v", messages)
 	}
 }
 
@@ -249,7 +249,7 @@ func TestObservationAndStateRespectRevisionAndConversation(t *testing.T) {
 	if _, err := s.searchHistory(c.ID, "", secret.ID, 0, 0); err == nil {
 		t.Fatal("可以选择另一个场景的消息")
 	}
-	s.AddUserMessage(userMessage(c, "我改主意了，想去个热闹的地方。"), time.Hour)
+	s.AddUserMessage(userMessage(c, "暂停讨论"), time.Hour)
 	if err := s.recordObservation(c, m.ID, seq, &unsupported, []string{msg.ID}); !errors.Is(err, ErrStale) {
 		t.Fatalf("过时判断未拦截: %v", err)
 	}
@@ -366,9 +366,9 @@ func TestQuestionToolIsARealContributionAndKeepsQuestionContext(t *testing.T) {
 	}
 }
 
-func TestProfileEditRetriesExistingChatButNewHumanReplacesIt(t *testing.T) {
+func TestProfileEditRetriesButOrdinaryHumanDoesNotReplaceRunningChat(t *testing.T) {
 	// 在模型已经读到旧人物说明、尚未发布时修改人物。旧稿必须丢弃，原用户问题
-	// 仍应立即用新身份重新处理。对照场景是真人补充新消息：旧机会必须被替代。
+	// 仍应立即用新身份重新处理。对照场景是普通真人补充：正在形成的回复继续。
 	for _, change := range []string{"profile", "profile_then_budget", "new_human"} {
 		t.Run(change, func(t *testing.T) {
 			s, c, m := fixture(t)
@@ -445,8 +445,8 @@ func TestProfileEditRetriesExistingChatButNewHumanReplacesIt(t *testing.T) {
 			if profileChanged && status != "pending" {
 				t.Fatalf("人物修改丢掉了用户原问题: %s", status)
 			}
-			if change == "new_human" && status != "superseded" {
-				t.Fatalf("新真人消息没有替代旧机会: %s", status)
+			if change == "new_human" && status != "done" {
+				t.Fatalf("普通补充不应替代正在完成的行动: %s", status)
 			}
 			// 不依赖定时器实等一秒，让已经安排的重试/新消息立即进入下一次调度。
 			if _, err := s.db.Exec(`UPDATE work SET due_at=0 WHERE status='pending'`); err != nil {
@@ -477,13 +477,13 @@ func TestProfileEditRetriesExistingChatButNewHumanReplacesIt(t *testing.T) {
 					replies = append(replies, message)
 				}
 			}
-			if len(replies) != 1 || strings.Contains(replies[0].Body, "过时") {
+			if len(replies) != 1 || (profileChanged && strings.Contains(replies[0].Body, "过时")) {
 				t.Fatalf("旧稿发布或最新回复缺失: %+v", replies)
 			}
 			if profileChanged && (!strings.Contains(replies[0].Body, "诗意") || !strings.Contains(replies[0].Body, "海边")) {
 				t.Fatalf("未用新人物接原话: %s", replies[0].Body)
 			}
-			if change == "new_human" && !strings.Contains(replies[0].Body, "山里的雨") {
+			if change == "new_human" && !strings.Contains(replies[0].Body, "旧人物回复") {
 				t.Fatalf("没有转向最新真人消息: %s", replies[0].Body)
 			}
 		})

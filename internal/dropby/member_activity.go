@@ -110,6 +110,9 @@ func (e *Engine) converse(ctx context.Context, c Conversation, w Work) error {
 		}
 		// 已在运行中的交流读过这批消息，持久通知只需确认消费，不再重复叫一次模型。
 		freshOpportunity := handled == 0 && !(w.Kind == "followup" && w.SourceID != "")
+		if w.Kind == "chat" && unseen == 0 {
+			freshOpportunity = false
+		}
 		if contains(pending, id) || freshOpportunity || unseen > 0 {
 			start(id)
 		}
@@ -228,6 +231,10 @@ func (e *Engine) memberAction(ctx context.Context, c Conversation, m Member, w W
 			action = "act"
 		}
 		if _, err := tx.Exec(`INSERT INTO participation VALUES(?,?,?,?,?,?)`, w.ID, m.ID, action, clip(out.Outcome, 500), true, now()); err != nil {
+			return err
+		}
+		// 窗口与行动完成原子落盘；静默结束也保留连续理解，崩溃后不会重放已发消息。
+		if _, err := tx.Exec(`INSERT INTO working_contexts(conversation_id,member_id,seen,messages) SELECT ?,member_id,seen,messages FROM action_checkpoints WHERE work_id=? AND member_id=? ON CONFLICT(conversation_id,member_id) DO UPDATE SET seen=excluded.seen,messages=excluded.messages`, c.ID, w.ID, m.ID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`DELETE FROM action_checkpoints WHERE work_id=? AND member_id=?`, w.ID, m.ID); err != nil {
