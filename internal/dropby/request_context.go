@@ -70,7 +70,7 @@ func requestInputUpperBound(messages []ChatMessage, encode func([]ChatMessage) (
 			if err := json.Unmarshal(item, &fields); err != nil {
 				return 0, fmt.Errorf("模型返回的推理或工具协议记录无效，已保留本次行动记录")
 			}
-			if string(fields["type"]) == `"reasoning"` {
+			if string(fields["type"]) == `"reasoning"` || string(fields["type"]) == `"compaction"` {
 				delete(fields, "encrypted_content")
 				visible[i].ResponseItems[j], _ = json.Marshal(fields)
 			}

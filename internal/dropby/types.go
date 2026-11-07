@@ -35,14 +35,16 @@ type Conversation struct {
 	Kind      string   `json:"kind"`
 	MemberIDs []string `json:"member_ids"`
 	// 协调者是这一个群里的可选职责，不改变成员的长期性格或其他群里的身份。
-	CoordinatorID    string `json:"coordinator_id,omitempty"`
-	Revision         int64  `json:"revision"`
-	DiscussionPaused bool   `json:"discussion_paused"`
-	ResearchPaused   bool   `json:"research_paused"`
-	Guidance         string `json:"guidance"`
-	UpdatedAt        string `json:"updated_at"`
-	LastMessage      string `json:"last_message"`
-	LastSeq          int64  `json:"last_seq"`
+	Responsibilities []Responsibility `json:"responsibilities"`
+	Avatar           string           `json:"avatar,omitempty"`
+	CoordinatorID    string           `json:"coordinator_id,omitempty"`
+	Revision         int64            `json:"revision"`
+	DiscussionPaused bool             `json:"discussion_paused"`
+	ResearchPaused   bool             `json:"research_paused"`
+	Guidance         string           `json:"guidance"`
+	UpdatedAt        string           `json:"updated_at"`
+	LastMessage      string           `json:"last_message"`
+	LastSeq          int64            `json:"last_seq"`
 }
 
 type Message struct {
@@ -75,6 +77,9 @@ type Memory struct {
 // Work 是可以真正执行和恢复的工作，不代表兴趣的生命周期。
 // chat/explore 是一次有限的交流机会；research 才是一项已安排的后台行动。
 type Work struct {
+	BudgetRequired int64    `json:"-"`
+	ParentID       string   `json:"parent_id,omitempty"`
+	FirstSpeakers  []string `json:"first_speakers,omitempty"`
 	// 真实委托者用于任务回报；空串仍表示成员自行安排的行动。
 	AssignedBy     string `json:"assigned_by,omitempty"`
 	Autonomous     bool   `json:"autonomous,omitempty"` // 计费来源与引用消息分离，记得真人原话不等于持续占用前台额度。
@@ -135,10 +140,11 @@ type Artifact struct {
 }
 
 var (
-	ErrStale       = errors.New("用户已补充新消息，本次结果不再适用")
-	ErrBudget      = errors.New("本周运行预算不足，未完工作已保留")
-	ErrUnavailable = errors.New("尚未配置模型服务，请设置 OPENAI_API_KEY 或 DROPBY_API_KEY")
-	ErrRunLimit    = errors.New("本次工具运行已达到上限，未完工作已保留")
+	ErrContextCapacity = errors.New("上下文需要整理后继续")
+	ErrStale           = errors.New("用户已补充新消息，本次结果不再适用")
+	ErrBudget          = errors.New("本周运行预算不足，未完工作已保留")
+	ErrUnavailable     = errors.New("尚未配置模型服务，请设置 OPENAI_API_KEY 或 DROPBY_API_KEY")
+	ErrRunLimit        = errors.New("本次工具运行已达到上限，未完工作已保留")
 )
 
 func newID(prefix string) string {

@@ -52,10 +52,7 @@ func TestLiveContextRecallAndCoordination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err = s.SetCoordinator(c, members[0].ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// 不通过设置接口预先任命。下面的真人话语必须产生当前事项的实际职责。
 	// 旧约在近期窗口和记忆索引之外，必须真正调用发现工具才能拿到。
 	old := Message{ID: newID("msg"), ConversationID: c.ID, AuthorID: "user", Body: "记一下我们的星灯卡约定：只用深蓝和暖白两种颜色；可以有切换一句短句的按钮，但不要做倒计时。", CreatedAt: now()}
 	if err := s.Publish(old, c.Revision); err != nil {
@@ -106,16 +103,32 @@ func TestLiveContextRecallAndCoordination(t *testing.T) {
 		var recalled, assigned, reviewed, artifacts int
 		s.db.QueryRow(`SELECT count(*) FROM tool_runs WHERE conversation_id=? AND member_id=? AND name IN ('search_memory','read_history') AND status='succeeded'`, c.ID, members[0].ID).Scan(&recalled)
 		s.db.QueryRow(`SELECT count(*) FROM work WHERE conversation_id=? AND assigned_by=? AND member_id=? AND status='done'`, c.ID, members[0].ID, members[1].ID).Scan(&assigned)
-		s.db.QueryRow(`SELECT count(*) FROM work WHERE conversation_id=? AND substr(id,1,13)='coordination_' AND status='done'`, c.ID).Scan(&reviewed)
+		// 接住结果可以发生在自动复看，也可以发生在同伴公开分享后的正常交流。
+		// 两条路径都必须真的 read_work 核对完成结果；不能用固定回调状态代替行为证据。
+		s.db.QueryRow(`SELECT count(*) FROM tool_runs r JOIN work w ON w.id=json_extract(r.arguments,'$.id')
+ WHERE r.conversation_id=? AND r.member_id=? AND r.name='read_work' AND r.status='succeeded'
+ AND w.assigned_by=? AND w.member_id=? AND json_extract(r.result,'$.status')='done'`, c.ID, members[0].ID, members[0].ID, members[1].ID).Scan(&reviewed)
 		s.db.QueryRow(`SELECT count(*) FROM artifacts WHERE conversation_id=? AND member_id=? AND format='html'`, c.ID, members[1].ID).Scan(&artifacts)
-		if recalled > 0 && assigned > 0 && reviewed > 0 && artifacts > 0 {
+		var remaining, completed int
+		s.db.QueryRow(`SELECT count(*) FROM work WHERE conversation_id=? AND status IN ('pending','running','waiting_budget')`, c.ID).Scan(&remaining)
+		s.db.QueryRow(`SELECT count(*) FROM work WHERE conversation_id=? AND status='done'`, c.ID).Scan(&completed)
+		// 不能在 read_work 刚返回时就取消仍在生成的收尾；等实际行动完整退出。
+		if recalled > 0 && assigned > 0 && reviewed > 0 && artifacts > 0 && remaining == 0 {
 			var instruction string
 			s.db.QueryRow(`SELECT instruction FROM work WHERE conversation_id=? AND assigned_by=? AND member_id=? ORDER BY created_at LIMIT 1`, c.ID, members[0].ID, members[1].ID).Scan(&instruction)
 			if !strings.Contains(instruction, "倒计时") || !strings.Contains(instruction, "暖白") {
 				t.Fatalf("找回的具体约定未进入委托：%s", instruction)
 			}
-			t.Log("实际找回旧约、按约委托、同伴保存 HTML、协调者完成结果复看")
+			var roles int
+			s.db.QueryRow(`SELECT count(*) FROM responsibilities WHERE conversation_id=? AND member_id=? AND scope_id<>''`, c.ID, members[0].ID).Scan(&roles)
+			if roles == 0 {
+				t.Fatal("实际委托没有来自对话形成的临时职责")
+			}
+			t.Log("实际从真人对话形成临时职责、找回旧约、按约委托、同伴保存 HTML、负责人完成结果复看")
 			return
+		}
+		if remaining == 0 && completed > 0 {
+			t.Fatalf("真实行动已经结束但未形成完整委托接力: recalled=%d assigned=%d reviewed=%d artifacts=%d", recalled, assigned, reviewed, artifacts)
 		}
 		var stalled int
 		s.db.QueryRow(`SELECT count(*) FROM work WHERE conversation_id=? AND status IN ('failed','waiting_budget','paused')`, c.ID).Scan(&stalled)

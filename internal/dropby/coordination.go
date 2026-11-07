@@ -67,7 +67,7 @@ WHERE conversation_id=? AND substr(id,1,13)='coordination_' AND status IN ('pend
 
 // DelegateWork 安排一项可检查结果的真实行动，不生成同伴的台词，也不直接转交
 // 任何人的私有记忆。成员自己执行 research，仍可根据新情境说明不适合或不必继续。
-func (s *Store) DelegateWork(c Conversation, coordinator Member, source Work, memberID, instruction, reason string) (Work, error) {
+func (s *Store) DelegateWork(c Conversation, coordinator Member, source Work, memberID, instruction, reason string, organize ...bool) (Work, error) {
 	w := Work{ID: newID("work"), ConversationID: c.ID, MemberID: memberID,
 		Kind: "research", AssignedBy: coordinator.ID, Instruction: strings.TrimSpace(instruction),
 		Reason: strings.TrimSpace(reason), Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
@@ -83,8 +83,12 @@ func (s *Store) DelegateWork(c Conversation, coordinator Member, source Work, me
 		if err := tx.QueryRow(`SELECT kind,coordinator_id,research_paused FROM conversations WHERE id=?`, c.ID).Scan(&kind, &current, &paused); err != nil {
 			return err
 		}
-		if kind != "group" || current == "" || current != coordinator.ID {
-			return fmt.Errorf("只有当前群由真人指定的协调者可以委托工作")
+		responsible, err := responsibleMembers(tx, c.ID, source)
+		if err != nil {
+			return err
+		}
+		if kind != "group" || !contains(responsible, coordinator.ID) {
+			return fmt.Errorf("当前事项没有授予这位成员组织职责")
 		}
 		if paused {
 			return fmt.Errorf("研究已暂停，不能通过委托继续安排工作")
@@ -106,7 +110,7 @@ func (s *Store) DelegateWork(c Conversation, coordinator Member, source Work, me
 		if err != nil {
 			return fmt.Errorf("委托必须来自当前聊天中实际存在的工作")
 		}
-		w.RootID, w.SourceID, w.Autonomous = rootOf(parent), parent.SourceID, autonomousWork(parent)
+		w.RootID, w.SourceID, w.Autonomous, w.ParentID = rootOf(parent), parent.SourceID, autonomousWork(parent), parent.ID
 		// 先找仍在执行的同项工作。工具重试不复制任务，也不把同伴自己已安排
 		// 的相同研究偷换为协调者的功劳。
 		existing, err := scanWork(tx.QueryRow(`SELECT `+workColumns+` FROM work WHERE conversation_id=? AND member_id=? AND kind='research' AND instruction=? AND status IN ('pending','running','waiting_budget','paused') ORDER BY created_at LIMIT 1`, c.ID, memberID, w.Instruction))
@@ -126,7 +130,15 @@ func (s *Store) DelegateWork(c Conversation, coordinator Member, source Work, me
 		if assigned >= maxChainedActions {
 			return errAutonomyLimit
 		}
-		return insertWork(tx, w)
+		if err := insertWork(tx, w); err != nil {
+			return err
+		}
+		if len(organize) > 0 && organize[0] {
+			// 这是原委托内的子事项组织权；不是把对方升为整个群的长期负责人。
+			_, err := tx.Exec(`INSERT INTO responsibilities(id,conversation_id,member_id,scope_id,body,source_id) VALUES(?,?,?,?,?,?)`, newID("responsibility"), c.ID, memberID, w.ID, "受 "+coordinator.Name+" 委托组织这项工作："+w.Instruction, w.SourceID)
+			return err
+		}
+		return nil
 	})
 	return w, err
 }
@@ -145,6 +157,22 @@ func queueCoordinationReview(tx *sql.Tx, w Work, status, result string) error {
 		}
 		return err
 	}
+	scope := w
+	if w.ParentID != "" {
+		scope.ID = w.ParentID
+	}
+	responsible, err := responsibleMembers(tx, w.ConversationID, scope)
+	if err != nil {
+		return err
+	}
+	if len(responsible) > 0 {
+		coordinator = responsible[0]
+		if contains(responsible, w.AssignedBy) {
+			coordinator = w.AssignedBy
+		}
+	} else {
+		coordinator = ""
+	}
 	if coordinator == "" || paused {
 		return nil
 	}
@@ -156,11 +184,11 @@ func queueCoordinationReview(tx *sql.Tx, w Work, status, result string) error {
 	if exists > 0 {
 		return nil
 	}
-	review := Work{ID: id, RootID: rootOf(w), Autonomous: true, ConversationID: w.ConversationID,
+	review := Work{ID: id, ParentID: w.ParentID, RootID: rootOf(w), Autonomous: true, ConversationID: w.ConversationID,
 		MemberID: coordinator, Kind: "revisit", SourceID: w.SourceID, Status: "pending",
 		Instruction: "一项委托有了实际结果。先用 read_work 核对工作 " + w.ID + "，再结合当前目标、最新消息和同伴各自的安排，决定是否需要协调下一步、调整分工或就此结束。不要替同伴重复发布其成果，也不必为推进而再造任务。状态：" + status + "；实际记录：" + clip(result, 2500),
 		Reason:      "同伴的委托结果触发了这次复看，不是定时催促。", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
-	err := insertWork(tx, review)
+	err = insertWork(tx, review)
 	if errors.Is(err, errAutonomyLimit) {
 		// 到达链边界时仍必须保存真实成果；协调者之后可从工作记录主动查看。
 		return nil
@@ -196,7 +224,10 @@ func (s *Store) OpenWork(room string) ([]Work, error) {
 	return list, rows.Err()
 }
 
-const coordinationPrompt = `conversation.coordinator_id 是真人给这个群指定的可选协调职责，不能自行任命。只有这个成员可以使用 delegate_work。
-协调者仍保持自己的性格：确有共同目标时，再依据同伴已表现的特质、实际进展和各自安排分工；把任务、预期结果和边界讲清楚。先看已有工作，避免几个人重复同一件事；日常聊天不需要领导点评、每轮总结或强制派活。
-work.assigned_by 非空表示一项真实委托。接收者保留自己的判断和表达方式；不适合、已无必要、做不了时，如实记录原因，不假装服从或完成。成果由实际做事的人自己选择是否分享。
-同伴完成、失败或暂停会给当前协调者一次复看机会；不必额外轮询或安排催促。协调者可用 read_work 核对结果，再决定是否推进下一位，也可以安静结束。`
+const coordinationPrompt = `conversation.responsibilities 是这个群已经形成的真实职责约定。长期职责只在相关事情需要组织时发挥作用；scope_id 非空的临时职责只对应那件事及其后续，不能覆盖长期身份。可用工具已按实际职责过滤，不自行任命。
+用户 @ 一位同伴去组织时，理解这次把事情交给了谁：通常让他先理解和安排，但有关键澄清、约束或自己的不同看法仍可自然参与，不全员抢答，也不自动全员禁言。
+有共同事项时，负责人依据同伴特质、已有工作和目标，用 delegate_work 做真实分工，不能只写一份“计划”就声称安排完成。可 coordinate=true 委托对方组织子事项。日常闲聊无需主持、点评、轮流发言或总结。
+work.assigned_by 非空表示已经排入队列的委托。接收者不必再 schedule_exploration 来“接受”，直接在这项实际工作里推进；可以说明不适合、提出调整或如实结束，不假装完成。先查看当前 work，重复安排不是积极主动。
+结果、失败与暂停会给这件事的负责人复看机会；先用 read_work 核实，再按需读取真实成果。接着补缺、交接、总结或结束，不必轮询催促。已有作品不等于全部工作成功；只整合了部分材料就如实说明。
+事情完成、实际结果已收齐后，可用 close_responsibility 结束自己的临时职责；不要把等待同伴或取消组织职责说成任务完成。
+如果约定没有变化，平时保持自己的兴趣与说话方式，不把每条消息都变成任务。`

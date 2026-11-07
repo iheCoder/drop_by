@@ -58,41 +58,19 @@ func TestRequestCapacityCompactsToolTextWithoutLosingIdentityOrProtocol(t *testi
 	}
 }
 
-func TestRequestCapacityCountsCoreToolsReasoningAndOutputBeforeSpending(t *testing.T) {
-	// 这四类内容都不能被聊天消息的局部字数限制漏算；超过配置时不得先调用、扣费，
-	// 也不能静默丢掉角色设定或工具定义来制造表面成功。
-	for _, kind := range []string{"core", "tool_schema", "reported_reasoning", "output_reservation"} {
-		t.Run(kind, func(t *testing.T) {
-			s, _, _ := fixture(t)
-			var requests atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
-				io.WriteString(w, `{"status":"completed","output":[],"usage":{}}`)
-			}))
-			defer server.Close()
-			cfg := testConfig()
-			cfg.Model, cfg.Reasoning, cfg.BaseURL = "gpt-5.6-sol", "high", server.URL
-			cfg.ContextTokenBudget = 1000
-			messages := []ChatMessage{{Role: "system", Content: "稳定身份"}, {Role: "user", Content: "当前问题"}}
-			var defs []ToolDefinition
-			switch kind {
-			case "core":
-				messages[0].Content = strings.Repeat("稳定身份和目标", 300)
-			case "tool_schema":
-				defs = []ToolDefinition{definition("read_history", strings.Repeat("完整工具定义", 300), map[string]any{})}
-			case "reported_reasoning":
-				messages = append(messages, ChatMessage{Role: "assistant", OutputTokens: 900, ResponseItems: []json.RawMessage{json.RawMessage(`{"type":"reasoning","id":"rs_counted","encrypted_content":"small-encoding","summary":[]}`)}})
-			case "output_reservation":
-				cfg.MaxOutputTokens = 1000
-			}
-			model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
-			if _, err := model.Complete(context.Background(), messages, defs, false); err == nil || !strings.Contains(err.Error(), "上下文容量") {
-				t.Fatalf("应说明内部容量边界: %v", err)
-			}
-			u, err := s.Usage()
-			if err != nil || requests.Load() != 0 || u.Calls != 0 || u.CostMicros != 0 {
-				t.Fatalf("容量检查应发生在请求和预算预留之前: requests=%d usage=%+v err=%v", requests.Load(), u, err)
-			}
-		})
+func TestInvalidOutputReservationDoesNotCallProvider(t *testing.T) {
+	// 明显错误的配置无需计数/压缩：输出预留已经占满窗口，任何输入都放不下。
+	s, _, _ := fixture(t)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1) }))
+	defer server.Close()
+	cfg := testConfig()
+	cfg.Model, cfg.Reasoning, cfg.BaseURL = "gpt-5.6-sol", "high", server.URL
+	cfg.ContextTokenBudget, cfg.MaxOutputTokens = 1000, 1000
+	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
+	_, err := model.Complete(context.Background(), []ChatMessage{{Role: "user", Content: "第一句话"}}, nil, false)
+	u, _ := s.Usage()
+	if err == nil || !strings.Contains(err.Error(), "上下文容量配置") || requests.Load() != 0 || u.Calls != 0 {
+		t.Fatalf("无效配置不应调用或扣费: %v %d %+v", err, requests.Load(), u)
 	}
 }

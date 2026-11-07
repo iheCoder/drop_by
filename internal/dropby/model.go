@@ -84,6 +84,7 @@ func nextBudgetWeek() time.Time {
 // 同时仍能被调度器按 ErrBudget 识别；后台子上限也能单独识别而不阻断真人交流。
 type budgetRejection struct {
 	message    string
+	required   int64
 	autonomous bool
 }
 
@@ -134,18 +135,18 @@ func (s *Store) reserveContextAt(ctx context.Context, c Config, cost int64, at t
 	// 先判断整体额度，避免总额度也不足时误报“只有自主探索受限”。
 	reset := end.Format("1月2日 15:04 MST")
 	if calls >= c.WeeklyCalls {
-		return day, &budgetRejection{message: fmt.Sprintf("本周已达到 %d 次调用上限，未完工作已保留，%s 恢复。", c.WeeklyCalls, reset)}
+		return day, &budgetRejection{required: cost, message: fmt.Sprintf("本周已达到 %d 次调用上限，未完工作已保留，%s 恢复。", c.WeeklyCalls, reset)}
 	}
 	remaining := max(int64(0), c.WeeklyBudgetMicros-total)
 	if remaining == 0 {
-		return day, &budgetRejection{message: fmt.Sprintf("本周 $%.2f 运行预算已用完，未完工作已保留，%s 恢复。", float64(c.WeeklyBudgetMicros)/1e6, reset)}
+		return day, &budgetRejection{required: cost, message: fmt.Sprintf("本周 $%.2f 运行预算已用完，未完工作已保留，%s 恢复。", float64(c.WeeklyBudgetMicros)/1e6, reset)}
 	}
 	if cost > remaining {
-		return day, &budgetRejection{message: fmt.Sprintf("本周可用预算还剩 $%.3f，本次调用需预留 $%.3f，暂时无法开始；未完工作已保留，%s 恢复周额度。", float64(remaining)/1e6, float64(cost)/1e6, reset)}
+		return day, &budgetRejection{required: cost, message: fmt.Sprintf("本周可用预算还剩 $%.3f，本次调用需预留 $%.3f，暂时无法开始；未完工作已保留，%s 恢复周额度。", float64(remaining)/1e6, float64(cost)/1e6, reset)}
 	}
 	if autonomous && cost > max(int64(0), c.AutonomousBudgetMicros-background) {
 		autoRemaining := max(int64(0), c.AutonomousBudgetMicros-background)
-		return day, &budgetRejection{message: fmt.Sprintf("本周自主探索可用额度还剩 $%.3f，本次需预留 $%.3f，已保留后续；真人聊天仍可使用总预算余量，%s 恢复自主额度。", float64(autoRemaining)/1e6, float64(cost)/1e6, reset), autonomous: true}
+		return day, &budgetRejection{required: cost, message: fmt.Sprintf("本周自主探索可用额度还剩 $%.3f，本次需预留 $%.3f，已保留后续；真人聊天仍可使用总预算余量，%s 恢复自主额度。", float64(autoRemaining)/1e6, float64(cost)/1e6, reset), autonomous: true}
 	}
 	if _, err = tx.Exec(`UPDATE usage SET calls=calls+1,cost_micros=cost_micros+?,autonomous_cost_micros=autonomous_cost_micros+? WHERE day=?`, cost, autoCost, day); err != nil {
 		return day, err
@@ -187,6 +188,10 @@ type modelResult struct {
 }
 
 func (m *HTTPModel) Complete(ctx context.Context, messages []ChatMessage, defs []ToolDefinition, jsonOutput bool) (ChatMessage, error) {
+	return m.complete(ctx, messages, defs, jsonOutput, nil)
+}
+
+func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs []ToolDefinition, jsonOutput bool, chain *[]ChatMessage) (ChatMessage, error) {
 	// 使用副本调整请求配置，避免多个成员并发调用时互相污染。
 	local := *m
 	m = &local
@@ -228,6 +233,17 @@ func (m *HTTPModel) Complete(ctx context.Context, messages []ChatMessage, defs [
 		body["messages"] = input
 		return json.Marshal(body)
 	})
+	capacity := m.Config.ContextTokenBudget
+	if capacity == 0 {
+		capacity = 100000
+	}
+	if e != nil && useResponses && capacity > m.Config.MaxOutputTokens {
+		var prepared []ChatMessage
+		encoded, inputEstimate, prepared, e = m.prepareLargeResponse(ctx, messages, defs, jsonOutput)
+		if e == nil && chain != nil {
+			*chain = prepared
+		}
+	}
 	if e != nil {
 		return ChatMessage{}, e
 	}

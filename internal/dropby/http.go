@@ -30,6 +30,8 @@ func NewHandler(engine *Engine) http.Handler {
 	a := &API{engine: engine}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", a.state)
+	mux.HandleFunc("PATCH /api/profile", a.userProfile)
+	mux.HandleFunc("PATCH /api/conversations/{id}", a.updateGroup)
 	mux.HandleFunc("POST /api/member-questions", a.questions)
 	mux.HandleFunc("POST /api/members", a.createMember)
 	mux.HandleFunc("PATCH /api/members/{id}", a.updateMember)
@@ -139,7 +141,12 @@ func (a *API) state(w http.ResponseWriter, r *http.Request) {
 		activities = append(activities, activity)
 	}
 	a.engine.mu.Unlock()
-	respond(w, 200, map[string]any{"members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "weekly_budget_micros": a.engine.Config.WeeklyBudgetMicros, "autonomous_weekly_budget_micros": a.engine.Config.AutonomousBudgetMicros, "weekly_calls": a.engine.Config.WeeklyCalls, "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
+	profile, err := a.engine.Store.UserProfile()
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	respond(w, 200, map[string]any{"profile": profile, "budget_blocked": a.engine.Store.budgetBlocked(a.engine.Config, usage), "members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "weekly_budget_micros": a.engine.Config.WeeklyBudgetMicros, "autonomous_weekly_budget_micros": a.engine.Config.AutonomousBudgetMicros, "weekly_calls": a.engine.Config.WeeklyCalls, "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
 }
 func (a *API) questions(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -308,6 +315,7 @@ func (a *API) preferences(w http.ResponseWriter, r *http.Request) {
 func (a *API) createConversation(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Name      string   `json:"name"`
+		Avatar    string   `json:"avatar"`
 		Kind      string   `json:"kind"`
 		MemberIDs []string `json:"member_ids"`
 	}
@@ -318,8 +326,8 @@ func (a *API) createConversation(w http.ResponseWriter, r *http.Request) {
 		respond(w, 400, map[string]string{"error": "聊天类型无效"})
 		return
 	}
-	if len(in.MemberIDs) == 0 || len(in.MemberIDs) > 8 || (in.Kind == "direct" && len(in.MemberIDs) != 1) {
-		respond(w, 400, map[string]string{"error": "请为群选择 1 到 8 位成员，私聊只选择一位"})
+	if len(in.MemberIDs) == 0 || len(in.MemberIDs) > 12 || (in.Kind == "direct" && len(in.MemberIDs) != 1) {
+		respond(w, 400, map[string]string{"error": "请为群选择 1 到 12 位成员，私聊只选择一位"})
 		return
 	}
 	seen := map[string]bool{}
@@ -342,11 +350,15 @@ func (a *API) createConversation(w http.ResponseWriter, r *http.Request) {
 	if in.Name == "" {
 		in.Name = "随便聊聊"
 	}
-	if len([]rune(in.Name)) > 80 {
+	if len([]rune(in.Name)) > 120 {
 		respond(w, 400, map[string]string{"error": "聊天名称太长"})
 		return
 	}
-	c, err := a.engine.Store.CreateConversation(in.Name, in.Kind, in.MemberIDs, a.engine.Config.ExploreInterval)
+	if err := validateAvatar(in.Avatar); err != nil {
+		respond(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	c, err := a.engine.Store.CreateConversation(in.Name, in.Kind, in.MemberIDs, a.engine.Config.ExploreInterval, in.Avatar)
 	if err != nil {
 		a.fail(w, err)
 		return

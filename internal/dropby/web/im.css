@@ -1,0 +1,148 @@
+/* Global creation and account pages keep the conversation draft intact. The visual
+   language stays shared with the IM: quiet surfaces, visible focus, restrained chrome. */
+.my-profile { display:flex; gap:12px; align-items:center; text-align:left; width:100%; border-radius:12px; padding:12px 10px; margin-top:10px; }
+.my-profile:hover { background:var(--hover); }
+.my-profile .person-copy { display:flex; flex:1; min-width:0; flex-direction:column; gap:4px; }
+.my-profile strong { font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.my-profile small,.side-signoff { font-size:11px; color:var(--muted); }
+.my-profile > .icon { width:16px; }
+.side-bottom { padding:14px 10px 4px; margin-top:0; }
+.workspace-open #main,.workspace-open .inspector { display:none; }
+.workspace-page { flex:1; min-width:0; display:flex; flex-direction:column; background:var(--surface); }
+.workspace-header { display:flex; gap:14px; align-items:center; flex-shrink:0; min-height:84px; border-bottom:1px solid var(--line); padding:16px 30px; }
+.workspace-header h1 { font-size:18px; font-weight:650; margin:0; }
+.workspace-header h1:focus,.panel-heading h2:focus { outline:none; }
+.workspace-content { flex:1; overflow:auto; padding:32px max(32px,calc((100% - 620px)/2)); }
+.workspace-description { color:var(--muted); font-size:14px; line-height:1.8; margin:0 0 28px; }
+.workspace-footer { display:flex; justify-content:flex-end; align-items:center; gap:12px; margin-top:28px; padding:20px 0 max(16px,env(safe-area-inset-bottom)); position:sticky; bottom:-32px; background:linear-gradient(transparent,var(--surface) 10%); }
+.workspace-content .field { margin-top:26px; }
+.workspace-content .avatar-grid { grid-template-columns:repeat(6,minmax(0,1fr)); }
+.workspace-content .avatar-choice { width:auto; display:flex; justify-content:center; }
+.workspace-content .avatar-editor { padding:0 0 16px; }
+.start-actions { display:grid; gap:10px; margin-bottom:32px; }
+.start-actions > button { display:flex; gap:16px; align-items:center; border:1px solid var(--line); border-radius:14px; padding:20px; text-align:left; }
+.start-actions > button:hover { background:var(--hover); }
+.start-actions > button > .icon:first-child { width:24px; height:24px; color:var(--blue); }
+.start-actions > button > .icon:last-child { width:16px; }
+.start-actions span { display:flex; gap:5px; flex-direction:column; flex:1; }
+.start-actions strong { font-size:15px; }
+.start-actions small { font-size:12px; color:var(--muted); }
+.selection-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; font-size:13px; margin:26px 0 12px; }
+.selection-heading small { display:block; margin-top:7px; color:var(--muted); font-weight:400; }
+#selected-count { color:var(--muted); white-space:nowrap; font-size:12px; }
+.member-choice { border-radius:12px; margin-bottom:4px; border:1px solid transparent; }
+.member-choice:has(input:checked) { background:var(--blue-soft); border-color:#d5e1fc; }
+.member-choice input { width:18px; height:18px; accent-color:var(--blue); }
+.invite-summary { display:flex; align-items:center; gap:7px; padding:14px 0; flex-wrap:wrap; }
+.invite-summary > span:not(.avatar) { font-size:12px; color:var(--muted); margin-left:5px; }
+.invite-summary .quiet { margin-left:auto; }
+#group-avatar-preview > .group-portrait,#group-avatar-preview > .avatar { width:72px; height:72px; border-radius:22px; }
+#group-avatar-preview .group-portrait .avatar { width:46px; height:46px; border-radius:16px; }
+#group-avatar-preview .group-icon { width:72px; height:72px; border-radius:22px; }
+.avatar-edit-copy .quiet { padding:4px 0; font-size:12px; min-height:30px; }
+.avatar-upload { cursor:pointer; border-radius:7px; }
+.avatar-upload:focus-within { outline:3px solid #87adfb; outline-offset:4px; }
+.account-person { display:flex; align-items:center; gap:18px; padding:6px 0 34px; }
+.account-person > .avatar { flex:0 0 66px; width:66px; height:66px; border-radius:22px; }
+.account-person > div { flex:1; min-width:0; }
+.account-person h2 { font-size:22px; margin:0 0 7px; overflow-wrap:anywhere; }
+.account-person p { color:var(--muted); font-size:12px; margin:0; line-height:1.7; }
+.account-usage { background:#f8f9fc; border:1px solid var(--line); padding:24px; border-radius:18px; }
+.account-usage-heading { display:flex; align-items:center; justify-content:space-between; }
+.account-usage-heading h2 { font-size:14px; margin:0; }
+.account-usage-heading > span { color:var(--muted); font-size:12px; }
+.account-balance { display:flex; align-items:baseline; flex-wrap:wrap; gap:10px; margin:20px 0 16px; }
+.account-balance strong { font-size:34px; font-weight:600; letter-spacing:-1px; font-variant-numeric:tabular-nums; }
+.account-balance > span { font-size:13px; color:var(--muted); }
+.account-usage progress { width:100%; height:6px; border:0; border-radius:6px; overflow:hidden; display:block; accent-color:var(--blue); }
+.account-usage progress::-webkit-progress-bar { background:#e3e7ef; }
+.account-usage progress::-webkit-progress-value { background:var(--blue); border-radius:6px; }
+.account-usage-note,.usage-details { font-size:12px; color:var(--muted); line-height:1.8; }
+.usage-details summary { cursor:pointer; padding:10px 0; color:var(--ink); }
+.usage-details .budget-note { margin:0; border:0; padding:0; background:none; }
+.account-setting { margin-top:28px; padding-top:22px; border-top:1px solid var(--line); }
+.account-setting > span { display:flex; gap:10px; align-items:center; font-size:14px; }
+.account-setting p { color:var(--muted); font-size:13px; line-height:1.8; }
+.responsibility { padding:16px 0; border-bottom:1px solid var(--line); font-size:13px; line-height:1.8; }
+.responsibility > strong { display:flex; gap:8px; align-items:center; }
+.responsibility small { font-weight:400; color:var(--muted); }
+.responsibility p { margin:8px 0 2px; }
+.responsibility .quiet { display:inline-flex; align-items:center; gap:6px; padding-inline:0; }
+.responsibility .icon { width:14px; height:14px; }
+.own-member { cursor:default; }
+
+/* Standard Markdown spacing lives inside the bubble. Preformatted blocks and tables
+   scroll themselves, so a code sample cannot widen the whole conversation. */
+.message-bubble,.artifact-content { white-space:normal; }
+.markdown { overflow-wrap:anywhere; min-width:0; line-height:1.85; }
+.markdown > :first-child { margin-top:0; }
+.markdown > :last-child { margin-bottom:0; }
+.markdown p { margin:0 0 .8em; }
+.markdown h1,.markdown h2,.markdown h3,.markdown h4,.markdown h5,.markdown h6 { font-weight:650; line-height:1.5; margin:1.2em 0 .55em; }
+.markdown h1 { font-size:1.35em; }.markdown h2 { font-size:1.2em; }.markdown h3 { font-size:1.08em; }
+.markdown ul,.markdown ol { padding-left:1.55em; margin:.65em 0; }
+.markdown li + li { margin-top:.3em; }.markdown li > p { margin:.35em 0; }
+.markdown blockquote { margin:.8em 0; padding:.2em 0 .2em 1em; border-left:3px solid #b7c8e4; color:#526176; }
+.markdown hr { border:0; border-top:1px solid var(--line); margin:1em 0; }
+.markdown pre { white-space:pre; overflow:auto; padding:14px; border:1px solid #dfe5ee; border-radius:10px; background:#f5f7fb; line-height:1.65; font-size:12px; margin:1em 0; max-width:100%; }
+.markdown pre code { padding:0; background:none; border-radius:0; font-size:inherit; }
+.markdown-table { overflow:auto; margin:1em 0; max-width:100%; }
+.markdown table { border-collapse:collapse; font-size:.92em; width:100%; }
+.markdown th,.markdown td { border:1px solid #dbe1ea; padding:8px 11px; text-align:left; min-width:85px; }
+.markdown th { background:#f1f4f9; font-weight:600; }.markdown tr:nth-child(even) td { background:#fafbfd; }
+.user-message .markdown pre { background:rgb(0 0 0 / 12%); border-color:rgb(255 255 255 / 28%); }
+.user-message .markdown pre code { background:none; color:inherit; }
+.user-message .markdown th { background:rgb(255 255 255 / 13%); }
+.user-message .markdown th,.user-message .markdown td { border-color:rgb(255 255 255 / 45%); }
+.user-message .markdown blockquote { color:#eef4ff; border-left-color:#bed2fc; }
+.user-message .markdown tr:nth-child(even) td { background:transparent; }
+.question-text { white-space:pre-wrap; }
+
+/* The preview toolbar has a single hierarchy: back, version, download, expand.
+   A one-version artifact has a plain label instead of a non-choice dropdown. */
+.artifact-meta { display:flex; align-items:center; gap:12px; margin:-6px 0 8px; color:var(--muted); font-size:11px; }
+.artifact-meta .quiet { display:flex; align-items:center; gap:6px; padding-left:0; }
+.artifact-meta .icon { width:15px; }
+.artifact-toolbar { display:flex; align-items:center; gap:8px; margin-bottom:14px; }
+.toolbar-spacer { flex:1; }
+.single-version { font-size:12px; color:var(--muted); padding:10px 0; }
+.artifact-toolbar .artifact-download { display:inline-flex; align-items:center; gap:6px; min-height:36px; padding:8px 10px; border:1px solid var(--line); border-radius:9px; font-size:12px; color:var(--ink); background:var(--surface); text-decoration:none; }
+.artifact-download:hover { background:var(--hover); }
+.artifact-download .icon { width:15px; height:15px; }
+.version-menu { position:relative; font-size:12px; }
+.version-menu summary { display:flex; align-items:center; gap:10px; min-height:36px; cursor:pointer; list-style:none; border:1px solid var(--line); border-radius:9px; padding:8px 11px; background:var(--surface); }
+.version-menu summary::-webkit-details-marker { display:none; }.version-menu summary .icon { width:14px; height:14px; }
+.version-options { position:absolute; z-index:5; top:calc(100% + 6px); left:0; width:244px; max-width:calc(100vw - 48px); max-height:310px; overflow:auto; padding:5px; border:1px solid var(--line); border-radius:12px; background:var(--surface); box-shadow:0 8px 28px rgb(28 42 66 / 12%); }
+.version-options button { padding:10px; border-radius:8px; width:100%; text-align:left; min-height:58px; display:flex; flex-direction:column; gap:4px; }
+.version-options button:hover,.version-options button[aria-pressed=true] { background:var(--hover); }
+.version-options span { display:flex; align-items:center; gap:8px; }.version-options .icon { width:14px; height:14px; }
+.version-options time { padding-left:22px; font-size:11px; color:var(--muted); }
+.artifact-toolbar .icon-button { min-width:36px; min-height:36px; padding:8px; }
+.artifact-tabs { margin-bottom:12px; }.artifact-toolbar .artifact-tabs { margin:0 0 0 4px; flex-shrink:0; padding:3px; }.artifact-toolbar .artifact-tabs button { min-width:64px; padding:6px 10px; }.artifact-tabs button { min-height:34px; }
+.artifact-footer { margin-top:20px; }.artifact-footer button { width:100%; }
+.app.artifact-expanded #main,.app.artifact-expanded .sidebar { display:none; }
+.app.artifact-expanded .inspector { width:100%; flex:1; }
+.app.artifact-expanded .panel-content { max-width:none; }
+.app.artifact-expanded .artifact-preview { height:calc(100dvh - 255px); min-height:400px; }
+@media (min-width:701px) { .app.workspace-open .sidebar { display:flex; } }
+@media (max-width:700px) {
+  .workspace-header { min-height:72px; padding:12px 16px; gap:8px; }
+  .workspace-header h1 { font-size:17px; }
+  .workspace-content { padding:24px; }
+  .workspace-footer { bottom:-24px; }
+  .account-person { flex-wrap:wrap; gap:14px; }.account-person > .secondary { margin-left:80px; }
+  .account-person p { font-size:12px; }.account-usage { padding:20px; }
+  .account-balance strong { font-size:30px; }
+  .start-actions > button { padding:17px; gap:12px; }
+  .workspace-content .avatar-grid { grid-template-columns:repeat(4,minmax(0,1fr)); }
+  .workspace-content .avatar-choice .avatar { width:42px; height:42px; }
+  .app.artifact-open .panel-content { padding:12px 16px 24px; }
+  .app.artifact-open .panel-heading { min-height:66px; padding:12px 16px; }
+  .artifact-meta { margin:0 0 4px; }.artifact-toolbar { margin-bottom:10px; }
+  .artifact-expand { display:none; }.artifact-toolbar .artifact-download,.version-menu summary { min-height:40px; }
+  .artifact-preview { height:calc(100dvh - 250px); min-height:360px; border-radius:10px; }
+  .artifact-toolbar { gap:6px; }.artifact-toolbar .artifact-tabs { margin:0; }.artifact-toolbar .artifact-tabs button { min-width:58px; padding:6px 8px; }
+  .artifact-tabs { margin-bottom:10px; }.artifact-tabs button { min-height:40px; }
+  .artifact-preview-note { font-size:11px; margin-top:9px; }.artifact-footer { margin-top:14px; }
+  .markdown pre { padding:11px; }.markdown th,.markdown td { padding:6px 8px; }
+}

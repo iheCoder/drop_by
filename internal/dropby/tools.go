@@ -48,8 +48,9 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 		defs = append(defs, definition("schedule_followup", "给自己的一个具体挂念安排稍后重新考虑的机会。到时读取最新交流后可发言、行动、改意或安静，不预写必发消息；不是定时问候。", map[string]any{"instruction": textField("到时想重新考虑的具体事情"), "reason": textField("来自哪段交流、兴趣或真实进展"), "delay_seconds": map[string]any{"type": "integer", "minimum": 60, "maximum": 604800}, "due_at": textField("可选绝对时间，RFC3339且含时区，例如2026-11-08T09:00:00+08:00；与delay_seconds只选一个。一次定时，不是周期任务，服务需运行。")}, "instruction", "reason"))
 		defs = append(defs, definition("schedule_exploration", "安排可真正执行的低风险后台探索。明确方向与实际来由；与已有未完研究相同则不要重复安排。会在预算和运行上限内继续。", map[string]any{"instruction": textField("可用现有工具执行的具体方向，不是泛泛关注"), "reason": textField("来自什么兴趣、经历或新材料"), "delay_seconds": map[string]any{"type": "integer", "minimum": 10, "maximum": 86400}}, "instruction", "reason"))
 	}
-	if c.Kind == "group" && c.CoordinatorID == m.ID && !c.ResearchPaused {
-		defs = append(defs, definition("delegate_work", "作为真人指定的本群协调者，委托同群另一成员一项具体工作。写明预期结果、边界及选择理由；先查看已有工作避免重复。完成或遇到问题后会自动获得复看机会，不必定时催促。", map[string]any{"member_id": textField("本群另一成员ID"), "instruction": textField("具体任务、预期结果和边界"), "reason": textField("为什么需要这件事、为什么选择这位成员")}, "member_id", "instruction", "reason"))
+	if t.Store.CanDelegate(c, m, w) {
+		defs = append(defs, definition("close_responsibility", "当前事项已经完成时，结束自己对应的临时组织职责。不取消研究、不修改长期约定；需先收齐实际结果。", map[string]any{"id": textField("conversation.responsibilities 中自己的临时职责ID")}, "id"))
+		defs = append(defs, definition("delegate_work", "依据当前真实约定，委托同群成员完成一项具体工作。coordinate=true 可请对方组织这个子事项，不扩大原授权。写明预期结果、边界及选择理由；先查看已有工作避免重复。完成或遇到问题后会自动获得复看机会，不必定时催促。", map[string]any{"member_id": textField("本群另一成员ID"), "instruction": textField("具体任务、预期结果和边界"), "reason": textField("为什么需要这件事、为什么选择这位成员"), "coordinate": map[string]any{"type": "boolean", "description": "是否委托对方组织这项子工作；默认自己完成具体产出"}}, "member_id", "instruction", "reason"))
 	}
 	if !c.DiscussionPaused && w.Kind != "research" {
 		defs = append(defs, definition("ask_question", "在聊天里提出一个可自由回答的选择题。只在这个问题对当前交流确有帮助时使用，不能连着追问或把聊天变成问卷；真人聊别的就自然略过。工具已发布问题，最终回复不要重复它。", map[string]any{"text": textField("一个简短自然的问题"), "options": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "minItems": 2, "maxItems": 4}}, "text", "options"))
@@ -72,7 +73,7 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 	if w.Kind == "first_reply" {
 		first := []ToolDefinition{}
 		for _, def := range defs {
-			if def.Function.Name == "schedule_exploration" || def.Function.Name == "schedule_followup" || def.Function.Name == "cancel_work" || def.Function.Name == "ask_question" || def.Function.Name == "delegate_work" || (recallTool(def.Function.Name) && def.Function.Name != "remember") {
+			if def.Function.Name == "schedule_exploration" || def.Function.Name == "schedule_followup" || def.Function.Name == "cancel_work" || def.Function.Name == "ask_question" || def.Function.Name == "delegate_work" || def.Function.Name == "close_responsibility" || (recallTool(def.Function.Name) && def.Function.Name != "remember") {
 				first = append(first, def)
 			}
 		}
@@ -83,6 +84,9 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 
 func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work, call ToolCall) (string, error) {
 	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := t.Store.checkMembership(c, m.ID); err != nil {
 		return "", err
 	}
 	allowed := false
@@ -102,7 +106,7 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 		return "", err
 	}
 	if t.Activity != nil {
-		labels := map[string]string{"search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_private": "正在准备私聊", "read_history": "正在翻阅聊天记录", "read_artifact": "正在查看成果", "read_tool_result": "正在核对已有材料", "read_memory": "正在回顾经历", "search_memory": "正在找回相关经历", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工"}
+		labels := map[string]string{"search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_private": "正在准备私聊", "read_history": "正在翻阅聊天记录", "read_artifact": "正在查看成果", "read_tool_result": "正在核对已有材料", "read_memory": "正在回顾经历", "search_memory": "正在找回相关经历", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
 		t.Activity(c.ID, m.ID, labels[call.Function.Name])
 	}
 	var result any
@@ -158,6 +162,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		BeforeSeq    int64    `json:"before_seq"`
 		MemberID     string   `json:"member_id"`
 		DueAt        string   `json:"due_at"`
+		Coordinate   bool     `json:"coordinate"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
 		return nil, fmt.Errorf("工具参数格式不正确")
@@ -176,6 +181,8 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 			return nil, err
 		}
 		return t.Store.ScheduleFollowup(c, m, w, args.Instruction, args.Reason, due)
+	case "close_responsibility":
+		return map[string]string{"responsibility_id": args.ID, "status": "closed"}, t.Store.CloseResponsibility(c, m, w, args.ID)
 	case "cancel_work":
 		return t.Store.CancelOwnWork(c, m, args.ID)
 	case "ask_question":
@@ -301,7 +308,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		}
 		return map[string]any{"work": page, "next_offset": end, "has_more": end < len(filtered)}, nil
 	case "delegate_work":
-		assigned, err := t.Store.DelegateWork(c, m, w, args.MemberID, args.Instruction, args.Reason)
+		assigned, err := t.Store.DelegateWork(c, m, w, args.MemberID, args.Instruction, args.Reason, args.Coordinate)
 		return map[string]any{"work_id": assigned.ID, "work": assigned}, err
 	case "save_artifact":
 		return t.saveArtifact(ctx, c, m, w, Artifact{ID: args.ID, Title: args.Title, Content: args.Content, Format: args.Format})
@@ -372,7 +379,7 @@ func (t *Toolbox) Schedule(ctx context.Context, c Conversation, m Member, source
 	if strings.TrimSpace(instruction) == "" || strings.TrimSpace(reason) == "" {
 		return nil, fmt.Errorf("后台探索需要具体方向和实际来由")
 	}
-	w := Work{ID: newID("work"), ConversationID: c.ID, MemberID: m.ID, RootID: rootOf(source), Autonomous: source.Autonomous, Kind: "research", Instruction: clip(instruction, 5000), Reason: clip(reason, 1500), SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
+	w := Work{ID: newID("work"), ParentID: source.ID, ConversationID: c.ID, MemberID: m.ID, RootID: rootOf(source), Autonomous: source.Autonomous, Kind: "research", Instruction: clip(instruction, 5000), Reason: clip(reason, 1500), SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
 	err := t.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 		var existing string
 		err := tx.QueryRow(`SELECT id FROM work WHERE conversation_id=? AND member_id=? AND kind='research' AND instruction=? AND status IN ('pending','running','waiting_budget','paused')`, c.ID, m.ID, w.Instruction).Scan(&existing)

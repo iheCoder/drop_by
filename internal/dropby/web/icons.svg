@@ -102,4 +102,5 @@
   <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
   <path d="M12 17h.01" />
 </symbol>
+<symbol id="expand" viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5"/></symbol>
 </svg>

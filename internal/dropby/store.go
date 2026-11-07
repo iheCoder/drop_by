@@ -91,6 +91,14 @@ CREATE TABLE IF NOT EXISTS usage(day TEXT PRIMARY KEY, calls INTEGER NOT NULL DE
 		db.Close()
 		return nil, err
 	}
+	if err = s.initResponsibilities(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = s.initIM(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err = s.initParticipation(); err != nil {
 		db.Close()
 		return nil, err
@@ -147,8 +155,11 @@ func (s *Store) AddMember(m Member) error {
 	return e
 }
 
-func (s *Store) CreateConversation(name, kind string, ids []string, interval time.Duration) (Conversation, error) {
+func (s *Store) CreateConversation(name, kind string, ids []string, interval time.Duration, portrait ...string) (Conversation, error) {
 	c := Conversation{ID: newID("room"), Name: name, Kind: kind, MemberIDs: ids, UpdatedAt: now()}
+	if kind == "group" && len(portrait) > 0 {
+		c.Avatar = portrait[0]
+	}
 	tx, e := s.db.Begin()
 	if e != nil {
 		return c, e
@@ -167,7 +178,7 @@ func (s *Store) CreateConversation(name, kind string, ids []string, interval tim
 		}
 	}
 	// 新相识不必等真人先开口；一分钟后给成员第一次自主判断机会。
-	_, e = tx.Exec(`INSERT INTO conversations(id,name,kind,next_explore,updated_at) VALUES(?,?,?,?,?)`, c.ID, name, kind, time.Now().Add(min(interval, time.Minute)).UnixMilli(), c.UpdatedAt)
+	_, e = tx.Exec(`INSERT INTO conversations(id,name,kind,next_explore,updated_at,avatar) VALUES(?,?,?,?,?,?)`, c.ID, name, kind, time.Now().Add(min(interval, time.Minute)).UnixMilli(), c.UpdatedAt, c.Avatar)
 	if e != nil {
 		return c, e
 	}
@@ -181,7 +192,7 @@ func (s *Store) CreateConversation(name, kind string, ids []string, interval tim
 
 func (s *Store) Conversation(id string) (Conversation, error) {
 	var c Conversation
-	e := s.db.QueryRow(`SELECT id,name,kind,revision,discussion_paused,research_paused,guidance,updated_at,coordinator_id FROM conversations WHERE id=?`, id).Scan(&c.ID, &c.Name, &c.Kind, &c.Revision, &c.DiscussionPaused, &c.ResearchPaused, &c.Guidance, &c.UpdatedAt, &c.CoordinatorID)
+	e := s.db.QueryRow(`SELECT id,name,kind,revision,discussion_paused,research_paused,guidance,updated_at,coordinator_id,avatar FROM conversations WHERE id=?`, id).Scan(&c.ID, &c.Name, &c.Kind, &c.Revision, &c.DiscussionPaused, &c.ResearchPaused, &c.Guidance, &c.UpdatedAt, &c.CoordinatorID, &c.Avatar)
 	if e != nil {
 		return c, e
 	}
@@ -198,7 +209,16 @@ func (s *Store) Conversation(id string) (Conversation, error) {
 		}
 		c.MemberIDs = append(c.MemberIDs, v)
 	}
-	return c, rows.Err()
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return c, e
+	}
+	c.Responsibilities, e = s.Responsibilities(c.ID)
+	if c.CoordinatorID != "" {
+		c.Responsibilities = append(c.Responsibilities, Responsibility{ID: "legacy_" + c.ID, MemberID: c.CoordinatorID, Body: "用户此前在群设置中约定：需要一起做事时帮助分工与跟进。"})
+	}
+	return c, e
 }
 func (s *Store) Conversations() ([]Conversation, error) {
 	rows, e := s.db.Query(`SELECT id FROM conversations ORDER BY updated_at DESC`)
@@ -225,7 +245,7 @@ func (s *Store) Conversations() ([]Conversation, error) {
 		if e != nil {
 			return nil, e
 		}
-		e = s.db.QueryRow(`SELECT body,seq FROM messages WHERE conversation_id=? ORDER BY seq DESC LIMIT 1`, id).Scan(&c.LastMessage, &c.LastSeq)
+		e = s.db.QueryRow(`SELECT body,seq FROM messages WHERE conversation_id=? AND NOT (author_id='system' AND substr(id,1,7)='budget_') ORDER BY seq DESC LIMIT 1`, id).Scan(&c.LastMessage, &c.LastSeq)
 		if e != nil && !errors.Is(e, sql.ErrNoRows) {
 			return nil, e
 		}
@@ -238,7 +258,7 @@ func (s *Store) Messages(room string, before int64, limit int) ([]Message, error
 	if before <= 0 {
 		before = 1 << 62
 	}
-	rows, e := s.db.Query(`SELECT m.seq,m.id,m.conversation_id,m.author_id,m.body,m.reply_to,m.mentions,m.evidence,m.notify,m.created_at,COALESCE(q.question,''),COALESCE(q.status,'') FROM (SELECT * FROM messages WHERE conversation_id=? AND seq<? ORDER BY seq DESC LIMIT ?) m LEFT JOIN message_questions q ON q.message_id=m.id ORDER BY m.seq`, room, before, limit)
+	rows, e := s.db.Query(`SELECT m.seq,m.id,m.conversation_id,m.author_id,m.body,m.reply_to,m.mentions,m.evidence,m.notify,m.created_at,COALESCE(q.question,''),COALESCE(q.status,'') FROM (SELECT * FROM messages WHERE conversation_id=? AND seq<? AND NOT (author_id='system' AND substr(id,1,7)='budget_') ORDER BY seq DESC LIMIT ?) m LEFT JOIN message_questions q ON q.message_id=m.id ORDER BY m.seq`, room, before, limit)
 	if e != nil {
 		return nil, e
 	}
@@ -367,6 +387,16 @@ func (s *Store) Publish(m Message, revision int64) error {
 		if paused && m.AuthorID != "system" {
 			return ErrStale
 		}
+		// 成员离群后，旧任务即便读到了新的修订号也不能继续发言。
+		if m.AuthorID != "user" && m.AuthorID != "system" {
+			var present int
+			if err := tx.QueryRow(`SELECT count(*) FROM participants WHERE conversation_id=? AND member_id=?`, m.ConversationID, m.AuthorID).Scan(&present); err != nil {
+				return err
+			}
+			if present != 1 {
+				return ErrStale
+			}
+		}
 		// AI 之间接话也可引用原消息，但不能把另一场景的原文带进来。
 		if m.ReplyTo != "" {
 			var n int
@@ -414,15 +444,17 @@ func insertWork(tx *sql.Tx, w Work) error {
 			return errAutonomyLimit
 		}
 	}
-	_, e := tx.Exec(`INSERT INTO work(id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,created_at,root_id,autonomous,assigned_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, w.ID, w.ConversationID, w.MemberID, w.Kind, w.Instruction, w.Reason, w.SourceID, w.Status, w.DueAt, w.CreatedAt, w.RootID, w.Autonomous, w.AssignedBy)
+	_, e := tx.Exec(`INSERT INTO work(id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,created_at,root_id,autonomous,assigned_by,parent_id,first_speakers) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, w.ID, w.ConversationID, w.MemberID, w.Kind, w.Instruction, w.Reason, w.SourceID, w.Status, w.DueAt, w.CreatedAt, w.RootID, w.Autonomous, w.AssignedBy, w.ParentID, asJSON(w.FirstSpeakers))
 	return e
 }
 
-const workColumns = `id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,attempts,result,created_at,root_id,autonomous,assigned_by`
+const workColumns = `id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,attempts,result,created_at,root_id,autonomous,assigned_by,parent_id,first_speakers`
 
 func scanWork(rows interface{ Scan(...any) error }) (Work, error) {
 	var w Work
-	e := rows.Scan(&w.ID, &w.ConversationID, &w.MemberID, &w.Kind, &w.Instruction, &w.Reason, &w.SourceID, &w.Status, &w.DueAt, &w.Attempts, &w.Result, &w.CreatedAt, &w.RootID, &w.Autonomous, &w.AssignedBy)
+	var audience string
+	e := rows.Scan(&w.ID, &w.ConversationID, &w.MemberID, &w.Kind, &w.Instruction, &w.Reason, &w.SourceID, &w.Status, &w.DueAt, &w.Attempts, &w.Result, &w.CreatedAt, &w.RootID, &w.Autonomous, &w.AssignedBy, &w.ParentID, &audience)
+	decode(audience, &w.FirstSpeakers)
 	return w, e
 }
 func (s *Store) Works(room string) ([]Work, error) {
@@ -500,7 +532,7 @@ func (s *Store) Finish(w Work, status, result string, due time.Time) error {
 			result = identityRevisionRetry + "\n" + result
 		}
 	}
-	changed, err := tx.Exec(`UPDATE work SET status=?,result=CASE WHEN ?='' THEN result ELSE ? END,due_at=? WHERE id=? AND status='running'`, status, result, result, due.UnixMilli(), w.ID)
+	changed, err := tx.Exec(`UPDATE work SET status=?,result=CASE WHEN ?='' THEN result ELSE ? END,due_at=?,budget_required=? WHERE id=? AND status='running'`, status, result, result, due.UnixMilli(), w.BudgetRequired, w.ID)
 	if err != nil {
 		return err
 	}

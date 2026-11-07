@@ -207,7 +207,7 @@ func (e *Engine) recallDecision(ctx context.Context, c Conversation, m Member, w
 			messages = append(messages, ChatMessage{Role: "user", Content: "先用已找回的材料完成本次参与判断。找不到的经历不要假装记得；需要更多行动可以稍后继续。只返回判断 JSON。"})
 		}
 		compactToolHistory(messages)
-		r, err := e.Model.Complete(ctx, messages, defs, step == 3)
+		r, err := completeModel(ctx, e.Model, &messages, defs, step == 3)
 		if err != nil {
 			return err
 		}

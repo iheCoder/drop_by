@@ -126,7 +126,7 @@ func (s *Store) ScheduleFollowup(c Conversation, m Member, source Work, instruct
 	if strings.TrimSpace(instruction) == "" || strings.TrimSpace(reason) == "" {
 		return nil, fmt.Errorf("后续需要具体关注和实际来由")
 	}
-	w := Work{ID: newID("work"), RootID: rootOf(source), ConversationID: c.ID, MemberID: m.ID, Kind: "revisit", Autonomous: true, Instruction: clip(instruction, 5000), Reason: clip(reason, 1500), SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
+	w := Work{ID: newID("work"), ParentID: source.ID, RootID: rootOf(source), ConversationID: c.ID, MemberID: m.ID, Kind: "revisit", Autonomous: true, Instruction: clip(instruction, 5000), Reason: clip(reason, 1500), SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
 	err := s.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 		// 同一成员已有完全相同的预约时更新时机，不堆积重复待办。
 		var existing string

@@ -7,17 +7,22 @@
   <title>drop_by · 有空，来坐坐</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/im.css">
+  <script src="/vendor/marked.js" defer></script>
+  <script src="/vendor/purify.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/im.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#message-input">跳到聊天输入框</a>
   <div class="app">
     <aside class="sidebar" id="sidebar" aria-label="聊天与朋友">
-      <div class="brand-row"><button class="icon-button mobile-only" id="close-sidebar" aria-label="返回聊天"><svg class="icon"><use href="/icons.svg#arrow-left"/></svg></button><a class="brand" href="/" aria-label="drop_by 首页"><span class="brand-mark">d<span>·</span></span><span>drop_by</span></a><button class="icon-button" id="new-member" aria-label="认识新朋友" title="认识新朋友"><svg class="icon"><use href="/icons.svg#plus"/></svg></button></div>
-      <div class="side-tabs" role="tablist" aria-label="浏览聊天或朋友"><button id="chats-tab" role="tab" aria-selected="true" aria-controls="conversation-list">聊天</button><button id="people-tab" role="tab" aria-selected="false" aria-controls="member-list">朋友</button><button class="icon-button" id="new-group" aria-label="新建群聊" title="新建群聊"><svg class="icon"><use href="/icons.svg#message-circle"/></svg></button></div>
+      <div class="brand-row"><button class="icon-button mobile-only" id="close-sidebar" aria-label="返回聊天"><svg class="icon"><use href="/icons.svg#arrow-left"/></svg></button><a class="brand" href="/" aria-label="drop_by 首页"><span class="brand-mark">d<span>·</span></span><span>drop_by</span></a><button class="icon-button" id="new-member" aria-label="发起聊天" title="发起聊天"><svg class="icon"><use href="/icons.svg#plus"/></svg></button></div>
+      <div class="side-tabs" role="tablist" aria-label="浏览聊天或朋友"><button id="chats-tab" role="tab" aria-selected="true" aria-controls="conversation-list">聊天</button><button id="people-tab" role="tab" aria-selected="false" aria-controls="member-list">朋友</button></div>
       <label class="side-search"><svg class="icon" aria-hidden="true"><use href="/icons.svg#search"/></svg><input id="chat-search" type="search" placeholder="找聊天或朋友" aria-label="查找聊天或朋友"></label>
       <div class="side-scroll"><nav id="conversation-list" role="tabpanel" aria-labelledby="chats-tab"></nav><div id="member-list" role="tabpanel" aria-labelledby="people-tab" hidden></div></div>
-      <div class="side-bottom"><span class="connection"><i id="connection-dot"></i><span id="connection-label">正在连接</span></span><button class="icon-button" id="notifications" aria-label="开启浏览器通知" title="开启通知"><svg class="icon"><use href="/icons.svg#bell"/></svg></button></div>
+      <button id="my-profile" class="my-profile" aria-label="打开个人中心"><span id="my-avatar"></span><span class="person-copy"><strong id="my-name">你</strong><small>个人中心</small></span><svg class="icon"><use href="/icons.svg#chevron-right"/></svg></button>
+      <div class="side-bottom"><span class="connection"><i id="connection-dot"></i><span id="connection-label">正在连接</span></span><span class="side-signoff">有空，来坐坐。</span></div>
     </aside>
 
     <main id="main">
@@ -56,8 +61,9 @@
         </form>
       </footer>
     </main>
+    <section id="workspace-page" class="workspace-page" hidden aria-labelledby="workspace-title"><header class="workspace-header"><button class="icon-button" data-action="close-workspace" aria-label="返回聊天"> <svg class="icon"><use href="/icons.svg#arrow-left"/></svg></button><h1 id="workspace-title" tabindex="-1"></h1></header><div id="workspace-content" class="workspace-content"></div></section>
     <aside id="inspector" class="inspector" aria-labelledby="panel-title" hidden>
-      <div class="panel-heading"><h2 id="panel-title"></h2><button class="icon-button" data-action="close-panel" aria-label="关闭详情"><svg class="icon"><use href="/icons.svg#x"/></svg></button></div>
+      <div class="panel-heading"><h2 id="panel-title" tabindex="-1"></h2><button class="icon-button" data-action="close-panel" aria-label="关闭详情"><svg class="icon"><use href="/icons.svg#x"/></svg></button></div>
       <div id="panel-content" class="panel-content"></div>
     </aside>
   </div>

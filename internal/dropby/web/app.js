@@ -6,7 +6,7 @@ const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'
 let state = { members: [], conversations: [], active_rooms: [] };
 let selected = localStorage.getItem('dropby-room') || '';
 let roomData = null, messages = [], replyTo = null, loadSequence = 0, hasEarlier = false;
-let refreshTimer, toastTimer, currentVersions = [];
+let refreshTimer, toastTimer, budgetRefreshTimer, currentVersions = [];
 let currentArtifactIndex = 0, artifactMode = 'preview', panelRequest = 0;
 let panelView = '', avatarData = '', avatarIcon = 'cat', avatarColor = 'jade';
 let sideTab = 'chats', sending = false, renderedMessages = '', profileBaseline = null;
@@ -29,7 +29,7 @@ async function api(path, options = {}) {
 const post = (path, data) => api(path, { method: 'POST', body: JSON.stringify(data) });
 function toast(text) { $('toast').textContent = text; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 5000); }
 function member(id) { return state.members.find(m => m.id === id); }
-function authorName(id) { return id === 'user' ? '你' : member(id)?.name || '成员'; }
+function authorName(id) { return id === 'user' ? (state.profile?.name || '你') : member(id)?.name || '成员'; }
 // 已有成员使用稳定的图形头像；视觉升级不重写成员身份或历史记录。
 function presetFor(m) {
   const seed = Array.from(m?.id || m?.name || '友').reduce((total, c) => total + c.codePointAt(0), 0);
@@ -41,6 +41,7 @@ function avatar(m, small = false) {
   return `<span class="avatar ${escapeHTML(m?.color || 'jade')} ${small ? 'small' : ''}" aria-hidden="true">${m?.avatar ? `<img src="${escapeHTML(m.avatar)}" alt="">` : portrait}</span>`;
 }
 function groupAvatar(c) {
+  if (c.avatar) return avatar({avatar:c.avatar});
   const people = c.member_ids.map(member).filter(Boolean).slice(0, 2);
   return people.length > 1 ? `<span class="group-portrait" aria-hidden="true">${people.map(m => avatar(m, true)).join('')}</span>` : `<span class="group-icon" aria-hidden="true">${icon('users')}</span>`;
 }
@@ -54,7 +55,8 @@ function budgetResetLabel() {
   const timeZone = state.usage.time_zone;
   const format = {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'};
   try {
-    return `${reset.toLocaleString('zh-CN', {...format,...(timeZone ? {timeZone} : {})})}${timeZone ? `（${timeZone}）` : '（本地时间）'}`;
+    const zoneLabel=timeZone === 'Asia/Shanghai' ? '北京时间' : timeZone ? new Intl.DateTimeFormat('zh-CN',{timeZone,timeZoneName:'short'}).formatToParts(reset).find(p=>p.type==='timeZoneName')?.value : '本地时间';
+    return `${reset.toLocaleString('zh-CN', {...format,...(timeZone ? {timeZone} : {})})}（${zoneLabel || '本地时间'}）`;
   } catch {
     // 未配置时区的服务可能返回 Local；仍显示同一绝对时刻，并明确这是浏览器本地时间。
     return `${reset.toLocaleString('zh-CN', format)}（本地时间）`;
@@ -66,19 +68,25 @@ function weeklyBudgetNote() {
   return `<p class="budget-note">本周估算 $${dollars(usage.cost_micros)} / $${dollars(state.weekly_budget_micros)}${state.autonomous_weekly_budget_micros > 0 ? `<br>其中自发探索 $${dollars(usage.autonomous_cost_micros)} / $${dollars(state.autonomous_weekly_budget_micros)} · 为你回来聊天留有余量` : '<br>自发探索额度未开启'}${usage.week_start ? `<br>本周从 ${escapeHTML(String(usage.week_start).split('T')[0])} 开始` : ''}${reset ? `<br>额度重置 ${escapeHTML(reset)}` : ''}</p>`;
 }
 
-// 先转义，再只允许 HTTP(S) 链接；模型产出的 HTML、脚本和任意协议都不会执行。
+// Markdown 先解析再用本地 DOMPurify 白名单清洗。聊天不是 HTML 执行环境；
+// 图片、表单和内联脚本不会被带入宿主页，作品页面仍走独立 sandbox 预览。
 function richText(text) {
-  const inline = value => escapeHTML(value).replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-  const parts = [], pattern = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>"\u3000-\u303f\uff00-\uffef]+)/g;
-  let start = 0, match;
-  while ((match = pattern.exec(text))) {
-    parts.push(inline(text.slice(start, match.index)));
-    const href = match[2] || match[3], label = match[1] || href;
-    parts.push(`<a href="${escapeHTML(href)}" target="_blank" rel="noopener noreferrer">${escapeHTML(label)}</a>`);
-    start = match.index + match[0].length;
+  const fragment = DOMPurify.sanitize(marked.parse(String(text || ''), {gfm:true,breaks:true}), {
+    RETURN_DOM_FRAGMENT:true,
+    ALLOWED_TAGS:['p','br','strong','em','del','blockquote','ul','ol','li','pre','code','a','hr','h1','h2','h3','h4','h5','h6','table','thead','tbody','tr','th','td'],
+    ALLOWED_ATTR:['href','title','start','align']
+  });
+  for (const link of fragment.querySelectorAll('a')) {
+    if (!/^https?:\/\//i.test(link.getAttribute('href') || '')) link.removeAttribute('href');
+    else { link.target='_blank'; link.rel='noopener noreferrer'; }
   }
-  parts.push(inline(text.slice(start)));
-  return parts.join('');
+  for (const table of [...fragment.querySelectorAll('table')]) {
+    const wrap=document.createElement('div'); wrap.className='markdown-table'; wrap.tabIndex=0;
+    wrap.setAttribute('role','region'); wrap.setAttribute('aria-label','可横向滚动的表格');
+    table.replaceWith(wrap); wrap.append(table);
+  }
+  const container=document.createElement('div'); container.className='markdown'; container.append(fragment);
+  return container.outerHTML;
 }
 
 async function refresh() {
@@ -98,10 +106,14 @@ async function refresh() {
     }
     initialLoad = false;
     renderSidebar();
-    const budgetPause = state.usage.cost_micros >= state.weekly_budget_micros ? '本周运行预算已用完' : state.usage.calls >= state.weekly_calls ? '本周调用次数已达到上限' : '';
-    const reset = budgetResetLabel();
-    const banner = !state.model_ready ? '模型服务尚未配置。设置服务端的 OPENAI_API_KEY 后重启即可聊天，创建成员仍然可用。' : budgetPause ? `${budgetPause}。聊天和成果仍可查看，未完工作会在${reset || '下一预算周'}恢复。` : !state.search_ready ? '网页探索尚未接通，成员目前不能进行真实搜索或读取网页。' : '';
+    renderMyProfile();
+    // 周额度恢复即刷新提示；这是账户状态刷新，不会触发模型或重复轮询。
+    clearTimeout(budgetRefreshTimer);
+    const untilReset=new Date(state.usage?.reset_at).getTime()-Date.now();
+    if (untilReset>0) budgetRefreshTimer=setTimeout(scheduleRefresh,Math.min(untilReset+100,2147483647));
+    const banner = !state.model_ready ? '聊天服务暂未连接，仍可以查看记录和编辑朋友资料。' : state.budget_blocked ? '可用额度暂时不足，进展已保留。恢复后会继续，也可以在个人中心查看。' : !state.search_ready ? '网页探索暂未接通，聊天和本地创作仍可使用。' : '';
     $('service-banner').textContent = banner; $('service-banner').hidden = !banner;
+    if (workspaceView === 'account') updateAccountUsage();
     if (!selected || !state.conversations.some(c => c.id === selected)) selected = state.conversations[0]?.id || '';
     if (selected) await loadConversation(selected, true); else renderWelcome();
   } catch (error) { toast(error.message); }
@@ -116,7 +128,8 @@ function renderSidebar() {
     const m = c.kind === 'direct' ? member(c.member_ids[0]) : null;
     const unread = c.last_seq > (seen[c.id] || 0) && c.id !== selected;
     // 升级前的日预算提示仍是原始聊天记录，不能在列表里冒充今天的额度状态。
-    const preview = c.last_message === '今日运行预算已用完，未完工作已保留，下一预算日恢复' ? '先前的预算提示 · 当前额度见动态' : c.last_message;
+    const previewNode=document.createElement('div'); previewNode.innerHTML=richText(c.last_message);
+    const preview=previewNode.textContent.replace(/\s+/g,' ').trim();
     return `<button class="room-button ${c.id === selected ? 'selected' : ''}" data-action="open-room" data-id="${c.id}" ${c.id === selected ? 'aria-current="page"' : ''}>${m ? avatar(m) : groupAvatar(c)}<span class="room-copy"><span class="room-heading"><span class="room-name">${escapeHTML(c.name)}</span><time class="room-time">${c.updated_at ? timeLabel(c.updated_at) : ''}</time></span><span class="room-preview">${escapeHTML(preview || '从一句随口的话开始')}</span></span>${unread ? '<span class="unread" aria-label="有新消息"></span>' : ''}</button>`;
   }).join('') : `<p class="side-empty">${query ? '没有找到，换个词试试。' : '还没有聊天。<br>先认识一位新朋友吧。'}</p>`;
   $('member-list').innerHTML = people.length ? people.map(m => `<button class="person-button" data-action="profile" data-id="${m.id}">${avatar(m)}<span class="person-copy"><span class="person-name">${escapeHTML(m.name)}</span><span class="person-note">${escapeHTML(m.direction || '边聊，边认识')}</span></span>${icon('chevron-right')}</button>`).join('') : `<p class="side-empty">${query ? '没有找到这位朋友。' : '一个名字，一个头像。<br>其余的，边聊边认识。'}</p>`;
@@ -143,6 +156,7 @@ function sizeComposer() {
   $('send').disabled = sending || !input.value.trim();
 }
 async function openRoom(id) {
+  closeWorkspace(false);
   if (id !== selected) {
     rememberDraft(); closePanel(); selected = id; messages = []; renderedMessages = '';
     const draft = drafts.get(id); replyTo = draft?.reply || null;
@@ -161,7 +175,7 @@ async function loadConversation(id, preserve) {
   else {
     const combined = new Map(messages.map(m => [m.id, m]));
     for (const m of data.messages) combined.set(m.id, m);
-    messages = [...combined.values()].sort((a, b) => a.seq - b.seq);
+    messages = [...combined.values()].filter(m => !m.id.startsWith('budget_')).sort((a, b) => a.seq - b.seq);
   }
   const c = data.conversation;
   $('welcome').hidden = true; $('chat-body').hidden = false; $('composer-wrap').hidden = false;
@@ -201,7 +215,7 @@ async function loadConversation(id, preserve) {
 function renderMessages(scrollToBottom) {
   const body = $('chat-body'), previousTop = body.scrollTop;
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 110;
-  const signature = JSON.stringify([messages, state.members.map(m => [m.id,m.name,m.avatar,m.avatar_icon,m.color])]);
+  const signature = JSON.stringify([messages, state.profile, state.members.map(m => [m.id,m.name,m.avatar,m.avatar_icon,m.color])]);
   // SSE 也会报告后台活动。聊天内容没变时保留 DOM 和键盘焦点，避免打断正在点选的问题。
   if (signature === renderedMessages && !scrollToBottom) return;
   renderedMessages = signature;
@@ -212,11 +226,11 @@ function renderMessages(scrollToBottom) {
   $('messages').innerHTML = messages.length ? messages.map(m => {
     const date = dateLabel(m.created_at), divider = date !== lastDate ? `<div class="date-divider">${date}</div>` : ''; lastDate = date;
     if (m.author_id === 'system') {
-      if (m.id.startsWith('budget_')) return `${divider}<details class="system-message"><summary>${timeLabel(m.created_at)} 的预算记录 · 查看当时提示</summary><p>${escapeHTML(m.body)}</p><button class="quiet" data-action="activity">查看当前周预算</button></details>`;
+      if (m.id.startsWith('budget_')) return '';
       if (m.body.startsWith('这次运行暂未完成')) return `${divider}<details class="system-message"><summary>${timeLabel(m.created_at)} 的一次行动中断了 · 查看当时记录</summary><p>${escapeHTML(m.body)}</p><button class="quiet" data-action="activity">查看动态</button></details>`;
       return `${divider}<div class="system-message" role="status">${escapeHTML(m.body)}</div>`;
     }
-    const isUser = m.author_id === 'user', person = isUser ? {name:'你',color:'user'} : member(m.author_id);
+    const isUser = m.author_id === 'user', person = isUser ? state.profile : member(m.author_id);
     const quoted = messages.find(q => q.id === m.reply_to);
     const quote = m.reply_to ? `<button class="quote" data-action="jump-message" data-id="${m.reply_to}" aria-label="查看引用的消息"><strong>${escapeHTML(quoted ? authorName(quoted.author_id) : '较早的消息')}</strong><span>${escapeHTML(quoted ? quoted.body.slice(0,100) : '点击查看这段交流')}</span></button>` : '';
     const q = m.question, open = q && m.question_status === 'open' && m.seq > lastHumanSeq;
@@ -263,27 +277,36 @@ function showMentions() {
 
 // 详情是聊天旁的一个页面，不再用遮罩和模态弹窗打断交流。
 function showPanel(title, description, body, view = '') {
-  panelRequest++;
-  panelView = view;
-  document.querySelector('.app').classList.toggle('artifact-open', view.startsWith('artifact:'));
-  $('panel-title').textContent = title;
-  $('panel-content').innerHTML = `${description ? `<p class="panel-description">${escapeHTML(description)}</p>` : ''}${body}`;
-  $('inspector').hidden = false; document.querySelector('.app').classList.add('panel-open'); $('sidebar').classList.remove('open');
+  const opening=$('inspector').hidden;
+  if (opening) panelInvoker=document.activeElement;
+  closeWorkspace(false);
+  panelRequest++; panelView=view;
+  const app=document.querySelector('.app');
+  app.classList.toggle('artifact-open',view.startsWith('artifact:'));
+  if (!view.startsWith('artifact:')) app.classList.remove('artifact-expanded');
+  $('panel-title').textContent=title;
+  $('panel-content').innerHTML=`${description ? `<p class="panel-description">${escapeHTML(description)}</p>` : ''}${body}`;
+  $('inspector').hidden=false; app.classList.add('panel-open'); $('sidebar').classList.remove('open'); $('mobile-nav').setAttribute('aria-expanded','false');
+  if (opening) $('panel-title').focus();
 }
-function closePanel() {
-  $('inspector').hidden = true; document.querySelector('.app').classList.remove('panel-open','artifact-open'); panelRequest++; panelView = ''; avatarRequest++; avatarLoading = false;
+function closePanel(restoreFocus = false) {
+  $('inspector').hidden=true; $('panel-content').replaceChildren(); document.querySelector('.app').classList.remove('panel-open','artifact-open','artifact-expanded');
+  panelRequest++; panelView=''; avatarRequest++; avatarLoading=false;
+  if(restoreFocus) (panelInvoker?.isConnected && panelInvoker.getClientRects().length ? panelInvoker : $('message-input')).focus();
 }
+
 function formError(form, error) { const el = form.querySelector('.form-error'); el.textContent = error.message; el.hidden = false; }
 function pending(form, text) { const button = form.querySelector('button[type=submit]'); const label = button.textContent; button.textContent = text; button.disabled = true; return () => { button.textContent = label; button.disabled = false; }; }
 
 function avatarEditor(m = {}) {
   avatarRequest++; avatarLoading = false;
-  avatarData = m.avatar || ''; avatarIcon = m.id ? presetFor(m) : 'cat'; avatarColor = m.color || 'jade';
+  avatarData = m.avatar || ''; avatarIcon = m.avatar_icon || (m.id ? presetFor(m) : 'cat'); avatarColor = m.color || 'jade';
   return `<div class="avatar-editor"><span id="avatar-preview">${avatar({avatar:avatarData,avatar_icon:avatarIcon,color:avatarColor})}</span><div class="avatar-edit-copy"><strong>选一个你喜欢的头像</strong><small>也可以用自己的照片</small><label class="avatar-upload">${icon('upload')}上传图片<input class="sr-only" id="avatar-file" type="file" accept="image/png,image/jpeg"></label></div></div>
     <fieldset class="avatar-gallery"><legend>默认头像</legend><div class="avatar-grid">${avatarPresets.map(([id,label]) => `<button type="button" class="avatar-choice" data-action="avatar-preset" data-id="${id}" aria-label="${label}头像" aria-pressed="${!avatarData && id === avatarIcon}">${avatar({avatar_icon:id,color:avatarColor})}</button>`).join('')}</div></fieldset>
     <div class="color-picker" role="group" aria-label="头像颜色">${colors.map(([color,label]) => `<label class="color-choice ${color}"><input type="radio" name="color" value="${color}" ${color === avatarColor ? 'checked' : ''} aria-label="${label}"><span></span></label>`).join('')}</div>`;
 }
 function renderAvatarPreview() {
+  if ($('group-avatar-preview')) { $('group-avatar-preview').innerHTML = groupAvatar({avatar:avatarData,member_ids:groupSelection}); return; }
   if (!$('avatar-preview')) return;
   $('avatar-preview').innerHTML = avatar({avatar:avatarData,avatar_icon:avatarIcon,color:avatarColor});
   for (const choice of document.querySelectorAll('.avatar-choice')) {
@@ -292,8 +315,8 @@ function renderAvatarPreview() {
   }
 }
 function newMember() {
-  showPanel('认识新朋友', '先有个名字，其他的边聊边认识。', `<form id="member-form">${avatarEditor()}<label class="field"><span>名字</span><input name="name" maxlength="24" required placeholder="怎么称呼这位朋友？" autocomplete="off"></label><div class="form-error" hidden role="alert"></div><button class="primary full-width" type="submit">开始聊天 ${icon('arrow-up')}</button></form>`, 'new-member');
-  $('panel-content').querySelector('input[name=name]').focus();
+  showWorkspace('认识新朋友', '先有个名字，其他的边聊边认识。', `<form id="member-form">${avatarEditor()}<label class="field"><span>名字</span><input name="name" maxlength="24" required placeholder="怎么称呼这位朋友？" autocomplete="off"></label><div class="form-error" hidden role="alert"></div><button class="primary full-width" type="submit">开始聊天 ${icon('arrow-up')}</button></form>`, 'new-member');
+  $('workspace-content').querySelector('input[name=name]').focus();
 }
 function editProfile(id) {
   const m = member(id); if (!m) return;
@@ -324,8 +347,8 @@ function renderActivity() {
   $('work-notice').hidden = !failed;
   $('work-notice').textContent = failed ? `${latest.member_id ? authorName(latest.member_id)+'的' : '上一次'}行动暂时停下了 · 查看已保存的进展 →` : '';
 }
-const actionLabels = {ask_question:'提出问题',search:'搜索网页',read_page:'阅读网页',save_artifact:'保存成果',remember:'更新经历',schedule_exploration:'安排探索',schedule_followup:'安排定时跟进',cancel_work:'放下不再需要的后续',read_history:'回顾聊天',read_artifact:'查看成果',read_tool_result:'核对已有材料',read_memory:'回顾经历',search_memory:'寻找相关经历',read_work:'查看工作进展',delegate_work:'委托朋友协作',send_private:'发起私聊'};
-const statusLabels = {pending:'已安排',running:'进行中',waiting_budget:'等待预算恢复',done:'已完成',failed:'暂时中断',paused:'已暂停',stopped:'已停止',superseded:'已根据新消息调整',succeeded:'已完成',cancelled:'已被新消息打断'};
+const actionLabels = {close_responsibility:'结束这次组织职责',ask_question:'提出问题',search:'搜索网页',read_page:'阅读网页',save_artifact:'保存成果',remember:'更新经历',schedule_exploration:'安排探索',schedule_followup:'安排定时跟进',cancel_work:'放下不再需要的后续',read_history:'回顾聊天',read_artifact:'查看成果',read_tool_result:'核对已有材料',read_memory:'回顾经历',search_memory:'寻找相关经历',read_work:'查看工作进展',delegate_work:'委托朋友协作',send_private:'发起私聊'};
+const statusLabels = {pending:'已安排',running:'进行中',waiting_budget:'等待恢复',done:'已完成',failed:'暂时中断',paused:'已暂停',stopped:'已停止',superseded:'已根据新消息调整',succeeded:'已完成',cancelled:'已被新消息打断'};
 function showActivity(scroll = true) {
   if (!roomData) return;
   const expanded = [...$('panel-content').querySelectorAll('details[open][data-detail]')].map(d=>d.dataset.detail);
@@ -339,13 +362,11 @@ function showActivity(scroll = true) {
     const label = action?.label || focus?.body || (!p ? '还没有参与记录' : p.action==='pass' ? '暂时没有补充' : p.action==='revisit' ? '想稍后再看看' : p.action==='error' ? '上次判断未完成' : p.selected ? (p.action==='explore' ? '已安排探索' : '最近参与了交流') : '有想法，尚未发言');
     return `<div class="member-activity">${avatar(member(id),true)}<div><strong>${escapeHTML(authorName(id))}</strong><span>${escapeHTML(label)}</span>${p ? `<details data-detail="person-${id}"><summary>查看最近参与记录</summary><p>${escapeHTML(p.action === 'pass' ? '这次选择保持安静。' : p.action === 'error' ? '这次参与判断未完成。' : p.action === 'explore' ? '这次选择先探索。' : p.action === 'revisit' ? '这次想稍后再看看。' : '这次选择参与交流。')}</p><small>${timeLabel(p.created_at)}</small></details>` : ''}</div></div>`;
   }).join('');
-  showPanel('最近动态', '', `<p class="background-note">浏览器关掉后，服务仍会继续探索。电脑睡眠或服务停止时会暂停，重新运行后恢复。新消息、约好的后续和闲时好奇都可以带来一次机会，是否继续由朋友们自己决定。</p><h3 class="section-label">朋友们</h3>${people}<h3 class="section-label">后台行动</h3>${jobs.filter(w=>['research','revisit'].includes(w.kind) || ['failed','paused','waiting_budget'].includes(w.status)).slice(0,12).map(w=>`<details class="work-item" data-detail="${w.id}"><summary><span>${escapeHTML(w.member_id ? authorName(w.member_id) : '这段交流')}</span><span class="status ${w.status}">${escapeHTML(statusLabels[w.status]||w.status)}</span><strong>${escapeHTML(w.instruction.slice(0,90))}</strong></summary>${w.assigned_by ? `<div class="work-assignment">${escapeHTML(authorName(w.assigned_by))} 委托 · ${escapeHTML(new Date(w.created_at).toLocaleString('zh-CN'))}</div>` : ''}<p>${escapeHTML(w.result || w.reason || '还没有执行结果')}</p>${w.status==='pending' ? `<small>${w.kind === 'revisit' ? '下次考虑' : '安排执行'} ${new Date(w.due_at).toLocaleString('zh-CN')}</small>`:''}${['failed','paused'].includes(w.status) ? `<button class="quiet" data-action="continue-work" data-id="${w.id}">在聊天中继续这个方向 →</button>`:''}</details>`).join('') || '<p class="empty-note">暂时没有安排研究。普通聊天不必变成任务。</p>'}<h3 class="section-label">实际做过的事</h3>${actions.slice(0,15).map(a=>`<button class="action-item" data-action="evidence" data-id="${a.id}"><span>${escapeHTML(authorName(a.member_id))} · ${escapeHTML(actionLabels[a.name]||a.name)}</span><small>${timeLabel(a.created_at)} · ${escapeHTML(statusLabels[a.status]||a.status)} ↗</small></button>`).join('')||'<p class="empty-note">还没有工具行动。</p>'}${weeklyBudgetNote()}`, 'activity');
+  showPanel('最近动态', '', `<p class="background-note">浏览器关掉后，服务仍会继续探索。电脑睡眠或服务停止时会暂停，重新运行后恢复。新消息、约好的后续和闲时好奇都可以带来一次机会，是否继续由朋友们自己决定。</p><h3 class="section-label">朋友们</h3>${people}<h3 class="section-label">后台行动</h3>${jobs.filter(w=>['research','revisit'].includes(w.kind) || ['failed','paused','waiting_budget'].includes(w.status)).slice(0,12).map(w=>`<details class="work-item" data-detail="${w.id}"><summary><span>${escapeHTML(w.member_id ? authorName(w.member_id) : '这段交流')}</span><span class="status ${w.status}">${escapeHTML(statusLabels[w.status]||w.status)}</span><strong>${escapeHTML(w.instruction.slice(0,90))}</strong></summary>${w.assigned_by ? `<div class="work-assignment">${escapeHTML(authorName(w.assigned_by))} 委托 · ${escapeHTML(new Date(w.created_at).toLocaleString('zh-CN'))}</div>` : ''}<p>${escapeHTML(w.status === 'waiting_budget' ? '进展已保存，恢复后会继续。' : w.result || w.reason || '还没有执行结果')}</p>${w.status==='pending' ? `<small>${w.kind === 'revisit' ? '下次考虑' : '安排执行'} ${new Date(w.due_at).toLocaleString('zh-CN')}</small>`:''}${['failed','paused'].includes(w.status) ? `<button class="quiet" data-action="continue-work" data-id="${w.id}">在聊天中继续这个方向 →</button>`:''}</details>`).join('') || '<p class="empty-note">暂时没有安排研究。普通聊天不必变成任务。</p>'}<h3 class="section-label">实际做过的事</h3>${actions.slice(0,15).map(a=>`<button class="action-item" data-action="evidence" data-id="${a.id}"><span>${escapeHTML(authorName(a.member_id))} · ${escapeHTML(actionLabels[a.name]||a.name)}</span><small>${timeLabel(a.created_at)} · ${escapeHTML(statusLabels[a.status]||a.status)} ↗</small></button>`).join('')||'<p class="empty-note">还没有工具行动。</p>'}`, 'activity');
   if (!scroll) { $('panel-content').scrollTop = top; for (const d of $('panel-content').querySelectorAll('details[data-detail]')) d.open = expanded.includes(d.dataset.detail); }
 }
-function newGroup() {
-  if (!state.members.length) { newMember(); return; }
-  showPanel('一起坐坐', '逐个邀请你想放在一起的朋友。群可以没有预设话题。', `<form id="group-form"><label class="field"><span>群名 <span class="field-hint">（可留空）</span></span><input name="name" maxlength="80" placeholder="随便聊聊"></label><span class="field-label">邀请朋友</span>${state.members.map(m => `<label class="member-choice">${avatar(m)}<span class="copy"><strong>${escapeHTML(m.name)}</strong><small>${escapeHTML(m.direction.slice(0, 70))}</small></span><input type="checkbox" name="members" value="${m.id}" aria-label="邀请 ${escapeHTML(m.name)}"></label>`).join('')}<div class="form-error" hidden role="alert"></div><div class="panel-footer"><button class="primary" type="submit">开一个群 →</button></div></form>`);
-}
+function newGroup() { startGroup(); }
+
 function focusBlock(id) {
   const focus = roomData?.member_states?.find(s => s.member_id === id);
   if (!focus?.body) return '';
@@ -360,61 +381,21 @@ function roomDetails(scroll = true) {
   if (!roomData) return;
   const c = roomData.conversation;
   if (c.kind === 'direct') { profile(c.member_ids[0]); return; }
-  const top = $('panel-content').scrollTop;
-  const members = c.member_ids.map(id => {
-    const m = member(id), focus = roomData.member_states?.find(s => s.member_id === id);
-    return `<button class="person-button" data-action="profile" data-id="${id}">${avatar(m)}<span class="person-copy"><span class="person-name">${escapeHTML(authorName(id))}${id === c.coordinator_id ? '<span class="coordinator-badge">协调者</span>' : ''}</span><span class="person-note">${escapeHTML(focus?.body || m?.direction || '边聊，边认识')}</span></span>${icon('chevron-right')}</button>`;
-  }).join('');
-  const current = c.coordinator_id ? `目前由 ${authorName(c.coordinator_id)} 协调这个群。` : '目前由大家各自参与，没有指定协调者。';
-  const existing = $('coordinator-form');
-  // 后台动态只更新阅读内容，不能重建正在选择的下拉框或丢掉尚未保存的选择。
-  if (!scroll && existing?.dataset.room === c.id) {
-    $('room-detail-name').textContent = c.name;
-    $('room-detail-people').textContent = `你和 ${c.member_ids.map(authorName).join('、')}`;
-    if ($('room-members').innerHTML !== members && !$('room-members').contains(document.activeElement)) $('room-members').innerHTML = members;
-    $('coordinator-current').textContent = current;
-    const select = existing.elements.member_id;
-    if (existing.dataset.saving !== 'true' && document.activeElement !== select && select.value === existing.dataset.savedId) {
-      // 只有用户未改动的表单才跟随服务端设置；另一个窗口的修改不覆盖本地未保存选择。
-      select.value = c.coordinator_id || '';
-      existing.dataset.savedId = select.value;
-      existing.querySelector('button[type=submit]').disabled = true;
-    }
-    $('panel-content').scrollTop = top;
-    return;
-  }
-  showPanel('聊天详情', '', `<div class="room-details-head">${groupAvatar(c)}<h3 id="room-detail-name">${escapeHTML(c.name)}</h3><p id="room-detail-people">你和 ${c.member_ids.map(authorName).map(escapeHTML).join('、')}</p></div><h3 class="section-label">在这里的朋友</h3><div class="room-members" id="room-members">${members}</div><form id="coordinator-form" class="coordinator-form" data-room="${escapeHTML(c.id)}" data-saved-id="${escapeHTML(c.coordinator_id || '')}"><label class="field" for="coordinator-select"><span>群里的协调者</span><select id="coordinator-select" name="member_id" aria-describedby="coordinator-hint coordinator-current"><option value="">各自参与</option>${c.member_ids.map(id => `<option value="${escapeHTML(id)}" ${id === c.coordinator_id ? 'selected' : ''}>${escapeHTML(authorName(id))}</option>`).join('')}</select><small class="field-hint" id="coordinator-hint">让一位朋友帮忙分工、跟进和衔接进展。其他人仍按自己的特质参与，也可以提出不同意见。只在这个群生效。</small></label><p class="coordinator-current" id="coordinator-current">${escapeHTML(current)}</p><div class="form-error" hidden role="alert"></div><div class="coordinator-save"><span class="form-status" role="status"></span><button class="secondary" type="submit" disabled>保存设置</button></div></form><div class="panel-nav"><button data-action="activity">${icon('activity')}朋友动态${icon('chevron-right')}</button><button data-action="artifacts">${icon('notebook')}聊天成果${icon('chevron-right')}</button></div><p class="profile-caption">有的人爱接话，有的人先观察。安静也可以是一次自己的选择。</p>`, 'room');
-  if (!scroll) $('panel-content').scrollTop = top;
-}
-
-async function saveCoordinator(form) {
-  if (form.dataset.saving === 'true') return;
-  const room = form.dataset.room, select = form.elements.member_id, id = select.value;
-  const button = form.querySelector('button[type=submit]'), status = form.querySelector('.form-status');
-  form.dataset.saving = 'true'; select.disabled = true; button.disabled = true;
-  button.textContent = '正在保存…'; form.querySelector('.form-error').hidden = true; status.textContent = '';
-  try {
-    await api(`/api/conversations/${room}/coordinator`, {method:'PATCH',body:JSON.stringify({member_id:id})});
-    // 保存仅更新群设置，不改写聊天草稿；用户若已关闭或切换侧栏，也不把它重新打开。
-    if (roomData?.conversation.id === room) roomData.conversation.coordinator_id = id;
-    const c = state.conversations.find(c => c.id === room); if (c) c.coordinator_id = id;
-    if (form.isConnected) { form.dataset.savedId = id; status.textContent = '已保存'; }
-    await refresh();
-  } catch (error) {
-    if (form.isConnected) formError(form,error); else toast(error.message);
-  } finally {
-    if (form.isConnected) {
-      form.dataset.saving = 'false'; select.disabled = false; button.textContent = '保存设置';
-      button.disabled = select.value === form.dataset.savedId;
-    }
-  }
+  const signature=JSON.stringify([c,state.members,roomData.member_states]);
+  if (!scroll && $('panel-content').dataset.roomSignature===signature) return;
+  const top=$('panel-content').scrollTop;
+  const people=c.member_ids.map(id=>`<button class="person-button" data-action="profile" data-id="${id}">${avatar(member(id))}<span class="person-copy"><span class="person-name">${escapeHTML(authorName(id))}</span><span class="person-note">${escapeHTML(roomData.member_states?.find(s=>s.member_id===id)?.body || member(id)?.direction || '边聊，边认识')}</span></span>${icon('chevron-right')}</button>`).join('');
+  const roles=(c.responsibilities || []).map(r=>`<div class="responsibility"><strong>${escapeHTML(authorName(r.member_id))}<small>${r.scope_id ? '这件事' : '长期约定'}</small></strong><p>${escapeHTML(r.body)}</p>${r.source_id ? `<button class="quiet" data-action="jump-message" data-id="${r.source_id}">回到这次约定 ${icon('arrow-up')}</button>` : ''}</div>`).join('');
+  showPanel('聊天详情', '', `<div class="room-details-head">${groupAvatar(c)}<h3>${escapeHTML(c.name)}</h3><p>${c.member_ids.length+1} 位成员</p></div><button class="secondary full-width" data-action="edit-group">${icon('pencil')}编辑群资料与成员</button><h3 class="section-label">群成员</h3><div class="person-button own-member">${avatar(state.profile)}<span class="person-copy"><span class="person-name">${escapeHTML(authorName('user'))}</span><span class="person-note">我</span></span></div>${people}<h3 class="section-label">在这里的约定</h3>${roles || '<p class="empty-note">还没有特别的分工。需要一起做事时，在聊天里告诉大家就好。</p>'}<p class="profile-caption">例如「@小舟，这次你帮我们安排一下」。约定会留在这里，平时大家仍按自己的方式聊天。</p><div class="panel-nav"><button data-action="activity">${icon('activity')}朋友动态${icon('chevron-right')}</button><button data-action="artifacts">${icon('notebook')}聊天成果${icon('chevron-right')}</button></div>`, 'room');
+  $('panel-content').dataset.roomSignature=signature;
+  if (!scroll) $('panel-content').scrollTop=top;
 }
 // 工具清单只展示当前真正可用的能力；不让未接通的网页服务看起来已经可用。
 function capabilities(m) {
   const labels = ['对话选择题', '文字与网页创作'];
   if (state.search_ready && m.tools?.includes('search')) labels.push('搜索与阅读');
   labels.push('检索与记住经历', '定时跟进');
-  if (roomData?.conversation.kind === 'group' && roomData.conversation.coordinator_id === m.id) labels.push('协调这个群');
+  if (roomData?.conversation.kind === 'group' && roomData.conversation.responsibilities?.some(r=>r.member_id===m.id)) labels.push('参与分工与跟进');
   return `<div class="capability-block"><h3 class="section-label">可以一起做</h3><div class="capability-list">${labels.map(label => `<span>${escapeHTML(label)}</span>`).join('')}</div>`;
 }
 function artifactCard(a) {
@@ -447,7 +428,8 @@ function renderArtifact(index = 0) {
   // 生成页面始终位于无同源权限的 sandbox。源代码仅作为转义文本展示，不能进入宿主页 DOM。
   // 切换预览/源码只隐藏已有节点，避免反复重建 iframe 丢失正在试用的小工具状态。
   const content = html ? `<div id="artifact-preview-pane" role="tabpanel" aria-labelledby="artifact-preview-tab"><iframe class="artifact-preview" title="${escapeHTML(a.title)} · 第 ${a.version} 版预览" src="${base}/preview?version=${a.version}" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe><p class="artifact-preview-note">预览中的修改不会自动保存。想调整作品，可以继续在聊天里说。</p></div><div id="artifact-source-pane" role="tabpanel" aria-labelledby="artifact-source-tab" hidden><div class="source-actions"><button class="quiet" data-action="copy-artifact">复制源代码</button></div><pre class="artifact-source"><code>${escapeHTML(a.content)}</code></pre></div>` : `<div class="artifact-content">${richText(a.content)}</div>`;
-  showPanel(a.title, `由 ${authorName(a.member_id)} 保存 · ${dateLabel(a.created_at)}`, `<button class="artifact-back quiet" data-action="artifacts">${icon('arrow-left')}所有成果</button><div class="artifact-toolbar"><select class="version-select" id="artifact-version" aria-label="选择成果版本">${currentVersions.map((v, i) => `<option value="${i}" ${index === i ? 'selected' : ''}>第 ${v.version} 版 · ${dateLabel(v.created_at)} ${timeLabel(v.created_at)}</option>`).join('')}</select><a class="artifact-download" href="${base}/download?version=${a.version}" download>下载${html ? ' HTML' : '文稿'}</a></div><button id="artifact-new-version" class="artifact-update" data-action="artifact" data-id="${escapeHTML(a.id)}" hidden></button>${tabs}${content}<div class="panel-footer"><button class="primary" data-action="continue-artifact" data-id="${escapeHTML(a.id)}">继续聊这个成果 ${icon('message-circle')}</button></div>`, `artifact:${a.id}`);
+  const versions=currentVersions.length > 1 ? `<details class="version-menu"><summary id="version-trigger" aria-label="选择成果版本">第 ${a.version} 版 ${icon('chevron-down')}</summary><div class="version-options" role="group" aria-label="已保存的版本">${currentVersions.map((v,i)=>`<button data-action="artifact-version" data-index="${i}" aria-pressed="${i===index}"><span>${icon(i===index?'check':'notebook')}<strong>第 ${v.version} 版${i===0?' · 最新':''}</strong></span><time>${dateLabel(v.created_at)} ${timeLabel(v.created_at)}</time></button>`).join('')}</div></details>` : `<span class="single-version">第 ${a.version} 版</span>`;
+  showPanel(a.title, '', `<div class="artifact-meta"><button class="quiet" data-action="artifacts">${icon('arrow-left')}成果</button><span>${escapeHTML(authorName(a.member_id))} · ${dateLabel(a.created_at)}</span></div><div class="artifact-toolbar">${versions}${tabs}<span class="toolbar-spacer"></span><a class="artifact-download" href="${base}/download?version=${a.version}" download aria-label="下载第 ${a.version} 版${html?' HTML':'文稿'}">${icon('arrow-down')}<span>下载</span></a><button class="icon-button artifact-expand" data-action="expand-artifact" aria-label="展开预览" aria-pressed="${document.querySelector('.app').classList.contains('artifact-expanded')}">${icon('expand')}</button></div><button id="artifact-new-version" class="artifact-update" data-action="artifact" data-id="${escapeHTML(a.id)}" hidden></button>${content}<div class="panel-footer artifact-footer"><button class="secondary" data-action="continue-artifact" data-id="${escapeHTML(a.id)}">${icon('message-circle')}接着聊这个成果</button></div>`, `artifact:${a.id}`);
   if (html) selectArtifactTab(artifactMode);
 }
 // 从详情回到聊天只是补上一句引子，用户原来写到一半的内容必须保留。
@@ -475,7 +457,7 @@ document.addEventListener('click', async event => {
     if (action === 'open-room') await openRoom(id);
     if (action === 'profile') profile(id);
     if (action === 'edit-profile') editProfile(id);
-    if (action === 'close-panel') { closePanel(); $('message-input').focus(); }
+    if (action === 'close-panel') closePanel(true);
     if (action === 'activity') showActivity();
     if (action === 'artifacts') showArtifacts();
     if (action === 'preference') await askPreference(id,button);
@@ -513,11 +495,8 @@ document.addEventListener('click', async event => {
 
 document.addEventListener('submit', async event => {
   const form = event.target;
-  if (form.id === 'coordinator-form') {
-    event.preventDefault(); await saveCoordinator(form); return;
-  }
-  if (!['member-form','profile-form','group-form'].includes(form.id)) return;
-  event.preventDefault(); if (avatarLoading && form.id !== 'group-form') return;
+  if (!['member-form','profile-form'].includes(form.id)) return;
+  event.preventDefault(); if (avatarLoading) return;
   const reset = pending(form, form.id === 'profile-form' ? '正在保存…' : '正在准备…');
   try {
     const data = new FormData(form);
@@ -529,22 +508,13 @@ document.addEventListener('submit', async event => {
       const changes = Object.fromEntries(Object.entries(values).filter(([key,value]) => value !== profileBaseline?.[key]));
       if (Object.keys(changes).length) await api(`/api/members/${form.dataset.id}`, {method:'PATCH',body:JSON.stringify(changes)});
       await refresh(); profile(form.dataset.id); toast('修改已保存。');
-    } else {
-      const ids = data.getAll('members'); if (!ids.length) throw new Error('先邀请至少一位朋友吧。');
-      const c = await post('/api/conversations',{name:data.get('name'),kind:'group',member_ids:ids});
-      closePanel(); await refresh(); await openRoom(c.id);
+
     }
   } catch (error) { formError(form,error); reset(); }
 });
 
 // 只发送裁剪后的缩略图，原始照片和 EXIF 信息保留在本机。
 document.addEventListener('change', async event => {
-  if (event.target.id === 'coordinator-select') {
-    const form = event.target.form, changed = event.target.value !== form.dataset.savedId;
-    form.querySelector('button[type=submit]').disabled = !changed;
-    form.querySelector('.form-error').hidden = true;
-    form.querySelector('.form-status').textContent = changed ? '修改尚未保存' : '';
-  }
   if (event.target.id === 'avatar-file') {
     const file = event.target.files[0], form = event.target.closest('form'); if (!file) return;
     const request = ++avatarRequest, save = form.querySelector('button[type=submit]');
@@ -576,7 +546,9 @@ document.addEventListener('keydown', event => {
   }
   if (event.key === 'Escape') {
     if (!$('mention-options').hidden) $('mention-options').hidden = true;
-    else if (!$('inspector').hidden) { closePanel(); $('room-details').focus(); }
+    else if (document.querySelector('.version-menu[open]')) { const menu=document.querySelector('.version-menu[open]'); menu.open=false; menu.querySelector('summary').focus(); }
+    else if (!$('inspector').hidden) closePanel(true);
+    else if (!$('workspace-page').hidden) closeWorkspace(true);
     else { $('sidebar').classList.remove('open'); $('mobile-nav').setAttribute('aria-expanded','false'); }
   }
 });
@@ -614,7 +586,7 @@ $('mention-trigger').onclick = () => {
   const input = $('message-input'); input.value += (input.value && !/\s$/.test(input.value) ? ' ' : '') + '@';
   input.focus(); input.setSelectionRange(input.value.length,input.value.length); showMentions(); sizeComposer();
 };
-$('new-member').onclick = newMember; $('new-group').onclick = newGroup;
+$('new-member').onclick = () => startChat();
 $('welcome-action').onclick = () => state.members.length ? newGroup() : newMember();
 $('show-artifacts').onclick = showArtifacts; $('show-activity').onclick = () => showActivity();
 $('room-details').onclick = () => roomDetails();
@@ -638,14 +610,8 @@ $('earlier').onclick = async () => {
     hasEarlier = data.has_earlier; renderMessages(false); $('chat-body').scrollTop = top + $('chat-body').scrollHeight - height; button.hidden = !hasEarlier;
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
 };
-$('notifications').onclick = async () => {
+async function requestNotifications() {
   if (!('Notification' in window)) return toast('这个浏览器不支持系统通知，聊天中的新消息仍会保留。');
   const result = await Notification.requestPermission(); toast(result === 'granted' ? '已开启通知。值得及时提醒的新消息会通知你。' : '继续在聊天里查看新消息就好。');
 };
 document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleRefresh(); });
-
-const stream = new EventSource('/api/events');
-stream.addEventListener('ready', () => { $('connection-dot').className = 'ready'; $('connection-label').textContent = '已连接'; scheduleRefresh(); });
-stream.addEventListener('change',scheduleRefresh);
-stream.onerror = () => { $('connection-dot').className = ''; $('connection-label').textContent = '正在重连'; };
-refresh();
