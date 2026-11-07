@@ -33,10 +33,10 @@ nohup ./bin/dropby >data/server.log 2>&1 &
 
 服务必须保持运行，电脑也必须处于可运行状态；关机、休眠时无法执行网络探索。重新启动会恢复中断的工作。停止服务用正常的 `SIGTERM` 或终端 `Ctrl+C`，程序会取消生成并保留未完工作。同一数据目录只允许一个服务进程。
 
-本机通过 macOS 系统代理访问 OpenAI，当前代理地址为 `http://127.0.0.1:7790`。Go 不自动读取 macOS 系统代理；在这台机器手动重启时使用：
+本机通过 macOS 系统代理访问 OpenAI，本机常用端口为 `7890` 或 `7790`。服务优先连接环境变量指定的代理；本机 HTTP 代理的 TCP 连接失败时，自动尝试另一个端口，不重发已经送出的请求。Go 不自动读取 macOS 系统代理；在这台机器手动重启时使用：
 
 ```sh
-HTTPS_PROXY=http://127.0.0.1:7790 NO_PROXY=localhost,127.0.0.1,::1 go run ./cmd/dropby
+HTTPS_PROXY=http://127.0.0.1:7890 NO_PROXY=localhost,127.0.0.1,::1 go run ./cmd/dropby
 ```
 
 代理地址以本机实际设置为准；当前后台实例已经带上该代理环境。
