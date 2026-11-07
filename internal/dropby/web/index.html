@@ -8,21 +8,24 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/im.css">
+  <link rel="stylesheet" href="/glass.css">
   <script src="/vendor/marked.js" defer></script>
   <script src="/vendor/purify.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/im.js" defer></script>
+  <script src="/glass.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#message-input">跳到聊天输入框</a>
   <div class="app">
+    <nav class="app-rail" aria-label="主导航"><a class="rail-brand" href="/" aria-label="drop_by 首页">d.</a><div class="rail-navigation"><button class="rail-button active" data-action="rail-chats" aria-label="聊天" aria-pressed="true"><svg class="icon"><use href="/icons.svg#message-circle"/></svg></button><button class="rail-button" data-action="rail-people" aria-label="朋友" aria-pressed="false"><svg class="icon"><use href="/icons.svg#users"/></svg></button><button id="new-member" class="rail-button" aria-label="发起聊天" title="发起聊天"><svg class="icon"><use href="/icons.svg#plus"/></svg></button></div>      <button id="my-profile" class="my-profile" aria-label="打开个人中心"><span id="my-avatar"></span><span class="person-copy"><strong id="my-name">你</strong><small>个人中心</small></span><svg class="icon"><use href="/icons.svg#chevron-right"/></svg></button>
+    </nav>
     <aside class="sidebar" id="sidebar" aria-label="聊天与朋友">
-      <div class="brand-row"><button class="icon-button mobile-only" id="close-sidebar" aria-label="返回聊天"><svg class="icon"><use href="/icons.svg#arrow-left"/></svg></button><a class="brand" href="/" aria-label="drop_by 首页"><span class="brand-mark">d<span>·</span></span><span>drop_by</span></a><button class="icon-button" id="new-member" aria-label="发起聊天" title="发起聊天"><svg class="icon"><use href="/icons.svg#plus"/></svg></button></div>
+      <div class="brand-row"><button class="icon-button mobile-only" id="close-sidebar" aria-label="返回聊天"><svg class="icon"><use href="/icons.svg#arrow-left"/></svg></button><a class="brand" href="/" aria-label="drop_by 首页"><span class="brand-mark">d<span>·</span></span><span>drop_by</span></a><button class="icon-button mobile-only" data-action="start-chat" aria-label="发起聊天"><svg class="icon"><use href="/icons.svg#plus"/></svg></button></div>
       <div class="side-tabs" role="tablist" aria-label="浏览聊天或朋友"><button id="chats-tab" role="tab" aria-selected="true" aria-controls="conversation-list">聊天</button><button id="people-tab" role="tab" aria-selected="false" aria-controls="member-list">朋友</button></div>
       <label class="side-search"><svg class="icon" aria-hidden="true"><use href="/icons.svg#search"/></svg><input id="chat-search" type="search" placeholder="找聊天或朋友" aria-label="查找聊天或朋友"></label>
       <div class="side-scroll"><nav id="conversation-list" role="tabpanel" aria-labelledby="chats-tab"></nav><div id="member-list" role="tabpanel" aria-labelledby="people-tab" hidden></div></div>
-      <button id="my-profile" class="my-profile" aria-label="打开个人中心"><span id="my-avatar"></span><span class="person-copy"><strong id="my-name">你</strong><small>个人中心</small></span><svg class="icon"><use href="/icons.svg#chevron-right"/></svg></button>
-      <div class="side-bottom"><span class="connection"><i id="connection-dot"></i><span id="connection-label">正在连接</span></span><span class="side-signoff">有空，来坐坐。</span></div>
+      <button class="mobile-account mobile-only" data-action="account">个人中心</button><div class="side-bottom"><span class="connection"><i id="connection-dot"></i><span id="connection-label">正在连接</span></span><span class="side-signoff">有空，来坐坐。</span></div>
     </aside>
 
     <main id="main">
@@ -57,16 +60,20 @@
           <div id="mention-options" class="mention-options" hidden></div>
           <label class="sr-only" for="message-input">写消息</label>
           <textarea id="message-input" rows="1" maxlength="8000" placeholder="说点什么…" spellcheck="false"></textarea>
-          <div class="composer-bottom"><button class="icon-button mention-trigger" type="button" id="mention-trigger" aria-label="提及一位朋友" title="提及朋友"><svg class="icon"><use href="/icons.svg#at-sign"/></svg></button><span id="composer-hint">Enter 发送 <span class="desktop-hint">· Shift + Enter 换行</span></span><button class="send" id="send" type="submit" aria-label="发送消息" disabled><svg class="icon"><use href="/icons.svg#arrow-up"/></svg></button></div>
+          <div class="composer-bottom"><button class="icon-button mention-trigger" type="button" id="mention-trigger" aria-label="提及一位朋友" title="提及朋友"><svg class="icon"><use href="/icons.svg#at-sign"/></svg></button><span id="composer-hint">Enter 发送 <span class="desktop-hint">· Shift + Enter 换行</span></span><button class="icon-button emoji-trigger" type="button" data-action="emoji-menu" aria-label="选择表情"><svg class="icon"><use href="/icons.svg#smile"/></svg></button><button class="send" id="send" type="submit" aria-label="发送消息" disabled><svg class="icon"><use href="/icons.svg#arrow-up"/></svg></button></div>
         </form>
       </footer>
     </main>
-    <section id="workspace-page" class="workspace-page" hidden aria-labelledby="workspace-title"><header class="workspace-header"><button class="icon-button" data-action="close-workspace" aria-label="返回聊天"> <svg class="icon"><use href="/icons.svg#arrow-left"/></svg></button><h1 id="workspace-title" tabindex="-1"></h1></header><div id="workspace-content" class="workspace-content"></div></section>
+    <dialog id="workspace-page" class="workspace-page" hidden aria-labelledby="workspace-title"><header class="workspace-header"><button class="icon-button" data-action="close-workspace" aria-label="关闭窗口"> <svg class="icon"><use href="/icons.svg#x"/></svg></button><h1 id="workspace-title" tabindex="-1"></h1></header><div id="workspace-content" class="workspace-content"></div></dialog>
     <aside id="inspector" class="inspector" aria-labelledby="panel-title" hidden>
       <div class="panel-heading"><h2 id="panel-title" tabindex="-1"></h2><button class="icon-button" data-action="close-panel" aria-label="关闭详情"><svg class="icon"><use href="/icons.svg#x"/></svg></button></div>
       <div id="panel-content" class="panel-content"></div>
     </aside>
   </div>
+  <div id="person-popover" class="person-popover" popover="auto" role="dialog" aria-label="朋友资料"></div>
+  <div id="start-popover" class="start-popover" popover="auto" role="dialog" aria-label="发起聊天"></div>
+  <div id="emoji-popover" class="emoji-popover" popover="auto" role="dialog" aria-label="选择表情"></div>
+  <dialog id="crop-dialog" class="crop-dialog" aria-labelledby="crop-title"></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 </body>
 </html>

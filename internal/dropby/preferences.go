@@ -130,7 +130,7 @@ AND substr(result,1,length(?))<>?`, identityRevisionRetry, exceptRoom, memberID,
 	return err
 }
 
-var avatarIcons = []string{"orbit", "cat", "fox", "bear", "rabbit", "owl", "sprout", "flower", "sun", "moon", "cloud", "ghost"}
+var avatarIcons = []string{"portrait-sky", "portrait-cat", "portrait-traveler", "orbit", "cat", "fox", "bear", "rabbit", "owl", "sprout", "flower", "sun", "moon", "cloud", "ghost"}
 var avatarColors = []string{"jade", "apricot", "blue", "rose", "violet", "moss"}
 
 // 显式编辑和对话中更新使用同一份人物说明。可选字段保留未修改的数据；清空 avatar

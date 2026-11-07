@@ -8,3 +8,4 @@ bin/
 test-results/
 output/playwright/
 .playwright-cli/
+output/design/

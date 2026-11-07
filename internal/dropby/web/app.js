@@ -15,7 +15,7 @@ const drafts = new Map();
 let seen = {};
 try { seen = JSON.parse(localStorage.getItem('dropby-seen') || '{}'); } catch { /* 损坏的本机已读标记不影响聊天数据。 */ }
 const notificationCursor = {};
-const avatarPresets = [['cat','小猫'],['fox','狐狸'],['bear','小熊'],['rabbit','兔子'],['owl','猫头鹰'],['sprout','嫩芽'],['flower','花朵'],['sun','太阳'],['moon','月亮'],['cloud','云朵'],['ghost','小幽灵'],['orbit','星球']];
+const avatarPresets = [['portrait-sky','晴空'],['portrait-cat','墨镜猫'],['portrait-traveler','旅人'],['cat','小猫'],['fox','狐狸'],['bear','小熊'],['rabbit','兔子'],['owl','猫头鹰'],['sprout','嫩芽'],['flower','花朵'],['sun','太阳'],['moon','月亮'],['cloud','云朵'],['ghost','小幽灵'],['orbit','星球']];
 const colors = [['jade','青绿'],['apricot','杏橙'],['blue','雾蓝'],['rose','玫瑰'],['violet','浅紫'],['moss','苔绿']];
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="/icons.svg#${name}"/></svg>`;
 let initialLoad = true;
@@ -37,7 +37,7 @@ function presetFor(m) {
 }
 function avatar(m, small = false) {
   const preset = presetFor(m);
-  const portrait = m?.color === 'user' ? icon('user-round') : `<svg aria-hidden="true"><use href="/avatars.svg#${preset}"/></svg>`;
+  const portrait = preset.startsWith('portrait-') ? `<img src="/assets/${preset}.webp" alt="">` : m?.color === 'user' ? icon('user-round') : `<svg aria-hidden="true"><use href="/avatars.svg#${preset}"/></svg>`;
   return `<span class="avatar ${escapeHTML(m?.color || 'jade')} ${small ? 'small' : ''}" aria-hidden="true">${m?.avatar ? `<img src="${escapeHTML(m.avatar)}" alt="">` : portrait}</span>`;
 }
 function groupAvatar(c) {
@@ -138,6 +138,11 @@ function renderSidebar() {
   $('chats-tab').setAttribute('aria-selected', String(sideTab === 'chats'));
   $('people-tab').setAttribute('aria-selected', String(sideTab === 'people'));
   $('chats-tab').tabIndex = sideTab === 'chats' ? 0 : -1; $('people-tab').tabIndex = sideTab === 'people' ? 0 : -1;
+  // 桌面导航与窄屏标签共享同一选择；缩放后不留下另一套高亮状态。
+  document.querySelectorAll('.rail-navigation [aria-pressed]').forEach(button => {
+    const active = button.dataset.action === `rail-${sideTab}`;
+    button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
+  });
 }
 function renderWelcome() {
   $('welcome').hidden = false; $('chat-body').hidden = true; $('composer-wrap').hidden = true; $('show-artifacts').hidden = true; $('show-activity').hidden = true;
@@ -156,6 +161,7 @@ function sizeComposer() {
   $('send').disabled = sending || !input.value.trim();
 }
 async function openRoom(id) {
+  closeTransient();
   closeWorkspace(false);
   if (id !== selected) {
     rememberDraft(); closePanel(); selected = id; messages = []; renderedMessages = '';
@@ -178,6 +184,7 @@ async function loadConversation(id, preserve) {
     messages = [...combined.values()].filter(m => !m.id.startsWith('budget_')).sort((a, b) => a.seq - b.seq);
   }
   const c = data.conversation;
+  $('chat-header').dataset.kind=c.kind;
   $('welcome').hidden = true; $('chat-body').hidden = false; $('composer-wrap').hidden = false;
   $('room-title').textContent = c.name; $('room-details').disabled = false;
   $('header-avatar').innerHTML = c.kind === 'direct' ? avatar(member(c.member_ids[0])) : groupAvatar(c);
@@ -198,7 +205,7 @@ async function loadConversation(id, preserve) {
   if (panelView.startsWith('profile:')) {
     const id = panelView.slice(8), current = member(id);
     const signature = JSON.stringify([current, roomData.member_states?.find(s => s.member_id === id)]);
-    if ($('panel-content').dataset.profileSignature !== signature) { const top = $('panel-content').scrollTop; profile(id); $('panel-content').scrollTop = top; }
+    if ($('panel-content').dataset.profileSignature !== signature) { const top = $('panel-content').scrollTop; fullProfile(id); $('panel-content').scrollTop = top; }
   }
   // 新版只提示，不重建用户正在试用的页面；点击后才载入新的版本。
   const update = $('artifact-new-version');
@@ -277,6 +284,7 @@ function showMentions() {
 
 // 详情是聊天旁的一个页面，不再用遮罩和模态弹窗打断交流。
 function showPanel(title, description, body, view = '') {
+  closeTransient();
   const opening=$('inspector').hidden;
   if (opening) panelInvoker=document.activeElement;
   closeWorkspace(false);
@@ -300,10 +308,9 @@ function pending(form, text) { const button = form.querySelector('button[type=su
 
 function avatarEditor(m = {}) {
   avatarRequest++; avatarLoading = false;
-  avatarData = m.avatar || ''; avatarIcon = m.avatar_icon || (m.id ? presetFor(m) : 'cat'); avatarColor = m.color || 'jade';
-  return `<div class="avatar-editor"><span id="avatar-preview">${avatar({avatar:avatarData,avatar_icon:avatarIcon,color:avatarColor})}</span><div class="avatar-edit-copy"><strong>选一个你喜欢的头像</strong><small>也可以用自己的照片</small><label class="avatar-upload">${icon('upload')}上传图片<input class="sr-only" id="avatar-file" type="file" accept="image/png,image/jpeg"></label></div></div>
-    <fieldset class="avatar-gallery"><legend>默认头像</legend><div class="avatar-grid">${avatarPresets.map(([id,label]) => `<button type="button" class="avatar-choice" data-action="avatar-preset" data-id="${id}" aria-label="${label}头像" aria-pressed="${!avatarData && id === avatarIcon}">${avatar({avatar_icon:id,color:avatarColor})}</button>`).join('')}</div></fieldset>
-    <div class="color-picker" role="group" aria-label="头像颜色">${colors.map(([color,label]) => `<label class="color-choice ${color}"><input type="radio" name="color" value="${color}" ${color === avatarColor ? 'checked' : ''} aria-label="${label}"><span></span></label>`).join('')}</div>`;
+  avatarData = m.avatar || ''; avatarIcon = m.avatar_icon || (m.id ? presetFor(m) : 'portrait-cat'); avatarColor = m.color || 'jade';
+  return `<div class="avatar-editor"><button type="button" class="avatar-edit-preview" data-action="upload-avatar" aria-label="更换头像"><span id="avatar-preview">${avatar({avatar:avatarData,avatar_icon:avatarIcon,color:avatarColor})}</span><span class="avatar-camera">${icon('image')}</span></button><div class="avatar-edit-copy"><strong>选一个喜欢的样子</strong><small>照片会在本机裁剪，保存后生效</small><button type="button" class="avatar-upload" data-action="upload-avatar">${icon('upload')}更换头像</button></div><input hidden id="avatar-file" type="file" accept="image/png,image/jpeg"></div>
+    <details class="avatar-options"><summary>默认头像与颜色 ${icon('chevron-down')}</summary><fieldset class="avatar-gallery"><legend class="sr-only">默认头像</legend><div class="avatar-grid">${avatarPresets.map(([id,label]) => `<button type="button" class="avatar-choice" data-action="avatar-preset" data-id="${id}" aria-label="${label}头像" aria-pressed="${!avatarData && id === avatarIcon}">${avatar({avatar_icon:id,color:avatarColor})}</button>`).join('')}</div></fieldset><div class="color-picker" role="group" aria-label="图标头像颜色">${colors.map(([color,label]) => `<label class="color-choice ${color}"><input type="radio" name="color" value="${color}" ${color === avatarColor ? 'checked' : ''} aria-label="${label}"><span></span></label>`).join('')}</div></details>`;
 }
 function renderAvatarPreview() {
   if ($('group-avatar-preview')) { $('group-avatar-preview').innerHTML = groupAvatar({avatar:avatarData,member_ids:groupSelection}); return; }
@@ -320,7 +327,7 @@ function newMember() {
 }
 function editProfile(id) {
   const m = member(id); if (!m) return;
-  showPanel('编辑朋友', '', `<form id="profile-form" data-id="${m.id}">${avatarEditor(m)}<label class="field"><span>名字</span><input name="name" maxlength="24" required value="${escapeHTML(m.name)}" autocomplete="off"></label><label class="field"><span>特质与偏好</span><textarea name="profile" maxlength="3000" rows="7">${escapeHTML(m.profile)}</textarea><small class="field-hint">性格、兴趣、说话习惯，都可以用自己的话写。也可以在私聊里慢慢告诉 TA。</small></label><div class="form-error" hidden role="alert"></div><div class="panel-footer"><button class="secondary" type="button" data-action="profile" data-id="${m.id}">取消</button><button class="primary" type="submit">保存修改</button></div></form>`, 'edit-profile');
+  showWorkspace('编辑朋友', '', `<form id="profile-form" data-id="${m.id}">${avatarEditor(m)}<label class="field"><span>名字</span><input name="name" maxlength="24" required value="${escapeHTML(m.name)}" autocomplete="off"></label><label class="field"><span>特质与偏好</span><textarea name="profile" maxlength="3000" rows="4">${escapeHTML(m.profile)}</textarea><small class="field-hint">性格、兴趣、说话习惯，都可以用自己的话写。也可以在私聊里慢慢告诉 TA。</small></label><div class="form-error" hidden role="alert"></div><div class="panel-footer"><button class="secondary" type="button" data-action="close-workspace">取消</button><button class="primary" type="submit">保存修改</button></div></form>`, 'edit-profile');
   // 只提交用户实际改过的字段，避免头像修改覆盖同时从聊天中学到的新偏好。
   profileBaseline = {name:m.name.trim(),profile:m.profile.trim(),color:avatarColor,avatar:avatarData,avatar_icon:avatarIcon};
 }
@@ -372,7 +379,7 @@ function focusBlock(id) {
   if (!focus?.body) return '';
   return `<div class="focus-block"><h3 class="section-label">${icon('smile')}此刻在意</h3><div class="focus-body">${escapeHTML(focus.body)}</div>${focus.source_ids?.length ? `<div class="focus-sources">${focus.source_ids.map((source,i) => `<button data-action="${source.startsWith('tool_') ? 'evidence' : 'jump-message'}" data-id="${source}">${source.startsWith('tool_') ? '查看相关行动' : '回到相关交流'}${focus.source_ids.length > 1 ? ` ${i+1}` : ''} ↗</button>`).join('')}</div>` : ''}</div>`;
 }
-function profile(id) {
+function fullProfile(id) {
   const m = member(id); if (!m) return;
   showPanel('朋友资料', '', `<div class="profile-head">${avatar(m)}<h3>${escapeHTML(m.name)}</h3><p>AI 朋友 · ${escapeHTML(dateLabel(m.created_at))} 相识</p></div><div class="profile-actions"><button class="primary" data-action="direct" data-id="${m.id}">${icon('message-circle')}单独聊聊</button><button class="secondary" data-action="edit-profile" data-id="${m.id}">${icon('pencil')}编辑</button></div>${focusBlock(id)}${capabilities(m)}<h3 class="section-label">特质与偏好</h3><div class="profile-body">${escapeHTML(m.profile)}</div><p class="profile-caption">你可以随时编辑，也可以在聊天里说「以后……」，让 TA 记住你的偏好。</p><div class="panel-nav"><button data-action="preference" data-id="${m.id}">${icon('circle-help')}聊一个偏好${icon('chevron-right')}</button></div>`, `profile:${id}`);
   $('panel-content').dataset.profileSignature = JSON.stringify([m, roomData?.member_states?.find(s => s.member_id === id)]);
@@ -455,7 +462,7 @@ document.addEventListener('click', async event => {
   const {action,id} = button.dataset;
   try {
     if (action === 'open-room') await openRoom(id);
-    if (action === 'profile') profile(id);
+    if (action === 'profile') profile(id, button);
     if (action === 'edit-profile') editProfile(id);
     if (action === 'close-panel') closePanel(true);
     if (action === 'activity') showActivity();
@@ -507,30 +514,25 @@ document.addEventListener('submit', async event => {
       const values = {name:data.get('name').trim(),profile:data.get('profile').trim(),color:avatarColor,avatar:avatarData,avatar_icon:avatarIcon};
       const changes = Object.fromEntries(Object.entries(values).filter(([key,value]) => value !== profileBaseline?.[key]));
       if (Object.keys(changes).length) await api(`/api/members/${form.dataset.id}`, {method:'PATCH',body:JSON.stringify(changes)});
-      await refresh(); profile(form.dataset.id); toast('修改已保存。');
+      await refresh(); if (form.isConnected) { closeWorkspace(true); toast('修改已保存。'); }
 
     }
-  } catch (error) { formError(form,error); reset(); }
+  } catch (error) { if (form.isConnected) { formError(form,error); reset(); } else toast(error.message); }
 });
 
 // 只发送裁剪后的缩略图，原始照片和 EXIF 信息保留在本机。
 document.addEventListener('change', async event => {
   if (event.target.id === 'avatar-file') {
-    const file = event.target.files[0], form = event.target.closest('form'); if (!file) return;
+    const file = event.target.files[0], form = event.target.closest('form');
+    // 清空文件值后，再次选择同一张照片也会触发 change。
+    event.target.value = ''; if (!file) return;
     const request = ++avatarRequest, save = form.querySelector('button[type=submit]');
-    avatarLoading = true; save.disabled = true;
+    avatarLoading = true; save.disabled = true; form.querySelector('.form-error').hidden=true;
     try {
       if (!['image/png','image/jpeg'].includes(file.type) || file.size > 10*1024*1024) throw new Error('请选择 10MB 以内的 PNG 或 JPEG 图片。');
-      const bitmap = await createImageBitmap(file), canvas = document.createElement('canvas');
-      // 新图片、默认头像或关闭页面会使旧解码结果失效，避免迟到的照片覆盖最新选择。
-      if (request !== avatarRequest || !form.isConnected) { bitmap.close(); return; }
-      canvas.width = 128; canvas.height = 128;
-      const size = Math.min(bitmap.width,bitmap.height);
-      canvas.getContext('2d').drawImage(bitmap,(bitmap.width-size)/2,(bitmap.height-size)/2,size,size,0,0,128,128);
-      bitmap.close(); avatarData = canvas.toDataURL('image/png');
-      if (avatarData.length > 88000) avatarData = canvas.toDataURL('image/jpeg',.85);
-      renderAvatarPreview();
-    } catch (error) { if (request === avatarRequest) toast(error.message); }
+      const cropped = await cropAvatar(file, request);
+      if (cropped && request === avatarRequest && form.isConnected) { avatarData = cropped; renderAvatarPreview(); }
+    } catch (error) { if (request === avatarRequest && form.isConnected) formError(form,error); }
     finally {
       if (request === avatarRequest) { avatarLoading = false; if (form.isConnected) save.disabled = false; }
     }
@@ -545,6 +547,8 @@ document.addEventListener('keydown', event => {
     selectArtifactTab(next); $(`artifact-${next}-tab`).focus();
   }
   if (event.key === 'Escape') {
+    if ($('crop-dialog').open) return;
+    if (closeTransient(true)) { event.preventDefault(); return; }
     if (!$('mention-options').hidden) $('mention-options').hidden = true;
     else if (document.querySelector('.version-menu[open]')) { const menu=document.querySelector('.version-menu[open]'); menu.open=false; menu.querySelector('summary').focus(); }
     else if (!$('inspector').hidden) closePanel(true);
@@ -587,7 +591,7 @@ $('mention-trigger').onclick = () => {
   input.focus(); input.setSelectionRange(input.value.length,input.value.length); showMentions(); sizeComposer();
 };
 $('new-member').onclick = () => startChat();
-$('welcome-action').onclick = () => state.members.length ? newGroup() : newMember();
+$('welcome-action').onclick = () => state.members.length ? startGroup() : newMember();
 $('show-artifacts').onclick = showArtifacts; $('show-activity').onclick = () => showActivity();
 $('room-details').onclick = () => roomDetails();
 $('close-sidebar').onclick = () => { $('sidebar').classList.remove('open'); $('mobile-nav').setAttribute('aria-expanded','false'); };
