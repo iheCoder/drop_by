@@ -27,8 +27,8 @@ func TestLiveNaturalConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	cfg.WeeklyBudgetMicros, cfg.AutonomousBudgetMicros = 1000000, 400000
-	cfg.MaxTurns, cfg.MaxToolRounds, cfg.MaxOutputTokens, cfg.DeepMaxOutputTokens = 4, 4, 2000, 6000
+	cfg.WeeklyBudgetMicros = 1000000
+	cfg.MaxOutputTokens, cfg.DeepMaxOutputTokens = 2000, 6000
 	people := []Member{
 		{ID: "natural_lin", Name: "林间", Profile: "说话不多，喜欢安静、风景和电影里的留白。有感触才接话，完全可以什么也不说。", Color: "moss", AvatarIcon: "sprout", CreatedAt: now()},
 		{ID: "natural_tao", Name: "桃子", Profile: "喜欢开玩笑，也愿意顺着朋友的话胡思乱想。表达轻松，不喜欢会议式讨论和完整答题。", Color: "rose", AvatarIcon: "cat", CreatedAt: now()},

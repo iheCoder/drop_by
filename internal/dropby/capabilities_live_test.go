@@ -36,7 +36,6 @@ func TestLiveCreativeToolsAndFollowup(t *testing.T) {
 	// 目录已有的用量不会清空，反复运行仍受同一上限约束。
 	cfg.WeeklyBudgetMicros = 650_000
 	cfg.MaxOutputTokens, cfg.DeepMaxOutputTokens = 2000, 8000
-	cfg.MaxTurns, cfg.MaxToolRounds = 3, 6
 	m := Member{ID: "capability_amo", Name: "阿墨", Color: "blue", AvatarIcon: "moon", CreatedAt: now(), Tools: []string{"save_artifact"}, Profile: "喜欢把朋友的荒诞点子做成小巧的互动网页。说话简短，不催人回复；喜欢自己试出一个不同的结尾，可以决定不分享。会按明确要求使用选择题和保存实际作品。"}
 	if _, err := s.Member(m.ID); err != nil {
 		if err := s.AddMember(m); err != nil {

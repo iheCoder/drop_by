@@ -200,22 +200,14 @@ func (e *Engine) recallDecision(ctx context.Context, c Conversation, m Member, w
 		}
 	}
 	messages := []ChatMessage{{Role: "system", Content: system}, {Role: "user", Content: asJSON(input)}}
-	for step := 0; step < 4; step++ {
-		defs := definitions
-		if step == 3 {
-			defs = nil
-			messages = append(messages, ChatMessage{Role: "user", Content: "先用已找回的材料完成本次参与判断。找不到的经历不要假装记得；需要更多行动可以稍后继续。只返回判断 JSON。"})
-		}
+	for {
 		compactToolHistory(messages)
-		r, err := completeModel(ctx, e.Model, &messages, defs, step == 3)
+		r, err := completeModel(ctx, e.Model, &messages, definitions, false)
 		if err != nil {
 			return memberDecisionError(err)
 		}
 		if len(r.ToolCalls) == 0 {
 			return memberDecisionError(parseJSON(r.Content, out))
-		}
-		if step == 3 || len(r.ToolCalls) > 4 {
-			return ErrRunLimit
 		}
 		messages = append(messages, r)
 		for _, call := range r.ToolCalls {
@@ -229,7 +221,6 @@ func (e *Engine) recallDecision(ctx context.Context, c Conversation, m Member, w
 			messages = append(messages, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: toolExcerpt(result, 6000)})
 		}
 	}
-	return ErrRunLimit
 }
 
 // 记忆说明保留来源、更新和范围语义，不再叠加一套表达方式要求。

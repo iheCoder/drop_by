@@ -121,15 +121,6 @@ func (s *Store) DelegateWork(c Conversation, coordinator Member, source Work, me
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		// 委托上限按同一根任务合计，防止多人之间轮流接力放大工作量。
-		// 普通研究原有的每人成本边界仍由 insertWork 维护。
-		var assigned int
-		if err := tx.QueryRow(`SELECT count(*) FROM work WHERE root_id=? AND assigned_by<>''`, w.RootID).Scan(&assigned); err != nil {
-			return err
-		}
-		if assigned >= maxChainedActions {
-			return errAutonomyLimit
-		}
 		if err := insertWork(tx, w); err != nil {
 			return err
 		}
@@ -184,15 +175,14 @@ func queueCoordinationReview(tx *sql.Tx, w Work, status, result string) error {
 	if exists > 0 {
 		return nil
 	}
+	if status == "failed" || status == "paused" {
+		result = "尚未完成，已有成果保留。"
+	}
 	review := Work{ID: id, ParentID: w.ParentID, RootID: rootOf(w), Autonomous: true, ConversationID: w.ConversationID,
 		MemberID: coordinator, Kind: "revisit", SourceID: w.SourceID, Status: "pending",
 		Instruction: "一项委托有了实际结果。先用 read_work 核对工作 " + w.ID + "，再结合当前目标、最新消息和同伴各自的安排，决定是否需要协调下一步、调整分工或就此结束。不要替同伴重复发布其成果，也不必为推进而再造任务。状态：" + status + "；实际记录：" + clip(result, 2500),
 		Reason:      "同伴的委托结果触发了这次复看，不是定时催促。", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
 	err = insertWork(tx, review)
-	if errors.Is(err, errAutonomyLimit) {
-		// 到达链边界时仍必须保存真实成果；协调者之后可从工作记录主动查看。
-		return nil
-	}
 	return err
 }
 

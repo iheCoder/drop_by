@@ -114,9 +114,6 @@ func TestLiveModelSelection(t *testing.T) {
 					local.MaxOutputTokens = 2400
 					local.DeepMaxOutputTokens = 4500
 					local.WeeklyBudgetMicros = 700000
-					local.AutonomousBudgetMicros = 700000
-					local.WeeklyCalls = 24
-					local.MaxToolRounds = 5
 					local.SearchKey = "" // 固定本地工具与输入，不调用外部搜索。
 					transport := &selectionTransport{total: &total}
 					model := &HTTPModel{Config: local, Store: s, Client: &http.Client{Transport: transport, Timeout: 90 * time.Second}}

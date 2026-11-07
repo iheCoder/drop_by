@@ -42,9 +42,7 @@ func TestLivePersonalExperienceContinuity(t *testing.T) {
 	defer s.Close()
 	// 同一验收目录的账本累积保留，失败重试也计费；不重置生产或验收消费。
 	cfg.WeeklyBudgetMicros = min(cfg.WeeklyBudgetMicros, 3_000_000)
-	cfg.AutonomousBudgetMicros = min(cfg.AutonomousBudgetMicros, 1_000_000)
 	cfg.MaxOutputTokens, cfg.DeepMaxOutputTokens = 2500, 7000
-	cfg.MaxTurns, cfg.MaxToolRounds = 2, 6
 	runID := newID("memory_eval")
 	// 可在同一份隔离经历上继续观察合作理解，不重复前面的付费场景。
 	// 继续时保留原成员 ID 与消费账本，不能把新演员当成已经经历过的人。

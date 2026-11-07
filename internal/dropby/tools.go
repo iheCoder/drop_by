@@ -1,7 +1,9 @@
 package dropby
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -51,8 +53,8 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 		definition("cancel_work", "取消自己在当前聊天里已经安排、但现在不再需要的后续或研究；不能取消同伴的工作，自己的已结束工作会返回实际终态。先从已有工作中取真实 ID；用户改意或事情已解决时及时取消。", map[string]any{"id": textField("自己的待执行工作 ID")}, "id"),
 	}
 	if !c.ResearchPaused {
-		defs = append(defs, definition("schedule_followup", "预约稍后检查某件事，例如邀请后是否有人回应、约定是否有进展。到期会读取最新消息和工作，再自行决定行动；服务需运行。", map[string]any{"instruction": textField("到时要核对的具体事情或相关消息，以及自己的打算"), "reason": textField("来自哪段交流、兴趣或真实进展"), "delay_seconds": map[string]any{"type": "integer", "minimum": 60, "maximum": 604800}, "due_at": textField("可选绝对时间，RFC3339且含时区，例如2026-11-08T09:00:00+08:00；与delay_seconds只选一个。一次定时，不是周期任务，服务需运行。")}, "instruction", "reason"))
-		defs = append(defs, definition("schedule_exploration", "安排可真正执行的低风险后台探索。明确方向与实际来由；与已有未完研究相同则不要重复安排。会在预算和运行上限内继续。", map[string]any{"instruction": textField("可用现有工具执行的具体方向，不是泛泛关注"), "reason": textField("来自什么兴趣、经历或新材料"), "delay_seconds": map[string]any{"type": "integer", "minimum": 10, "maximum": 86400}}, "instruction", "reason"))
+		defs = append(defs, definition("schedule_followup", "预约稍后检查某件事，例如邀请后是否有人回应、约定是否有进展。到期会读取最新消息和工作，再自行决定行动；服务需运行。", map[string]any{"instruction": textField("到时要核对的具体事情或相关消息，以及自己的打算"), "reason": textField("来自哪段交流、兴趣或真实进展"), "delay_seconds": map[string]any{"type": "integer", "minimum": 1}, "due_at": textField("可选绝对时间，RFC3339且含时区，例如2026-11-08T09:00:00+08:00；与delay_seconds只选一个。一次定时，不是周期任务，服务需运行。")}, "instruction", "reason"))
+		defs = append(defs, definition("schedule_exploration", "安排可真正执行的低风险后台探索。明确方向与实际来由；与已有未完研究相同则不要重复安排。", map[string]any{"instruction": textField("可用现有工具执行的具体方向，不是泛泛关注"), "reason": textField("来自什么兴趣、经历或新材料"), "delay_seconds": map[string]any{"type": "integer", "minimum": 10, "maximum": 86400}}, "instruction", "reason"))
 	}
 	// 本轮已看到的本人临时职责允许重复确认结束；Store 仍核对本人和事项。
 	// 真正委托权限每次查当前记录，结束职责后不能继续安排同伴。
@@ -64,11 +66,11 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 		break
 	}
 	if t.Store.CanDelegate(c, m, w) {
-		defs = append(defs, definition("delegate_work", "依据当前真实约定，委托同群成员完成一项具体工作。coordinate=true 可请对方组织这个子事项，不扩大原授权。写明预期结果、边界及选择理由；先查看已有工作避免重复。完成或遇到问题后会自动获得复看机会，不必定时催促。", map[string]any{"member_id": textField("本群另一成员ID"), "instruction": textField("具体任务、预期结果和边界"), "reason": textField("为什么需要这件事、为什么选择这位成员"), "coordinate": map[string]any{"type": "boolean", "description": "是否委托对方组织这项子工作；默认自己完成具体产出"}}, "member_id", "instruction", "reason"))
+		defs = append(defs, definition("delegate_work", "依据当前真实约定，委托同群成员完成一项具体工作。coordinate=true 可请对方组织这个子事项，不扩大原授权。写明预期结果、边界及选择理由；先查看已有工作避免重复。完成或遇到问题后会获得复看机会。", map[string]any{"member_id": textField("本群另一成员ID"), "instruction": textField("具体任务、预期结果和边界"), "reason": textField("为什么需要这件事、为什么选择这位成员"), "coordinate": map[string]any{"type": "boolean", "description": "是否委托对方组织这项子工作；默认自己完成具体产出"}}, "member_id", "instruction", "reason"))
 	}
 	if !c.DiscussionPaused && w.Kind != "research" {
 		defs = append(defs, definition("ask_question", "在聊天里提出一个可自由回答的选择题。只在这个问题对当前交流确有帮助时使用，不能连着追问或把聊天变成问卷；真人聊别的就自然略过。工具已发布问题，最终回复不要重复它。", map[string]any{"text": textField("一个简短自然的问题"), "options": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "minItems": 2, "maxItems": 4}}, "text", "options"))
-		defs = append(defs, definition("send_private", "有适合单独分享的非敏感内容时主动联系真人。不能绕过停止要求、复制秘密、催促回复；不是每次都要私聊。", map[string]any{"message": textField("自然的私聊内容"), "notify": map[string]string{"type": "boolean"}}, "message", "notify"))
+		defs = append(defs, definition("send_private", "有适合单独分享的非敏感内容时主动联系真人。遵守停止要求与明确的保密约定。", map[string]any{"message": textField("自然的私聊内容"), "notify": map[string]string{"type": "boolean"}}, "message", "notify"))
 	}
 	for _, name := range m.Tools {
 		switch name {
@@ -115,9 +117,50 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	if !json.Valid([]byte(call.Function.Arguments)) || len(call.Function.Arguments) > 80_000 {
 		return "", fmt.Errorf("工具参数不是有效的有界 JSON")
 	}
-	run := ToolRun{ID: newID("tool"), WorkID: w.ID, ConversationID: c.ID, MemberID: m.ID, Name: call.Function.Name, Arguments: json.RawMessage(call.Function.Arguments), Status: "running", CreatedAt: now()}
-	if err := t.Store.RecordTool(run); err != nil {
+	// 参数对象按键排序后保存；仅 JSON 空白/键序改变不应绕开重复失败检查。
+	decoder := json.NewDecoder(bytes.NewBufferString(call.Function.Arguments))
+	decoder.UseNumber()
+	var canonical any
+	if err := decoder.Decode(&canonical); err != nil {
 		return "", err
+	}
+	call.Function.Arguments = asJSON(canonical)
+
+	// 同一条模型 tool_call 的重放复用已有结果；新的调用 ID 是成员的新行动，
+	// 不按相似文本去重。执行中断且结果不明时禁止盲目重放写操作。
+	runID := newID("tool")
+	if call.ID != "" {
+		runID = fmt.Sprintf("tool_%x", sha256.Sum256([]byte(w.ID+"\x00"+m.ID+"\x00"+call.ID)))
+	}
+	resumingRead := false
+	var oldStatus, oldResult string
+	readErr := t.Store.db.QueryRow("SELECT status,result FROM tool_runs WHERE id=?", runID).Scan(&oldStatus, &oldResult)
+	if readErr == nil {
+		if oldStatus == "running" {
+			if !readOnlyTool(call.Function.Name) {
+				return "", errUncertainTool
+			}
+			resumingRead = true
+		} else {
+			return asJSON(map[string]any{"tool_run_id": runID, "status": oldStatus, "result": json.RawMessage(oldResult)}), nil
+		}
+	}
+	if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
+		return "", readErr
+	}
+	// 只阻止原样反复失败；分页、换条件、成功的重复读取均不计入。
+	var failures int
+	if err := t.Store.db.QueryRow("SELECT count(*) FROM tool_runs WHERE work_id=? AND member_id=? AND name=? AND json(arguments)=json(?) AND status='failed' AND rowid>coalesce((SELECT max(rowid) FROM tool_runs WHERE work_id=? AND member_id=? AND name=? AND json(arguments)=json(?) AND status='succeeded'),0)", w.ID, m.ID, call.Function.Name, call.Function.Arguments, w.ID, m.ID, call.Function.Name, call.Function.Arguments).Scan(&failures); err != nil {
+		return "", err
+	}
+	if failures >= 3 {
+		return "", errRepeatedTool
+	}
+	run := ToolRun{ID: runID, WorkID: w.ID, ConversationID: c.ID, MemberID: m.ID, Name: call.Function.Name, Arguments: json.RawMessage(call.Function.Arguments), Status: "running", CreatedAt: now()}
+	if !resumingRead {
+		if err := t.Store.RecordTool(run); err != nil {
+			return "", err
+		}
 	}
 	if t.Activity != nil {
 		labels := map[string]string{"search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_private": "正在准备私聊", "read_history": "正在翻阅聊天记录", "read_artifact": "正在查看成果", "read_tool_result": "正在核对已有材料", "read_memory": "正在回顾经历", "search_memory": "正在找回相关经历", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
@@ -125,18 +168,15 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	}
 	var result any
 	var err error
-	if call.Function.Name == "ask_question" || call.Function.Name == "send_private" {
-		// 问题卡和私聊也是实际发言，必须和普通回复共用自主交流的累计上限。
-		// 先占用名额可避免崩溃或重试重复发布；失败时保守保留这个名额。
-		err = t.Store.claimAutonomousMessage(ctx, t.Config.MaxTurns)
-	}
-	if err == nil {
-		result, err = t.perform(ctx, c, m, w, call)
-	}
+	result, err = t.perform(ctx, c, m, w, call)
 	status := "succeeded"
 	if err != nil {
 		status = "failed"
 		result = map[string]any{"error": err.Error()}
+		var transport *requestFailure
+		if errors.As(err, &transport) {
+			result = map[string]any{"error": "这次工具未取得结果", "execution_error": true}
+		}
 		var pending *pendingResearchError
 		if errors.As(err, &pending) {
 			// 工具没有结束职责，但也没有发生执行故障。明确返回未完工作，
@@ -155,7 +195,8 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	}
 	t.Hub.Publish(c.ID)
 	// 即使失败也返回实际记录 ID，成员可以如实说明失败的具体来由。
-	if errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || errors.Is(err, errAutonomyLimit) || errors.Is(err, context.Canceled) {
+	var transport *requestFailure
+	if errors.As(err, &transport) || errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || errors.Is(err, context.Canceled) {
 		return "", err
 	}
 	return asJSON(map[string]any{"tool_run_id": run.ID, "status": status, "result": result}), nil
@@ -270,7 +311,8 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		return t.Store.searchMemories(m.ID, c.ID, args.Query, args.Before)
 	case "read_work":
 		if args.ID != "" {
-			return t.Store.ReadWork(c.ID, args.ID)
+			w, err := t.Store.ReadWork(c.ID, args.ID)
+			return roleWork(w), err
 		}
 		jobs, err := t.Store.OpenWork(c.ID)
 		if err != nil {
@@ -289,6 +331,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		page := filtered[args.Offset:end]
 		for i := range page {
 			page[i].Instruction = clip(page[i].Instruction, 500)
+			page[i] = roleWork(page[i])
 			page[i].Result = clip(page[i].Result, 700)
 		}
 		return map[string]any{"work": page, "next_offset": end, "has_more": end < len(filtered)}, nil
@@ -384,14 +427,17 @@ func (t *Toolbox) webRequest(ctx context.Context, path string, body, out any) er
 	if t.Config.SearchKey == "" {
 		return fmt.Errorf("尚未配置搜索服务，不能执行真实网页探索")
 	}
-	day, err := t.Store.ReserveContext(ctx, t.Config, t.Config.ToolCostMicros)
-	if err != nil {
-		return err
-	}
-	err = requestJSON(ctx, &http.Client{Timeout: 45 * time.Second}, t.Config.SearchURL+"/"+path, t.Config.SearchKey, []byte(asJSON(body)), out)
-	// 失败的请求不声称获得结果；预算保留保守预留，避免未知计费情况反复重试。
-	_ = day
-	return err
+	return retryRequest(ctx, func() error {
+		day, err := t.Store.ReserveContext(ctx, t.Config, t.Config.ToolCostMicros)
+		if err != nil {
+			return err
+		}
+		if err := requestJSON(ctx, &http.Client{Timeout: 45 * time.Second}, t.Config.SearchURL+"/"+path, t.Config.SearchKey, []byte(asJSON(body)), out); err != nil {
+			return err
+		}
+		return t.Store.SettleContext(ctx, day, t.Config.ToolCostMicros, t.Config.ToolCostMicros, 0, 0)
+	})
+
 }
 
 func validatePublicURL(ctx context.Context, raw string) error {
@@ -423,3 +469,12 @@ func validatePublicURL(ctx context.Context, raw string) error {
 }
 
 func decode(s string, out any) { _ = json.Unmarshal([]byte(s), out) }
+
+// 这些现有工具只读取数据；结果未落盘的读取可以重做。写入/发送不走这条路径。
+func readOnlyTool(name string) bool {
+	switch name {
+	case "search", "read_page", "read_history", "read_memory", "search_memory", "read_work", "read_artifact", "read_tool_result":
+		return true
+	}
+	return false
+}

@@ -66,7 +66,6 @@ func TestRoleModelsSettleTheirOwnPrices(t *testing.T) {
 			cfg.DecisionModel = "gpt-6-luna"
 			cfg.ChatModel = "gpt-6.1-terra"
 			cfg.Reasoning = "low"
-			cfg.AutonomousBudgetMicros = cfg.WeeklyBudgetMicros
 			day, err := s.Reserve(cfg, 100)
 			if err != nil {
 				t.Fatal(err)

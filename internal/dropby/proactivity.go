@@ -12,14 +12,14 @@ import (
 // 这些状态只描述调度和资源边界，不为性格、兴趣或情绪打分。
 type autonomyKey struct{}
 
-// 每位成员每个根任务最多安排六次实际后续；分享已完成结果不占这个名额。
-const maxChainedActions = 6
-
 // 自然语言里的“明早九点”由模型根据当前时区转成绝对时刻，执行层只核对
 // 时间格式与真实未来时间，不用字符串猜日期。现有相对预约仍然兼容。
 func followupTime(at time.Time, delay int, absolute string) (time.Time, error) {
 	if absolute == "" {
-		return at.Add(time.Duration(max(60, min(delay, 604800))) * time.Second), nil
+		if delay <= 0 {
+			return time.Time{}, fmt.Errorf("预约延时必须为正数")
+		}
+		return at.Add(time.Duration(delay) * time.Second), nil
 	}
 	if delay != 0 {
 		return time.Time{}, fmt.Errorf("定时时刻和相对延时只能填写一个")
@@ -35,9 +35,6 @@ func autonomousWork(w Work) bool {
 	return w.Autonomous || w.Kind == "revisit" || (w.Kind != "chat" && w.SourceID == "")
 }
 
-var errAutonomyLimit = errors.New("这次自主交流已达到运行边界，保留进展并安静结束")
-var errAutonomyBudget = fmt.Errorf("本周自主探索额度不足，真人聊天仍可继续：%w", ErrBudget)
-
 func autonomyRoot(ctx context.Context) string {
 	root, _ := ctx.Value(autonomyKey{}).(string)
 	return root
@@ -50,30 +47,6 @@ func rootOf(w Work) string {
 	return w.ID
 }
 
-// 单次执行窗口用尽时，最后一条新消息仍应有被同伴读到的机会。
-// 续接面向全群，不指定谁推进；共享原来由的自主预算和发言上限。
-// 全员 pass 不走这里，新真人消息也会像其他 followup 一样替换这次机会。
-func (e *Engine) continueConversation(ctx context.Context, c Conversation, w Work) error {
-	ctx = context.WithValue(ctx, autonomyKey{}, rootOf(w))
-	if allowed, err := e.Store.autonomousMessagesLeft(ctx, e.Config.MaxTurns); err != nil || !allowed {
-		return err
-	}
-	return e.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
-		id := "continuation_" + w.ID
-		var exists int
-		if err := tx.QueryRow(`SELECT count(*) FROM work WHERE id=?`, id).Scan(&exists); err != nil || exists > 0 {
-			return err
-		}
-		var source string
-		if err := tx.QueryRow(`SELECT id FROM messages WHERE conversation_id=? ORDER BY seq DESC LIMIT 1`, c.ID).Scan(&source); err != nil {
-			return err
-		}
-		return insertWork(tx, Work{ID: id, ParentID: w.ID, RootID: rootOf(w), ConversationID: c.ID,
-			Kind: "followup", Autonomous: true, SourceID: source, Status: "pending", CreatedAt: now(), DueAt: time.Now().UnixMilli(),
-			Instruction: "上一次处理窗口结束后又有了消息。结合最新交流和自己的特质、状态与目标决定下一步。"})
-	})
-}
-
 func (s *Store) initProactivity() error {
 	// 增量迁移保留历史数据；SQLite 的 pragma 支持在旧数据库中检查已有列。
 	for _, col := range []struct{ table, name, definition string }{
@@ -81,6 +54,7 @@ func (s *Store) initProactivity() error {
 		{"work", "autonomous", "INTEGER NOT NULL DEFAULT 0"},
 		{"conversations", "idle_rounds", "INTEGER NOT NULL DEFAULT 0"},
 		{"usage", "autonomous_cost_micros", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage", "unsettled_micros", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		var exists int
 		if err := s.db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, col.table, col.name).Scan(&exists); err != nil {
@@ -92,8 +66,7 @@ func (s *Store) initProactivity() error {
 			}
 		}
 	}
-	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS autonomous_publications(root_id TEXT PRIMARY KEY, reserved INTEGER NOT NULL DEFAULT 0);
-CREATE INDEX IF NOT EXISTS work_root ON work(root_id);
+	_, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS work_root ON work(root_id);
 UPDATE work SET autonomous=1 WHERE source_id='' AND kind!='chat';`)
 	return err
 }
@@ -191,46 +164,4 @@ func (s *Store) CancelOwnWork(c Conversation, m Member, id string) (any, error) 
 		}
 	})
 	return map[string]string{"work_id": id, "status": status}, err
-}
-
-// 在公开消息和提问/私聊工具的副作用之前预留名额。崩溃或发布失败时保守保留，
-// 不会因为重试、切换到私聊或创建新子工作而获得一套新的发言上限。
-func (s *Store) claimAutonomousMessage(ctx context.Context, limit int) error {
-	root := autonomyRoot(ctx)
-	if root == "" {
-		return nil
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err = tx.Exec(`INSERT OR IGNORE INTO autonomous_publications(root_id) VALUES(?)`, root); err != nil {
-		return err
-	}
-	r, err := tx.Exec(`UPDATE autonomous_publications SET reserved=reserved+1 WHERE root_id=? AND reserved<?`, root, max(1, limit))
-	if err != nil {
-		return err
-	}
-	n, err := r.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return errAutonomyLimit
-	}
-	return tx.Commit()
-}
-
-func (s *Store) autonomousMessagesLeft(ctx context.Context, limit int) (bool, error) {
-	root := autonomyRoot(ctx)
-	if root == "" {
-		return true, nil
-	}
-	var used int
-	err := s.db.QueryRow(`SELECT reserved FROM autonomous_publications WHERE root_id=?`, root).Scan(&used)
-	if errors.Is(err, sql.ErrNoRows) {
-		return true, nil
-	}
-	return used < max(1, limit), err
 }

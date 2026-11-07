@@ -26,7 +26,7 @@ func TestWeeklyBudgetIncludesExistingDailyLedger(t *testing.T) {
 	}
 
 	cfg := testConfig()
-	cfg.WeeklyBudgetMicros, cfg.AutonomousBudgetMicros = 20_000_000, 7_000_000
+	cfg.WeeklyBudgetMicros = 20_000_000
 	// 今天还有 9 美元，预留 8 美元成功；下一天的 2 美元请求仍超过本周仅剩的 1 美元。
 	day, err := s.reserveContextAt(context.Background(), cfg, 8_000_000, at)
 	if err != nil || day != "2026-11-04" {
@@ -48,7 +48,7 @@ func TestWeeklyBudgetRolloverAndLateSettlement(t *testing.T) {
 	// 周日发出的请求在下周一才返回：结算必须回到周日，不能消耗下一周的新额度。
 	s, _, _ := fixture(t)
 	cfg := testConfig()
-	cfg.WeeklyBudgetMicros, cfg.AutonomousBudgetMicros = 1_000_000, 700_000
+	cfg.WeeklyBudgetMicros = 1_000_000
 	sunday := time.Date(2026, time.November, 8, 23, 59, 0, 0, time.Local)
 	monday := sunday.Add(2 * time.Minute)
 	ctx := context.WithValue(context.Background(), autonomyKey{}, "weekly-check")
@@ -70,16 +70,16 @@ func TestWeeklyBudgetRolloverAndLateSettlement(t *testing.T) {
 	if err != nil || oldUsage.CostMicros != 250_000 || newUsage.CostMicros != 600_000 || newUsage.AutonomousCostMicros != 600_000 {
 		t.Fatalf("跨周结算混入了新账期: old=%+v new=%+v err=%v", oldUsage, newUsage, err)
 	}
-	// 自主子上限跨日累加；不足时仍需保留前台预算通道。
-	if _, err = s.reserveContextAt(ctx, cfg, 150_000, monday.AddDate(0, 0, 1)); !errors.Is(err, errAutonomyBudget) {
+	// 自主和前台共享跨日总预算，不设置第二个隐含门槛。
+	if _, err = s.reserveContextAt(ctx, cfg, 150_000, monday.AddDate(0, 0, 1)); err != nil {
 		t.Fatalf("自主额度应独立受限: %v", err)
 	}
-	if _, err = s.reserveContextAt(context.Background(), cfg, 350_000, monday.AddDate(0, 0, 1)); err != nil {
+	if _, err = s.reserveContextAt(context.Background(), cfg, 250_000, monday.AddDate(0, 0, 1)); err != nil {
 		t.Fatalf("自主额度不足不能挡住真人可用的总额度: %v", err)
 	}
 }
 
-func TestWeeklyBudgetExhaustionAndCallLimitAreDistinct(t *testing.T) {
+func TestWeeklyBudgetExhaustionAndReservationAreDistinct(t *testing.T) {
 	// 已经达到金额上限、仍有余额但下一次放不下、调用次数到顶，是三个不同事实。
 	for _, tc := range []struct {
 		name       string
@@ -89,12 +89,11 @@ func TestWeeklyBudgetExhaustionAndCallLimitAreDistinct(t *testing.T) {
 	}{
 		{"spent", 100, 10, "运行预算已用完"},
 		{"reservation", 150, 10, "本次调用需预留"},
-		{"calls", 1_000, 1, "调用上限"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _, _ := fixture(t)
 			cfg := testConfig()
-			cfg.WeeklyBudgetMicros, cfg.WeeklyCalls = tc.budget, tc.calls
+			cfg.WeeklyBudgetMicros = tc.budget
 			if _, err := s.Reserve(cfg, 100); err != nil {
 				t.Fatal(err)
 			}
@@ -135,8 +134,8 @@ func TestWeeklyConfigDefaultsAndExplicitLegacyMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.WeeklyBudgetMicros != 20_000_000 || cfg.AutonomousBudgetMicros != 7_000_000 || cfg.WeeklyCalls != 4200 {
-		t.Fatal("默认预算应为每周 20 美元、其中自主 7 美元、4200 次调用")
+	if cfg.WeeklyBudgetMicros != 20_000_000 {
+		t.Fatal("默认总预算应为每周 20 美元")
 	}
 	// 旧的日配置必须明确迁移，不能悄悄把每天 3 美元解释成每周 3 美元。
 	t.Setenv("DROPBY_DAILY_BUDGET_USD", "3")

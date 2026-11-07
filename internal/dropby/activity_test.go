@@ -11,8 +11,8 @@ import (
 )
 
 func TestParticipationFailureStaysWithMember(t *testing.T) {
-	// 两位成员，一人安静、一人引用无效。错误只保留给本人；不能把同伴的沉默
-	// 抹成全群失败。一次纠正仍无效后必须退出，且失败不推进已读位置。
+	// 两位成员，一人安静、一人引用无效。错误只保留给本人；同伴仍记录为自愿沉默，但此次处理不能假装全部完成。
+	//一次纠正仍无效后必须退出，且失败不推进已读位置。
 	s, c, people := groupWithMembers(t, 2)
 	if err := s.AddUserMessage(userMessage(c, "下雨天想说就说"), time.Hour); err != nil {
 		t.Fatal(err)
@@ -38,7 +38,7 @@ func TestParticipationFailureStaysWithMember(t *testing.T) {
 		return jsonReply(Decision{Action: "speak", Intent: "回应雨声", MessageIDs: []string{"not-a-message"}}), nil
 	}), testConfig())
 	candidates, _, err := e.observeMembers(context.Background(), c, w, 0)
-	if err != nil || len(candidates) != 0 || corrections.Load() != 1 {
+	if !isParticipationFailure(err) || len(candidates) != 0 || corrections.Load() != 1 {
 		t.Fatalf("局部故障扩大或无限纠正: %v, %d", err, corrections.Load())
 	}
 	records, _ := s.Participations(c.ID)
@@ -110,8 +110,8 @@ func TestLaterDecisionFailurePreservesPublishedConversation(t *testing.T) {
 	saved, _ := s.ReadWork(c.ID, w.ID)
 	messages, _ := s.Messages(c.ID, 0, 10)
 	records, _ := s.Participations(c.ID)
-	if saved.Status != "done" || len(messages) != 2 || messages[1].AuthorID != m.ID {
-		t.Fatalf("已发布交流被后续故障覆盖: %+v %+v", saved, messages)
+	if saved.Status != "failed" || len(messages) != 2 || messages[1].AuthorID != m.ID {
+		t.Fatalf("应保留已发布交流并记录后续故障: %+v %+v", saved, messages)
 	}
 	if records[0].Action != "error" {
 		t.Fatal("局部错误记录丢失")

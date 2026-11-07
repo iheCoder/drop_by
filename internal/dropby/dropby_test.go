@@ -48,7 +48,7 @@ func (m *reviewModel) Complete(_ context.Context, messages []ChatMessage, _ []To
 }
 func jsonReply(v any) ChatMessage { return ChatMessage{Role: "assistant", Content: asJSON(v)} }
 func testConfig() Config {
-	return Config{Address: "127.0.0.1:8090", APIKey: "test-only", Model: "gpt-6.1-terra", BaseURL: "http://localhost", SearchKey: "test-only", ExploreInterval: time.Hour, MaxTurns: 3, MaxToolRounds: 4, MaxOutputTokens: 400, WeeklyCalls: 100, WeeklyBudgetMicros: 1_000_000, ToolCostMicros: 750}
+	return Config{Address: "127.0.0.1:8090", APIKey: "test-only", Model: "gpt-6.1-terra", BaseURL: "http://localhost", SearchKey: "test-only", ExploreInterval: time.Hour, MaxOutputTokens: 400, WeeklyBudgetMicros: 1_000_000, ToolCostMicros: 750}
 }
 func fixture(t *testing.T) (*Store, Conversation, Member) {
 	t.Helper()
@@ -185,7 +185,6 @@ func TestBudgetReservationsAreAtomicAndSurviveRestart(t *testing.T) {
 	}
 	c := testConfig()
 	c.WeeklyBudgetMicros = 300
-	c.WeeklyCalls = 20
 	var granted atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
@@ -342,11 +341,8 @@ func TestToolFailureHasRealRecordAndCannotBecomeSuccess(t *testing.T) {
 	cfg.SearchURL = upstream.URL
 	tbox := Toolbox{Store: s, Config: cfg, Hub: NewHub()}
 	result, err := tbox.Execute(context.Background(), c, m, w, toolCall("search", map[string]string{"query": "纸自行车"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(result, `"status":"failed"`) || !strings.Contains(result, "503") {
-		t.Fatalf("失败被错误描述: %s", result)
+	if err == nil || !strings.Contains(err.Error(), "503") || result != "" {
+		t.Fatalf("故障应停留在执行层: %s %v", result, err)
 	}
 	runs, _ := s.ToolRuns(c.ID, w.ID)
 	if len(runs) != 1 || runs[0].Status != "failed" {
@@ -684,15 +680,14 @@ func TestLastModelRoundClosesAfterSavingArtifact(t *testing.T) {
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "research")
 	cfg := testConfig()
-	cfg.MaxToolRounds = 2
 	calls := 0
 	model := modelFunc(func(_ context.Context, _ []ChatMessage, defs []ToolDefinition, jsonOnly bool) (ChatMessage, error) {
 		calls++
 		if calls == 1 {
 			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("save_artifact", map[string]string{"title": "可查看的草稿", "content": "实际正文"})}}, nil
 		}
-		if len(defs) != 0 || !jsonOnly {
-			t.Error("最后一次应禁用工具，只收尾")
+		if len(defs) == 0 || jsonOnly {
+			t.Error("保存后仍可继续工具行动，不强迫收尾")
 		}
 		return jsonReply(Outcome{Message: "草稿已保存，可以继续改。", Outcome: "已保存草稿"}), nil
 	})

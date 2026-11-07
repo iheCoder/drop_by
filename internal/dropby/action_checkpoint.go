@@ -1,0 +1,58 @@
+package dropby
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+)
+
+// 只保存正在执行的成员行动，不新增角色生命周期。它解决实际故障：工具已保存、
+// 下一次模型请求失败时，恢复不能重新生成并执行那批工具。
+// 公开消息提交与删除现场在同一事务内完成，崩溃后不会再次发布同一行动。
+type actionCheckpoint struct {
+	ID       string
+	WorkID   string
+	MemberID string
+	Revision int64
+	Seen     int64
+	Messages []ChatMessage
+}
+
+func (s *Store) loadAction(work, member string) (actionCheckpoint, error) {
+	var cp actionCheckpoint
+	var raw string
+	err := s.db.QueryRow("SELECT id,work_id,member_id,revision,seen,messages FROM action_checkpoints WHERE work_id=? AND member_id=?", work, member).Scan(&cp.ID, &cp.WorkID, &cp.MemberID, &cp.Revision, &cp.Seen, &raw)
+	if err != nil {
+		return cp, err
+	}
+	err = json.Unmarshal([]byte(raw), &cp.Messages)
+	return cp, err
+}
+func (s *Store) saveAction(cp actionCheckpoint) error {
+	if cp.WorkID == "" {
+		return nil
+	} // 无持久工作的一次性调用没有可恢复的调度身份。
+	_, err := s.db.Exec("INSERT INTO action_checkpoints(id,work_id,member_id,revision,seen,messages) VALUES(?,?,?,?,?,?) ON CONFLICT(work_id,member_id) DO UPDATE SET revision=excluded.revision,seen=excluded.seen,messages=excluded.messages", cp.ID, cp.WorkID, cp.MemberID, cp.Revision, cp.Seen, asJSON(cp.Messages))
+	return err
+}
+func (s *Store) finishAction(work, member string) error {
+	_, err := s.db.Exec("DELETE FROM action_checkpoints WHERE work_id=? AND member_id=?", work, member)
+	return err
+}
+func (s *Store) pendingAction(work string) (string, error) {
+	var member string
+	err := s.db.QueryRow("SELECT member_id FROM action_checkpoints WHERE work_id=? ORDER BY rowid LIMIT 1", work).Scan(&member)
+	if err == sql.ErrNoRows {
+		err = nil
+	}
+	return member, err
+}
+
+// 只有确实有其他房间的真人请求在排队时让出，不为每项工作另设工具配额。
+var errYield = errors.New("让出执行位")
+
+func (e *Engine) humanWaiting(room string) bool {
+	var n int
+	e.Store.db.QueryRow("SELECT count(*) FROM work WHERE conversation_id<>? AND kind='chat' AND status='pending'", room).Scan(&n)
+	return n > 0
+}

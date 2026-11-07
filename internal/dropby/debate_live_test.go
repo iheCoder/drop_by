@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -60,8 +62,8 @@ func TestLiveDebateParticipation(t *testing.T) {
 	if err = json.Unmarshal(raw, &originals); err != nil {
 		t.Fatal(err)
 	}
-	cfg.WeeklyBudgetMicros = 1500000
-	cfg.AutonomousBudgetMicros = 1500000
+	cfg.WeeklyBudgetMicros = 2_000_000
+	cfg.TemporaryBudgetMicros = 0
 	// 口头辩论不生成大作品，缩小单请求预留；实际累计账本不清零。
 	cfg.MaxOutputTokens, cfg.DeepMaxOutputTokens = 2500, 7000
 	s, err := OpenStore(dir)
@@ -69,7 +71,12 @@ func TestLiveDebateParticipation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	model := &HTTPModel{Config: cfg, Store: s, Client: &http.Client{Timeout: 3 * time.Minute, Transport: debateTransport{dir}}}
+	var injected atomic.Bool
+	transport := http.RoundTripper(debateTransport{dir})
+	if os.Getenv("DROPBY_DEBATE_INJECT_FAILURE") == "1" {
+		transport = debateFaultTransport{store: s, base: transport, injected: &injected}
+	}
+	model := &HTTPModel{Config: cfg, Store: s, Client: &http.Client{Timeout: 3 * time.Minute, Transport: transport}}
 	scenarios := []string{"original", "already_open", "reserved_participants"}
 	if name := os.Getenv("DROPBY_DEBATE_CASE"); name != "" {
 		scenarios = []string{name}
@@ -223,7 +230,44 @@ func TestLiveDebateParticipation(t *testing.T) {
 			if assignments > 0 {
 				t.Error("这次口头辩论被转换成后台研究")
 			}
+			seenBodies := map[string]bool{}
+			for _, message := range messages {
+				if message.AuthorID == "user" {
+					continue
+				}
+				key := message.AuthorID + "\x00" + message.Body
+				if seenBodies[key] {
+					t.Error("同一成员重复发布同一消息")
+				}
+				seenBodies[key] = true
+				for _, term := range []string{"预算", "HTTP 503", "服务连接失败", "故障注入"} {
+					if strings.Contains(message.Body, term) {
+						t.Errorf("内部运行信息进入角色台词: %s", term)
+					}
+				}
+			}
+			if os.Getenv("DROPBY_DEBATE_INJECT_FAILURE") == "1" && !injected.Load() {
+				t.Error("故障未实际注入")
+			}
+			t.Logf("transient fault injected: %v; dialogue messages: %d", injected.Load(), len(messages)-1)
 			t.Log(fmt.Sprintf("member message counts: %v", counts))
 		})
 	}
+}
+
+// 只在隔离验收中、已经有成员消息落盘后制造一次 503。之后仍使用真实模型；
+// 不预写回复、不替角色选择立场，也不把错误写进正式聊天。
+type debateFaultTransport struct {
+	store    *Store
+	base     http.RoundTripper
+	injected *atomic.Bool
+}
+
+func (d debateFaultTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	var n int
+	d.store.db.QueryRow("SELECT count(*) FROM messages WHERE author_id NOT IN ('user','system')").Scan(&n)
+	if n >= 2 && d.injected.CompareAndSwap(false, true) {
+		return &http.Response{StatusCode: 503, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("{}")), Request: r}, nil
+	}
+	return d.base.RoundTrip(r)
 }

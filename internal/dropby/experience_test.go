@@ -278,26 +278,23 @@ func TestAvatarAcceptsOnlySmallRasterImages(t *testing.T) {
 }
 
 func TestResearchSavesRequestedNoteBeforeClosing(t *testing.T) {
-	// 场景：研究不停找新材料，轮次耗尽后只能口头交代，用户要的笔记未保存。
-	// 在最后一次工具机会留出保存阶段，确认真正落盘，而非只在回复中声称已完成。
+	// 先分段读取十二次，再由成员自行保存和结束；超过旧八轮边界仍有全部工具。
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "research")
 	cfg := testConfig()
-	cfg.MaxToolRounds = 4
+	calls := 0
 	model := modelFunc(func(_ context.Context, ms []ChatMessage, defs []ToolDefinition, final bool) (ChatMessage, error) {
-		if final {
-			return jsonReply(Outcome{Outcome: "已核对现有聊天并保存短笔记"}), nil
+		calls++
+		if len(defs) == 0 || final {
+			t.Fatal("不应按轮数剥夺工具或强迫收尾")
 		}
-		canRead := false
-		for _, d := range defs {
-			if d.Function.Name == "read_history" {
-				canRead = true
-			}
+		if calls <= 12 {
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("read_history", map[string]any{"query": ""})}}, nil
 		}
-		if canRead {
-			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("read_history", map[string]string{"query": ""})}}, nil
+		if calls == 13 {
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("save_artifact", map[string]string{"title": "已核对的短笔记", "content": "记录实际材料缺口。"})}}, nil
 		}
-		return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("save_artifact", map[string]string{"title": "已核对的短笔记", "content": "当前没有原始聊天材料，因此只记录材料缺口，不补写事实。"})}}, nil
+		return jsonReply(Outcome{Outcome: "已保存短笔记"}), nil
 	})
 	e := NewEngine(s, model, cfg)
 	out, err := e.act(context.Background(), c, m, w, "用户要求研究并保存短笔记")

@@ -133,7 +133,7 @@ func TestCountingFailurePreservesChainAndIsRecoverable(t *testing.T) {
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	chain := largeArtifactChain()
 	_, err := completeModel(context.Background(), model, &chain, nil, false)
-	if !errors.Is(err, ErrContextCapacity) || len(chain) != 4 {
+	if errors.Is(err, ErrContextCapacity) || err == nil || len(chain) != 4 {
 		t.Fatalf("不能把计数服务失败当成人物/用户输入过长: %v", err)
 	}
 	usage, _ := s.Usage()

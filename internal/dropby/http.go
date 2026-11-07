@@ -46,6 +46,7 @@ func NewHandler(engine *Engine) http.Handler {
 	mux.HandleFunc("GET /api/artifacts/{id}/download", a.artifactDownload)
 	mux.HandleFunc("GET /api/tool-runs/{id}", a.toolRun)
 	mux.HandleFunc("GET /api/events", a.events)
+	mux.HandleFunc("POST /api/work/{id}/resume", a.resumeWork)
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -146,7 +147,7 @@ func (a *API) state(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	respond(w, 200, map[string]any{"profile": profile, "budget_blocked": a.engine.Store.budgetBlocked(a.engine.Config, usage), "members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "decision_model": a.engine.Config.DecisionModel, "chat_model": a.engine.Config.ChatModel, "weekly_budget_micros": a.engine.Config.weeklyBudgetAt(time.Now()), "autonomous_weekly_budget_micros": a.engine.Config.AutonomousBudgetMicros, "weekly_calls": a.engine.Config.WeeklyCalls, "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
+	respond(w, 200, map[string]any{"profile": profile, "budget_blocked": a.engine.Store.budgetBlocked(a.engine.Config, usage), "members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "decision_model": a.engine.Config.DecisionModel, "chat_model": a.engine.Config.ChatModel, "weekly_budget_micros": a.engine.Config.weeklyBudgetAt(time.Now()), "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
 }
 func (a *API) questions(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -543,4 +544,44 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// resumeWork 恢复原任务与已有行动现场，不用伪造一条用户聊天来“再催一次”。
+// 只能恢复真实失败/暂停的工作；已完成、已取消或已被新消息替代的不重放。
+func (a *API) resumeWork(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var room, status, kind string
+	if err := a.engine.Store.db.QueryRow("SELECT conversation_id,status,kind FROM work WHERE id=?", id).Scan(&room, &status, &kind); err != nil {
+		respond(w, 404, map[string]string{"error": "找不到这项工作"})
+		return
+	}
+	if status != "failed" && status != "paused" {
+		respond(w, 409, map[string]string{"error": "这项工作当前不需要恢复"})
+		return
+	}
+	c, err := a.engine.Store.Conversation(room)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	if ((kind == "research" || kind == "revisit") && c.ResearchPaused) || (kind != "research" && c.DiscussionPaused) {
+		respond(w, 409, map[string]string{"error": "请先恢复这个聊天中的相关活动"})
+		return
+	}
+	result, err := a.engine.Store.db.Exec("UPDATE work SET status='pending',kind=CASE WHEN kind='chat' THEN 'followup' ELSE kind END,due_at=? WHERE id=? AND status IN ('failed','paused')", time.Now().UnixMilli(), id)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	if n != 1 {
+		respond(w, 409, map[string]string{"error": "工作状态已经改变"})
+		return
+	}
+	a.engine.Hub.Publish(room)
+	respond(w, 200, map[string]string{"status": "pending"})
 }

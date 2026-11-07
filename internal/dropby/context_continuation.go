@@ -30,7 +30,9 @@ func (m *HTTPModel) countResponseInput(ctx context.Context, raw []byte) (int, er
 	var out struct {
 		InputTokens int `json:"input_tokens"`
 	}
-	if err := requestJSON(ctx, m.Client, m.Config.BaseURL+"/responses/input_tokens", m.Config.APIKey, encoded, &out); err != nil {
+	if err := retryRequest(ctx, func() error {
+		return requestJSON(ctx, m.Client, m.Config.BaseURL+"/responses/input_tokens", m.Config.APIKey, encoded, &out)
+	}); err != nil {
 		return 0, err
 	}
 	if out.InputTokens <= 0 {
@@ -48,7 +50,7 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 	}
 	count, err := m.countResponseInput(ctx, raw)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("%w：无法核对实际输入容量：%v", ErrContextCapacity, err)
+		return nil, 0, nil, fmt.Errorf("无法核对实际输入容量：%w", err)
 	}
 	capacity := m.Config.ContextTokenBudget
 	if capacity == 0 {
@@ -90,7 +92,7 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 		Usage  responseUsage     `json:"usage"`
 	}
 	if err = requestJSON(ctx, m.Client, m.Config.BaseURL+"/responses/compact", m.Config.APIKey, compactBody, &compacted); err != nil {
-		return nil, 0, nil, fmt.Errorf("%w：上下文压缩尚未完成：%v", ErrContextCapacity, err)
+		return nil, 0, nil, fmt.Errorf("上下文压缩尚未完成：%w", err)
 	}
 	if compacted.Usage.InputTokens+compacted.Usage.OutputTokens > 0 {
 		actual, costErr := compacted.Usage.costMicros(price)
@@ -122,7 +124,7 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 	}
 	count, err = m.countResponseInput(ctx, raw)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("%w：压缩后容量核对未完成：%v", ErrContextCapacity, err)
+		return nil, 0, nil, fmt.Errorf("压缩后容量核对未完成：%w", err)
 	}
 	if count > limit {
 		return nil, 0, nil, fmt.Errorf("%w：压缩后输入 %d，输出预留 %d；已保存内容可从记录续接", ErrContextCapacity, count, m.Config.MaxOutputTokens)

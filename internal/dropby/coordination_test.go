@@ -206,21 +206,21 @@ func TestDelegationUsesActualPermissionAndPreservesCharacter(t *testing.T) {
 	}
 }
 
-func TestDelegationCountIsBoundedAcrossAllRecipients(t *testing.T) {
-	// 接力换人不能把每人的六个后续乘成更大的委托树；整个根任务总共六次。
+func TestDelegationAllowsDistinctWorkBeyondOldCap(t *testing.T) {
+	// 已有真实职责下，十二项不同工作不因旧六次配额被截断；重复安排仍复用原记录。
 	s, c, members := groupWithMembers(t, 4)
 	c, err := s.SetCoordinator(c, members[0].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	root := addWork(t, s, c, members[0], "explore")
-	for i := 0; i < maxChainedActions; i++ {
+	for i := 0; i < 12; i++ {
 		if _, err := s.DelegateWork(c, members[0], root, members[1+i%3].ID, fmt.Sprintf("核对第%d份材料", i), "这个部分与你的兴趣有关"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.DelegateWork(c, members[0], root, members[1].ID, "又一份材料", "不能靠换人继续扩张"); !errors.Is(err, errAutonomyLimit) {
-		t.Fatalf("root-wide delegation cap bypassed: %v", err)
+	if _, err := s.DelegateWork(c, members[0], root, members[1].ID, "又一份材料", "新的明确任务"); err != nil {
+		t.Fatalf("legitimate followup rejected: %v", err)
 	}
 	// 已有任务的工具重试仍可找到同一条记录，不浪费最后一个名额。
 	if _, err := s.DelegateWork(c, members[0], root, members[1].ID, "核对第0份材料", "重试实际安排"); err != nil {
@@ -357,7 +357,7 @@ func TestCompletionSurvivesExhaustedCoordinatorChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < maxChainedActions; i++ {
+	for i := 0; i < 12; i++ {
 		w := Work{ID: newID("work"), RootID: root.ID, ConversationID: c.ID, MemberID: members[0].ID, Kind: "revisit", Status: "done", CreatedAt: now()}
 		if err := s.Guard(c.ID, c.Revision, func(tx *sql.Tx) error { return insertWork(tx, w) }); err != nil {
 			t.Fatal(err)

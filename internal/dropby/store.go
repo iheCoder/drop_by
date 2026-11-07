@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS work(id TEXT PRIMARY KEY, conversation_id TEXT NOT NU
 CREATE INDEX IF NOT EXISTS work_due ON work(status,due_at);
 CREATE TABLE IF NOT EXISTS participation(work_id TEXT NOT NULL REFERENCES work(id), member_id TEXT NOT NULL, action TEXT NOT NULL,
  reason TEXT NOT NULL, selected INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS action_checkpoints(id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work(id), member_id TEXT NOT NULL, revision INTEGER NOT NULL, seen INTEGER NOT NULL, messages TEXT NOT NULL, UNIQUE(work_id,member_id));
 CREATE INDEX IF NOT EXISTS participation_work ON participation(work_id);
 CREATE TABLE IF NOT EXISTS tool_runs(id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work(id), conversation_id TEXT NOT NULL, member_id TEXT NOT NULL, name TEXT NOT NULL, arguments TEXT NOT NULL,
  result TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -382,7 +383,7 @@ func (s *Store) Guard(room string, revision int64, fn func(*sql.Tx) error) error
 	}
 	return tx.Commit()
 }
-func (s *Store) Publish(m Message, revision int64) error {
+func (s *Store) Publish(m Message, revision int64, actionID ...string) error {
 	return s.Guard(m.ConversationID, revision, func(tx *sql.Tx) error {
 		var paused bool
 		if e := tx.QueryRow(`SELECT discussion_paused FROM conversations WHERE id=?`, m.ConversationID).Scan(&paused); e != nil {
@@ -411,7 +412,14 @@ func (s *Store) Publish(m Message, revision int64) error {
 				return fmt.Errorf("引用的原消息不在当前聊天中")
 			}
 		}
-		return insertMessage(tx, m)
+		if err := insertMessage(tx, m); err != nil {
+			return err
+		}
+		if len(actionID) > 0 {
+			_, err := tx.Exec("DELETE FROM action_checkpoints WHERE id=?", actionID[0])
+			return err
+		}
+		return nil
 	})
 }
 func (s *Store) SystemMessage(room, id, body string) error {
@@ -436,17 +444,6 @@ func (s *Store) SystemMessage(room, id, body string) error {
 func insertWork(tx *sql.Tx, w Work) error {
 	if w.RootID == "" {
 		w.RootID = w.ID
-	}
-	// 限制同一成员从同一个来由衍生的实际行动；已完成的工作也计入。
-	// 同伴各自拥有机会，保存成果后的分享也不会被这一队列边界吞掉。
-	if w.RootID != w.ID && (w.Kind == "research" || w.Kind == "revisit") {
-		var children int
-		if err := tx.QueryRow(`SELECT count(*) FROM work WHERE (root_id=? OR id=?) AND member_id=? AND kind IN ('research','revisit')`, w.RootID, w.RootID, w.MemberID).Scan(&children); err != nil {
-			return err
-		}
-		if children >= maxChainedActions {
-			return errAutonomyLimit
-		}
 	}
 	_, e := tx.Exec(`INSERT INTO work(id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,created_at,root_id,autonomous,assigned_by,parent_id,first_speakers) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, w.ID, w.ConversationID, w.MemberID, w.Kind, w.Instruction, w.Reason, w.SourceID, w.Status, w.DueAt, w.CreatedAt, w.RootID, w.Autonomous, w.AssignedBy, w.ParentID, asJSON(w.FirstSpeakers))
 	return e
@@ -536,7 +533,7 @@ func (s *Store) Finish(w Work, status, result string, due time.Time) error {
 			result = identityRevisionRetry + "\n" + result
 		}
 	}
-	changed, err := tx.Exec(`UPDATE work SET status=?,result=CASE WHEN ?='' THEN result ELSE ? END,due_at=?,budget_required=? WHERE id=? AND status='running'`, status, result, result, due.UnixMilli(), w.BudgetRequired, w.ID)
+	changed, err := tx.Exec(`UPDATE work SET status=?,result=CASE WHEN ?='' AND ?<>'done' THEN result ELSE ? END,due_at=?,budget_required=? WHERE id=? AND status='running'`, status, result, status, result, due.UnixMilli(), w.BudgetRequired, w.ID)
 	if err != nil {
 		return err
 	}

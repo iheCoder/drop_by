@@ -80,7 +80,7 @@ type Memory struct {
 }
 
 // Work 是可以真正执行和恢复的工作，不代表兴趣的生命周期。
-// chat/explore 是一次有限的交流机会；research 才是一项已安排的后台行动。
+// chat/explore 是一次事件触发的交流机会；research 是已安排的后台行动。
 type Work struct {
 	Display        *ActivitySummary `json:"display,omitempty"` // 仅 HTTP 展示派生，不写入数据库或模型上下文。
 	BudgetRequired int64            `json:"-"`
@@ -88,8 +88,8 @@ type Work struct {
 	FirstSpeakers  []string         `json:"first_speakers,omitempty"`
 	// 真实委托者用于任务回报；空串仍表示成员自行安排的行动。
 	AssignedBy     string `json:"assigned_by,omitempty"`
-	Autonomous     bool   `json:"autonomous,omitempty"` // 计费来源与引用消息分离，记得真人原话不等于持续占用前台额度。
-	RootID         string `json:"root_id,omitempty"`    // 同一自主机会的后续共享执行边界，不能靠新建工作重置。
+	Autonomous     bool   `json:"autonomous,omitempty"` // 保留来源用于用量统计和排队，不另设自主子额度。
+	RootID         string `json:"root_id,omitempty"`    // 同一事项的来源关联，不用它累计消息或行动配额。
 	ID             string `json:"id"`
 	ConversationID string `json:"conversation_id"`
 	MemberID       string `json:"member_id"`
@@ -151,7 +151,6 @@ var (
 	ErrStale           = errors.New("用户已补充新消息，本次结果不再适用")
 	ErrBudget          = errors.New("本周运行预算不足，未完工作已保留")
 	ErrUnavailable     = errors.New("尚未配置模型服务，请设置 OPENAI_API_KEY 或 DROPBY_API_KEY")
-	ErrRunLimit        = errors.New("本次工具运行已达到上限，未完工作已保留")
 )
 
 func newID(prefix string) string {

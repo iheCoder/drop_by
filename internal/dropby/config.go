@@ -17,11 +17,10 @@ type Config struct {
 	Reasoning, DeepReasoning                                       string
 	Address, DataDir, Model, BaseURL, APIKey, SearchURL, SearchKey string
 	ExploreInterval                                                time.Duration
-	MaxTurns, MaxToolRounds, MaxOutputTokens, WeeklyCalls          int
+	MaxOutputTokens                                                int
 	WeeklyBudgetMicros                                             int64
 	TemporaryBudgetMicros                                          int64
 	TemporaryBudgetUntil                                           time.Time
-	AutonomousBudgetMicros                                         int64
 	ToolCostMicros                                                 int64
 }
 
@@ -36,9 +35,9 @@ func LoadConfig() (Config, error) {
 		APIKey:        env("DROPBY_API_KEY", os.Getenv("OPENAI_API_KEY")),
 		SearchURL:     env("DROPBY_SEARCH_URL", "https://api.deepseek.com/v1/tools"), SearchKey: os.Getenv("DEEPSEEK_API_KEY"),
 		ContextTokenBudget: 100_000,
-		ExploreInterval:    30 * time.Minute, MaxTurns: 5, MaxToolRounds: 8, MaxOutputTokens: 8000, DeepMaxOutputTokens: 25000, Reasoning: env("DROPBY_REASONING", "low"), DeepReasoning: env("DROPBY_DEEP_REASONING", "high"),
-		WeeklyCalls: 4200, WeeklyBudgetMicros: 20_000_000, AutonomousBudgetMicros: 7_000_000,
-		ToolCostMicros: 750,
+		ExploreInterval:    30 * time.Minute, MaxOutputTokens: 8000, DeepMaxOutputTokens: 25000, Reasoning: env("DROPBY_REASONING", "low"), DeepReasoning: env("DROPBY_DEEP_REASONING", "high"),
+		WeeklyBudgetMicros: 20_000_000,
+		ToolCostMicros:     750,
 	}
 	for _, model := range []string{c.Model, c.DecisionModel, c.ChatModel} {
 		if _, err := priceForModel(model); err != nil {
@@ -48,9 +47,7 @@ func LoadConfig() (Config, error) {
 	// 日额度不能直接改名解释成周额度，否则原来的 3 美元会变成整周只有 3 美元。
 	// 允许部署环境暂留旧变量，但必须显式提供对应的新值，才能确定迁移意图。
 	for old, current := range map[string]string{
-		"DROPBY_DAILY_BUDGET_USD":      "DROPBY_WEEKLY_BUDGET_USD",
-		"DROPBY_DAILY_CALLS":           "DROPBY_WEEKLY_CALLS",
-		"DROPBY_AUTONOMOUS_BUDGET_USD": "DROPBY_AUTONOMOUS_WEEKLY_BUDGET_USD",
+		"DROPBY_DAILY_BUDGET_USD": "DROPBY_WEEKLY_BUDGET_USD",
 	} {
 		if os.Getenv(old) != "" && os.Getenv(current) == "" {
 			return c, fmt.Errorf("%s 是旧的每日额度配置；请移除以使用周默认值，或显式设置 %s", old, current)
@@ -59,7 +56,7 @@ func LoadConfig() (Config, error) {
 	if v := os.Getenv("DROPBY_SEARCH_KEY"); v != "" {
 		c.SearchKey = v
 	}
-	ints := map[string]*int{"DROPBY_CONTEXT_TOKEN_BUDGET": &c.ContextTokenBudget, "DROPBY_DEEP_MAX_OUTPUT_TOKENS": &c.DeepMaxOutputTokens, "DROPBY_MAX_TURNS": &c.MaxTurns, "DROPBY_MAX_TOOL_ROUNDS": &c.MaxToolRounds, "DROPBY_MAX_OUTPUT_TOKENS": &c.MaxOutputTokens, "DROPBY_WEEKLY_CALLS": &c.WeeklyCalls}
+	ints := map[string]*int{"DROPBY_CONTEXT_TOKEN_BUDGET": &c.ContextTokenBudget, "DROPBY_DEEP_MAX_OUTPUT_TOKENS": &c.DeepMaxOutputTokens, "DROPBY_MAX_OUTPUT_TOKENS": &c.MaxOutputTokens}
 	for key, p := range ints {
 		if v := os.Getenv(key); v != "" {
 			n, e := strconv.Atoi(v)
@@ -85,13 +82,6 @@ func LoadConfig() (Config, error) {
 			return c, fmt.Errorf("临时预算需要有效金额与带时区的截止时间")
 		}
 		c.TemporaryBudgetMicros, c.TemporaryBudgetUntil = int64(n*1e6), until
-	}
-	if v := os.Getenv("DROPBY_AUTONOMOUS_WEEKLY_BUDGET_USD"); v != "" {
-		n, err := strconv.ParseFloat(v, 64)
-		if err != nil || n < 0 || n > 1000 || math.IsNaN(n) {
-			return c, fmt.Errorf("DROPBY_AUTONOMOUS_WEEKLY_BUDGET_USD 必须在 0 到 1000 之间")
-		}
-		c.AutonomousBudgetMicros = int64(n * 1e6)
 	}
 	if v := os.Getenv("DROPBY_EXPLORE_INTERVAL"); v != "" {
 		d, e := time.ParseDuration(v)

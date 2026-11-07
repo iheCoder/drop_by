@@ -39,7 +39,6 @@ func TestLiveCharacterConversation(t *testing.T) {
 	if cfg.WeeklyBudgetMicros > 1_250_000 {
 		cfg.WeeklyBudgetMicros = 1_250_000
 	}
-	cfg.MaxTurns = 4
 	people := []Member{
 		{ID: "eval_momo", Name: "桃子", Color: "rose", Profile: "温柔但不端着，敏感于话里没说完的感受，喜欢轻巧的比喻和接梗。不会把随口疲惫变成心理辅导，也不负责总结。对具体创意会认真接着改，已经有人安慰过就不再复述安慰。"},
 		{ID: "eval_zhou", Name: "周屿", Color: "blue", Profile: "喜欢随兴发现和设计里有趣的取舍，善于把过于复杂的点子缩成一个小动作。有时嘴欠，会顺着朋友的玩笑再拐一下，不把聊天变成方案会。不为了活跃每条都答，别人说完自己的意思时可以不说。"},

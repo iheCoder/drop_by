@@ -134,7 +134,6 @@ func TestWithdrawalsDoNotConsumeOtherMembersMessageOpportunity(t *testing.T) {
 	s, c, members := groupWithMembers(t, 4)
 	s.AddUserMessage(userMessage(c, "各位最近在想什么？"), time.Hour)
 	cfg := testConfig()
-	cfg.MaxTurns = 1
 	acted := []string{}
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		if strings.HasPrefix(ms[0].Content, "你只解释") {
@@ -145,6 +144,9 @@ func TestWithdrawalsDoNotConsumeOtherMembersMessageOpportunity(t *testing.T) {
 		}
 		json.Unmarshal([]byte(ms[1].Content), &input)
 		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
+			if testHasPublished(s, c.ID) {
+				return jsonReply(Decision{Action: "pass", Reason: "本测试成员已完成这次回应"}), nil
+			}
 			for i, m := range members {
 				if m.ID == input.Self.ID {
 					time.Sleep(time.Duration(i*10) * time.Millisecond)
@@ -173,7 +175,6 @@ func TestFirstMemberMayResearchWithoutAnnouncingIt(t *testing.T) {
 	s, c, members := groupWithMembers(t, 2)
 	s.AddUserMessage(userMessage(c, "为什么纸飞机有时会突然扎头？"), time.Hour)
 	cfg := testConfig()
-	cfg.MaxTurns = 1
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		if strings.HasPrefix(ms[0].Content, "你只解释") {
 			return jsonReply(Control{}), nil
@@ -183,6 +184,9 @@ func TestFirstMemberMayResearchWithoutAnnouncingIt(t *testing.T) {
 		}
 		json.Unmarshal([]byte(ms[1].Content), &input)
 		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
+			if testHasPublished(s, c.ID) {
+				return jsonReply(Decision{Action: "pass", Reason: "本测试成员已完成这次回应"}), nil
+			}
 			if input.Self.ID == members[0].ID {
 				return jsonReply(Decision{Action: "explore", Intent: "查找纸飞机失速与重心的原始资料", Reason: "想核对一个力学疑问"}), nil
 			}
@@ -312,12 +316,14 @@ func TestQuestionToolIsARealContributionAndKeepsQuestionContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := testConfig()
-	cfg.MaxTurns = 1
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		if strings.HasPrefix(ms[0].Content, "你只解释") {
 			return jsonReply(Control{}), nil
 		}
 		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
+			if testHasPublished(s, c.ID) {
+				return jsonReply(Decision{Action: "pass", Reason: "本测试成员已完成这次回应"}), nil
+			}
 			return jsonReply(Decision{Action: "speak", Intent: "问一个会影响相处的小问题"}), nil
 		}
 		if len(ms) == 2 {
@@ -366,7 +372,6 @@ func TestProfileEditRetriesExistingChatButNewHumanReplacesIt(t *testing.T) {
 			var acts atomic.Int32
 			var controls atomic.Int32
 			cfg := testConfig()
-			cfg.MaxTurns = 1
 			e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 				if strings.HasPrefix(ms[0].Content, "你只解释") {
 					controlCall := controls.Add(1)
@@ -381,6 +386,9 @@ func TestProfileEditRetriesExistingChatButNewHumanReplacesIt(t *testing.T) {
 					return jsonReply(Control{}), nil
 				}
 				if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
+					if testHasPublished(s, c.ID) {
+						return jsonReply(Decision{Action: "pass", Reason: "本测试成员已完成这次回应"}), nil
+					}
 					return jsonReply(Decision{Action: "speak", Intent: "结合当下的个性接话"}), nil
 				}
 				var input struct {
@@ -470,9 +478,9 @@ func TestProfileEditRetriesExistingChatButNewHumanReplacesIt(t *testing.T) {
 	}
 }
 
-func TestRevisionRetryOfAutonomousOpportunityIsFinite(t *testing.T) {
+func TestRevisionChangesKeepOpportunityUntilUserStops(t *testing.T) {
 	// 自主观察/成果分享也会被人物修改影响，不能直接丢掉；若设定连续改变，
-	// 三次既有运行尝试后暂停，避免持续消耗预算或无限重试。
+	// 每次以最新设置重新考虑，不因累计次数丢掉；真人停止仍可立即替代旧机会。
 	for _, kind := range []string{"explore", "share"} {
 		t.Run(kind, func(t *testing.T) {
 			s, c, m := fixture(t)
@@ -491,9 +499,6 @@ func TestRevisionRetryOfAutonomousOpportunityIsFinite(t *testing.T) {
 					t.Fatal(err)
 				}
 				want := "pending"
-				if attempt == 3 {
-					want = "paused"
-				}
 				if status != want {
 					t.Fatalf("第 %d 次修订变化后状态=%s，预期 %s", attempt, status, want)
 				}
@@ -501,6 +506,14 @@ func TestRevisionRetryOfAutonomousOpportunityIsFinite(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if err := e.Submit(userMessage(c, "先别聊")); err != nil {
+				t.Fatal(err)
+			}
+			stopped, err := s.ReadWork(c.ID, w.ID)
+			if err != nil || stopped.Status != "superseded" {
+				t.Fatalf("用户停止没有替代旧机会: %+v %v", stopped, err)
+			}
+
 		})
 	}
 }

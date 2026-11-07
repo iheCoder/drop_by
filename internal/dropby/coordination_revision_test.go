@@ -94,7 +94,6 @@ func TestCoordinatorChangeDuringControlKeepsUnprocessedPreference(t *testing.T) 
 	started, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	cfg := testConfig()
-	cfg.MaxTurns = 1
 	e := NewEngine(s, modelFunc(func(_ context.Context, messages []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		if strings.HasPrefix(messages[0].Content, "你只解释") {
 			if calls.Add(1) == 1 {
@@ -116,6 +115,9 @@ func TestCoordinatorChangeDuringControlKeepsUnprocessedPreference(t *testing.T) 
 		}
 		json.Unmarshal([]byte(messages[1].Content), &input)
 		if strings.Contains(messages[0].Content, "此时只决定自己的下一步") {
+			if testHasPublished(s, c.ID) {
+				return jsonReply(Decision{Action: "pass", Reason: "本测试成员已完成这次回应"}), nil
+			}
 			if input.Self.ID == members[0].ID {
 				return jsonReply(Decision{Action: "speak", Intent: "按新偏好接今天的雨", Reason: "这句话在对自己说"}), nil
 			}

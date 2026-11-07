@@ -20,3 +20,10 @@ func TestTemporaryBudgetExpires(t *testing.T) {
 		}
 	}
 }
+
+// 旧的单次回应场景由替身明确选择结束，不再借生产消息上限终止无限 speak。
+func testHasPublished(s *Store, room string) bool {
+	var n int
+	s.db.QueryRow("SELECT count(*) FROM messages WHERE conversation_id=? AND author_id NOT IN ('user','system')", room).Scan(&n)
+	return n > 0
+}

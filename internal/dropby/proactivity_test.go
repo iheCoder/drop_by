@@ -2,7 +2,6 @@ package dropby
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -12,12 +11,11 @@ import (
 	"time"
 )
 
-func TestAutonomousBudgetReservesForegroundAndSettles(t *testing.T) {
-	// 20 个后台请求争用 50 个费用单位，只能成功 5 次；前台仍能使用余下总额度。
+func TestAutonomousUsageSharesTotalBudgetAndSettles(t *testing.T) {
+	// 自主与前台共用总预算；保留自主用量统计，但不再设置隐藏子额度。
 	s, _, _ := fixture(t)
 	cfg := testConfig()
 	cfg.WeeklyBudgetMicros = 300
-	cfg.AutonomousBudgetMicros = 50
 	ctx := context.WithValue(context.Background(), autonomyKey{}, "root")
 	var successes atomic.Int32
 	var wg sync.WaitGroup
@@ -27,13 +25,13 @@ func TestAutonomousBudgetReservesForegroundAndSettles(t *testing.T) {
 			defer wg.Done()
 			if _, err := s.ReserveContext(ctx, cfg, 10); err == nil {
 				successes.Add(1)
-			} else if !errors.Is(err, errAutonomyBudget) {
+			} else if !errors.Is(err, ErrBudget) {
 				t.Errorf("unexpected reservation: %v", err)
 			}
 		}()
 	}
 	wg.Wait()
-	if successes.Load() != 5 {
+	if successes.Load() != 20 {
 		t.Fatalf("autonomous reservations=%d", successes.Load())
 	}
 	if _, err := s.Reserve(cfg, 100); err != nil {
@@ -46,11 +44,11 @@ func TestAutonomousBudgetReservesForegroundAndSettles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.AutonomousCostMicros != 44 || u.CostMicros != 144 {
+	if u.AutonomousCostMicros != 194 || u.CostMicros != 294 {
 		t.Fatalf("settlement mixed budgets: %+v", u)
 	}
 	// 总预算不足时不能谎称只有后台额度不足、真人仍然一定能调用。
-	if _, err := s.ReserveContext(ctx, cfg, 200); !errors.Is(err, ErrBudget) || errors.Is(err, errAutonomyBudget) {
+	if _, err := s.ReserveContext(ctx, cfg, 200); !errors.Is(err, ErrBudget) {
 		t.Fatalf("wrong exhaustion reason: %v", err)
 	}
 }
@@ -193,63 +191,6 @@ func TestQuietMemberCanScheduleReconsiderationWithoutPosting(t *testing.T) {
 	msgs, _ := s.Messages(c.ID, 0, 20)
 	if len(msgs) != 0 {
 		t.Fatal("scheduling manufactured speech")
-	}
-}
-
-func TestAutonomousChainCapsPersistAcrossChildrenAndReopen(t *testing.T) {
-	// 同一成员的六个后续共享有限队列；同一链跨工作、重启仍只有三条公开名额。
-	dir := t.TempDir()
-	s, err := OpenStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := Member{ID: "m", Name: "小满", CreatedAt: now()}
-	if err := s.AddMember(m); err != nil {
-		t.Fatal(err)
-	}
-	c, err := s.CreateConversation("test", "direct", []string{m.ID}, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	w := Work{ID: "root", ConversationID: c.ID, MemberID: m.ID, Kind: "explore", Autonomous: true, Status: "pending", CreatedAt: now()}
-	if err := s.Guard(c.ID, c.Revision, func(tx *sql.Tx) error { return insertWork(tx, w) }); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < maxChainedActions; i++ {
-		child := w
-		child.ID = newID("work")
-		child.RootID = w.ID
-		child.Kind = "revisit"
-		if err := s.Guard(c.ID, c.Revision, func(tx *sql.Tx) error { return insertWork(tx, child) }); err != nil {
-			t.Fatal(err)
-		}
-	}
-	child := w
-	child.ID = newID("work")
-	child.RootID = w.ID
-	child.Kind = "revisit"
-	if err := s.Guard(c.ID, c.Revision, func(tx *sql.Tx) error { return insertWork(tx, child) }); !errors.Is(err, errAutonomyLimit) {
-		t.Fatalf("chain limit bypassed: %v", err)
-	}
-	ctx := context.WithValue(context.Background(), autonomyKey{}, w.ID)
-	for range 3 {
-		if err := s.claimAutonomousMessage(ctx, 3); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
-	s, err = OpenStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if err := s.claimAutonomousMessage(ctx, 3); !errors.Is(err, errAutonomyLimit) {
-		t.Fatalf("restart reset message cap: %v", err)
-	}
-	if err := s.claimAutonomousMessage(context.Background(), 3); err != nil {
-		t.Fatalf("foreground capped by old chain: %v", err)
 	}
 }
 
@@ -415,10 +356,6 @@ func TestSharingFinishedWorkDoesNotCreateGenericResearch(t *testing.T) {
 func TestExplicitResumeGetsNewExecutionRootWithoutOrdinaryReset(t *testing.T) {
 	s, c, m := fixture(t)
 	old := addWork(t, s, c, m, "revisit")
-	oldCtx := context.WithValue(context.Background(), autonomyKey{}, old.ID)
-	if err := s.claimAutonomousMessage(oldCtx, 1); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := s.db.Exec(`UPDATE work SET status='paused',root_id=?,autonomous=1 WHERE id=?`, old.ID, old.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -441,75 +378,7 @@ func TestExplicitResumeGetsNewExecutionRootWithoutOrdinaryReset(t *testing.T) {
 	if resumed.RootID != trigger.ID || resumed.SourceID != msg.ID || resumed.Status != "pending" {
 		t.Fatalf("resume lost new authority: %+v", resumed)
 	}
-	if err := s.claimAutonomousMessage(context.WithValue(context.Background(), autonomyKey{}, resumed.RootID), 1); err != nil {
-		t.Fatalf("explicit resume retained exhausted quota: %v", err)
-	}
 }
 
 // 执行窗口结束不等于讨论完成：最后的新消息有一次全群观察机会，
 // 但它不会获得新的自主配额，也不会因为没人说话而自行无限重试。
-func TestConversationContinuationSharesBudgetAndYieldsToUser(t *testing.T) {
-	for _, nextAction := range []string{"speak", "pass", "new_user"} {
-		t.Run(nextAction, func(t *testing.T) {
-			s, c, _ := fixture(t)
-			msg := userMessage(c, "一起聊聊这个问题")
-			if err := s.AddUserMessage(msg, time.Hour); err != nil {
-				t.Fatal(err)
-			}
-			c, _ = s.Conversation(c.ID)
-			w := latestChatWork(t, s, c.ID)
-			w.Kind = "followup"
-			cfg := testConfig()
-			cfg.MaxTurns = 1
-			action := "speak"
-			e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-				if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
-					return jsonReply(Decision{Action: action, Intent: "表达自己的看法", Reason: "想聊这个话题"}), nil
-				}
-				return jsonReply(Outcome{Message: "我有个想法。"}), nil
-			}), cfg)
-			if err := e.process(context.Background(), w); err != nil {
-				t.Fatal(err)
-			}
-			next, err := s.ReadWork(c.ID, "continuation_"+w.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			messages, _ := s.Messages(c.ID, 0, 10)
-			if next.MemberID != "" || next.SourceID != messages[len(messages)-1].ID || next.RootID != w.ID || !next.Autonomous {
-				t.Fatalf("续接没有保留全群现场与原预算: %+v", next)
-			}
-			// 重复完成同一窗口不产生第二个队列项。
-			if err = e.continueConversation(context.Background(), c, w); err != nil {
-				t.Fatal(err)
-			}
-			if nextAction == "new_user" {
-				if err = e.Submit(userMessage(c, "先别聊")); err != nil {
-					t.Fatal(err)
-				}
-				next, _ = s.ReadWork(c.ID, next.ID)
-				if next.Status != "superseded" {
-					t.Fatal("新真人消息未替换旧续接")
-				}
-				return
-			}
-			action = nextAction
-			if err = e.process(context.Background(), next); err != nil {
-				t.Fatal(err)
-			}
-			var grandchildren int
-			s.db.QueryRow(`SELECT count(*) FROM work WHERE parent_id=?`, next.ID).Scan(&grandchildren)
-			if grandchildren != 0 {
-				t.Fatal("全员沉默或自主配额已满仍继续排队")
-			}
-			messages, _ = s.Messages(c.ID, 0, 10)
-			want := 2
-			if action == "speak" {
-				want = 3
-			}
-			if len(messages) != want {
-				t.Fatalf("消息数量=%d，预期=%d", len(messages), want)
-			}
-		})
-	}
-}

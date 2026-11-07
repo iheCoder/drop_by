@@ -19,7 +19,7 @@ func memberDecisionError(err error) error {
 		return err
 	}
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-		errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || errors.Is(err, ErrContextCapacity) || errors.Is(err, ErrRunLimit) {
+		errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || errors.Is(err, ErrContextCapacity) {
 		return err
 	}
 	return &participationFailure{err}

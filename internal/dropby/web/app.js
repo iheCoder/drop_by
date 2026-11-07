@@ -72,7 +72,7 @@ function budgetResetLabel() {
 function weeklyBudgetNote() {
   const usage = state.usage || {}, reset = budgetResetLabel();
   const dollars = value => (Number(value || 0) / 1e6).toFixed(2);
-  return `<p class="budget-note">本周估算 $${dollars(usage.cost_micros)} / $${dollars(state.weekly_budget_micros)}${state.autonomous_weekly_budget_micros > 0 ? `<br>其中自发探索 $${dollars(usage.autonomous_cost_micros)} / $${dollars(state.autonomous_weekly_budget_micros)} · 为你回来聊天留有余量` : '<br>自发探索额度未开启'}${usage.week_start ? `<br>本周从 ${escapeHTML(String(usage.week_start).split('T')[0])} 开始` : ''}${reset ? `<br>额度重置 ${escapeHTML(reset)}` : ''}</p>`;
+  return `<p class="budget-note">本周估算 $${dollars(usage.cost_micros)} / $${dollars(state.weekly_budget_micros)}${usage.unsettled_micros > 0 ? `<br>其中待核实预留 $${dollars(usage.unsettled_micros)}（含在途请求）` : ''}${usage.week_start ? `<br>本周从 ${escapeHTML(String(usage.week_start).split('T')[0])} 开始` : ''}${reset ? `<br>额度重置 ${escapeHTML(reset)}` : ''}</p>`;
 }
 
 // Markdown 先解析再用本地 DOMPurify 白名单清洗。聊天不是 HTML 执行环境；
@@ -462,7 +462,7 @@ document.addEventListener('click', async event => {
       composeFollowup(`@${authorName(id)} 刚才的话题，你有什么想法？`);
       replyTo=messages.find(m=>m.id===button.dataset.source) || null; renderReply();
     }
-    if (action === 'continue-work') { const w = roomData.work.find(w => w.id === id); if (w) { composeFollowup(`继续这件事：${w.display?.detail || w.display?.title || '之前的安排'}`); replyTo=messages.find(m=>m.id===w.source_id) || null; renderReply(); } }
+    if (action === 'continue-work') { button.disabled = true; try { await post('/api/work/' + encodeURIComponent(id) + '/resume', {}); await refresh(); } finally { button.disabled = false; } }
     if (action === 'reply') { replyTo = messages.find(m => m.id === id); renderReply(); $('message-input').focus(); }
     if (action === 'clear-reply') { replyTo = null; renderReply(); }
     if (action === 'jump-message') await jumpToMessage(id);
