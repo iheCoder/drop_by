@@ -8,7 +8,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -46,6 +45,10 @@ type Model interface {
 
 // 只标记本次调用需要深入推理；不改变成员身份，也不持久化额外生命周期。
 type deepReasoningKey struct{}
+
+// 只在现有调用节点标记职责。没有另一次模型分类，也不保存新的任务状态。
+// 空职责使用主模型，供控制理解、真实性核对和实际研究使用。
+type modelRoleKey struct{}
 
 // 调用记账失败属于共享存储故障，不能被参与层当作某位成员的请求失败忽略。
 type modelAccountingError struct{ error }
@@ -181,15 +184,11 @@ func (s *Store) weeklyUsageAt(at time.Time) (Usage, error) {
 	return u, err
 }
 
+// 模型边界只保留当前 Responses 的结果，不再转换成旧 choices 协议。
 type modelResult struct {
-	Choices []struct {
-		Message      ChatMessage `json:"message"`
-		FinishReason string      `json:"finish_reason"`
-	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage"`
+	Message                   ChatMessage
+	InputTokens, OutputTokens int
+	Incomplete                bool
 }
 
 func (m *HTTPModel) Complete(ctx context.Context, messages []ChatMessage, defs []ToolDefinition, jsonOutput bool) (ChatMessage, error) {
@@ -200,49 +199,42 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	// 使用副本调整请求配置，避免多个成员并发调用时互相污染。
 	local := *m
 	m = &local
-	if deep, _ := ctx.Value(deepReasoningKey{}).(bool); deep {
+	role, _ := ctx.Value(modelRoleKey{}).(string)
+	selected := ""
+	switch role {
+	case "decision":
+		selected = m.Config.DecisionModel
+	case "chat":
+		selected = m.Config.ChatModel
+	}
+	if selected != "" {
+		m.Config.Model = selected
+		m.Config.Reasoning = "none"
+	}
+	if deep, _ := ctx.Value(deepReasoningKey{}).(bool); deep && selected == "" {
 		m.Config.Reasoning = m.Config.DeepReasoning
 		if m.Config.DeepMaxOutputTokens > 0 {
 			m.Config.MaxOutputTokens = m.Config.DeepMaxOutputTokens
 		}
 	}
+	// 当前本地 API 的 Sol 不接受 none。只修正这个已实测的参数组合，
+	// 不因调用失败悄悄换型号或重放已经完成的工具动作。
+	if m.Config.Model == "gpt-6.1-sol" && m.Config.Reasoning == "none" {
+		m.Config.Reasoning = "low"
+	}
 	if m.Config.APIKey == "" {
 		return ChatMessage{}, ErrUnavailable
 	}
-	body := map[string]any{"model": m.Config.Model, "messages": messages, "max_tokens": m.Config.MaxOutputTokens, "stream": false}
-	// OpenAI 的 GPT-5 使用新的输出额度字段；按本次交流阶段分配推理强度。
-	if strings.HasPrefix(m.Config.Model, "gpt-5") {
-		delete(body, "max_tokens")
-		body["max_completion_tokens"] = m.Config.MaxOutputTokens
-		if m.Config.Reasoning != "" {
-			body["reasoning_effort"] = m.Config.Reasoning
-		}
-	}
-	if len(defs) > 0 {
-		body["tools"] = defs
-	}
-	if jsonOutput {
-		body["response_format"] = map[string]string{"type": "json_object"}
-	}
-	if strings.Contains(m.Config.BaseURL, "api.deepseek.com") {
-		body["thinking"] = map[string]string{"type": "disabled"}
-	}
-	endpoint, _ := url.Parse(m.Config.BaseURL)
-	useResponses := endpoint.Hostname() == "api.openai.com" || (m.Config.Reasoning != "" && m.Config.Reasoning != "none" && strings.HasPrefix(m.Config.Model, "gpt-5"))
 	// 在模型边界统一检查完整请求，参与判断、行动和发布核对都不能绕过此处。
 	// 只折叠已经存档的工具正文；身份、目标、原话以及调用/推理协议保持完整。
 	encoded, inputEstimate, e := boundedRequest(messages, m.Config.ContextTokenBudget, m.Config.MaxOutputTokens, func(input []ChatMessage) ([]byte, error) {
-		if useResponses {
-			return m.responseBody(input, defs, jsonOutput)
-		}
-		body["messages"] = input
-		return json.Marshal(body)
+		return m.responseBody(input, defs, jsonOutput)
 	})
 	capacity := m.Config.ContextTokenBudget
 	if capacity == 0 {
 		capacity = 100000
 	}
-	if e != nil && useResponses && capacity > m.Config.MaxOutputTokens {
+	if e != nil && capacity > m.Config.MaxOutputTokens {
 		var prepared []ChatMessage
 		encoded, inputEstimate, prepared, e = m.prepareLargeResponse(ctx, messages, defs, jsonOutput)
 		if e == nil && chain != nil {
@@ -262,34 +254,25 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	if e != nil {
 		return ChatMessage{}, &modelAccountingError{e}
 	}
-	var response modelResult
-	// OpenAI 全部走推荐的 Responses；聊天接口仅保留给原有兼容服务。
-	if useResponses {
-		response, e = m.responses(ctx, encoded)
-	} else {
-		e = requestJSON(ctx, m.Client, m.Config.BaseURL+"/chat/completions", m.Config.APIKey, encoded, &response)
-	}
+	// 只有 Responses 一条调用路径；失败直接报告，不自动切换接口或重放工具。
+	response, e := m.responses(ctx, encoded)
 	if e != nil {
 		return ChatMessage{}, e
 	}
-	if response.Usage.PromptTokens+response.Usage.CompletionTokens > 0 {
-		actual := int64(math.Ceil(float64(response.Usage.PromptTokens)*m.Config.InputPrice + float64(response.Usage.CompletionTokens)*m.Config.OutputPrice))
-		if e = m.Store.SettleContext(ctx, day, reserve, actual, response.Usage.PromptTokens, response.Usage.CompletionTokens); e != nil {
+	if response.InputTokens+response.OutputTokens > 0 {
+		actual := int64(math.Ceil(float64(response.InputTokens)*m.Config.InputPrice + float64(response.OutputTokens)*m.Config.OutputPrice))
+		if e = m.Store.SettleContext(ctx, day, reserve, actual, response.InputTokens, response.OutputTokens); e != nil {
 			return ChatMessage{}, &modelAccountingError{e}
 		}
 	}
-	if len(response.Choices) == 0 {
-		return ChatMessage{}, fmt.Errorf("模型没有返回可用结果")
-	}
-	c := response.Choices[0]
-	if c.FinishReason == "length" {
+	if response.Incomplete {
 		return ChatMessage{}, fmt.Errorf("模型输出达到长度上限，本次未发布不完整内容")
 	}
-	if strings.TrimSpace(c.Message.Content) == "" && len(c.Message.ToolCalls) == 0 {
+	if strings.TrimSpace(response.Message.Content) == "" && len(response.Message.ToolCalls) == 0 {
 		return ChatMessage{}, fmt.Errorf("模型返回了空内容，本次没有生成消息")
 	}
-	c.Message.OutputTokens = response.Usage.CompletionTokens
-	return c.Message, nil
+	response.Message.OutputTokens = response.OutputTokens
+	return response.Message, nil
 }
 
 func requestJSON(ctx context.Context, client *http.Client, endpoint, key string, body []byte, out any) error {
@@ -416,7 +399,7 @@ func (m *HTTPModel) responseBody(messages []ChatMessage, defs []ToolDefinition, 
 		input = append(input, map[string]any{"role": msg.Role, "content": msg.Content})
 	}
 	body := map[string]any{"model": m.Config.Model, "input": input, "max_output_tokens": m.Config.MaxOutputTokens, "store": false, "include": []string{"reasoning.encrypted_content"}}
-	if strings.HasPrefix(m.Config.Model, "gpt-5") && m.Config.Reasoning != "" {
+	if m.Config.Reasoning != "" {
 		body["reasoning"] = map[string]string{"effort": m.Config.Reasoning}
 	}
 	if len(defs) > 0 {
@@ -445,23 +428,34 @@ func (m *HTTPModel) responses(ctx context.Context, raw []byte) (modelResult, err
 		return modelResult{}, err
 	}
 	result := modelResult{}
-	result.Usage.PromptTokens = out.Usage.Input
-	result.Usage.CompletionTokens = out.Usage.Output
+	result.InputTokens = out.Usage.Input
+	result.OutputTokens = out.Usage.Output
 	msg := ChatMessage{Role: "assistant", ResponseItems: out.Output}
+	finalText, unphasedText := "", ""
+	hasFinal := false
 	for _, rawItem := range out.Output {
 		var item struct {
-			Type, Name, Arguments string
-			CallID                string `json:"call_id"`
-			Content               []struct{ Type, Text string }
+			Type, Name, Arguments, Phase string
+			CallID                       string `json:"call_id"`
+			Content                      []struct{ Type, Text string }
 		}
 		if err = json.Unmarshal(rawItem, &item); err != nil {
 			return result, err
 		}
 		switch item.Type {
 		case "message":
+			// 新模型可能同时返回 commentary 与 final_answer。中间说明不是
+			// 业务 JSON，不能拼接成最终答案；原始项目仍完整保留用于下一轮续接。
+			if item.Phase == "final_answer" {
+				hasFinal = true
+			}
 			for _, part := range item.Content {
 				if part.Type == "output_text" {
-					msg.Content += part.Text
+					if item.Phase == "final_answer" {
+						finalText += part.Text
+					} else if item.Phase == "" {
+						unphasedText += part.Text
+					}
 				}
 			}
 		case "function_call":
@@ -471,13 +465,11 @@ func (m *HTTPModel) responses(ctx context.Context, raw []byte) (modelResult, err
 			msg.ToolCalls = append(msg.ToolCalls, call)
 		}
 	}
-	finish := "stop"
-	if out.Status == "incomplete" {
-		finish = "length"
+	msg.Content = unphasedText
+	if hasFinal {
+		msg.Content = finalText
 	}
-	result.Choices = append(result.Choices, struct {
-		Message      ChatMessage `json:"message"`
-		FinishReason string      `json:"finish_reason"`
-	}{msg, finish})
+	result.Message = msg
+	result.Incomplete = out.Status == "incomplete"
 	return result, nil
 }

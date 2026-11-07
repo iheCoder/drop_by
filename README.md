@@ -43,15 +43,17 @@ HTTPS_PROXY=http://127.0.0.1:7790 NO_PROXY=localhost,127.0.0.1,::1 go run ./cmd/
 
 ## 模型、工具和费用
 
-默认模型是 OpenAI `gpt-5.6-sol`，默认读取 `OPENAI_API_KEY`，地址为 `https://api.openai.com/v1`。搜索与网页读取仍独立使用 `DEEPSEEK_API_KEY`，其费用不属于 OpenAI 赠送额度。密钥只保留在进程环境，不写入 SQLite、不传给浏览器、不写日志。没有模型配置时仍可创建和编辑成员、查看聊天，相识问题不依赖模型；生成回应和理解自然语言偏好需要模型配置。没有搜索配置时不会宣称已经联网探索。
+默认由 `gpt-6-luna` 判断参与和找回记忆，`gpt-6.1-terra` 组织日常发言，`gpt-6.1-sol` 执行研究、控制理解和真实性核对。三个模型均通过 Responses API 调用，默认读取 `OPENAI_API_KEY`，地址为 `https://api.openai.com/v1`。搜索与网页读取仍独立使用 `DEEPSEEK_API_KEY`，其费用不属于 OpenAI 赠送额度。密钥只保留在进程环境，不写入 SQLite、不传给浏览器、不写日志。没有模型配置时仍可创建和编辑成员、查看聊天，相识问题不依赖模型；生成回应和理解自然语言偏好需要模型配置。没有搜索配置时不会宣称已经联网探索。
 
-可用环境变量见 [.env.example](.env.example)。程序**不自动加载 `.env` 文件**，请由启动环境设置变量。切换其他兼容 Chat Completions、JSON 输出与工具调用的模型服务，需要同时配置 `DROPBY_BASE_URL`、`DROPBY_API_KEY`、`DROPBY_MODEL`，并按该服务价格配置输入和输出费率；搜索服务仍独立配置。
+可用环境变量见 [.env.example](.env.example)。程序**不自动加载 `.env` 文件**，请由启动环境设置变量。当前生成接口只使用 Responses API。`DROPBY_BASE_URL` 与 `DROPBY_API_KEY` 指向正在使用的网关，三个模型职责分别配置；搜索服务独立配置。
 
 | 变量 | 默认值 | 含义 |
 | --- | --- | --- |
 | `DROPBY_ADDR` | `127.0.0.1:8090` | 只允许本机回环监听 |
 | `DROPBY_DATA_DIR` | `data` | 数据目录；每个目录独立 |
-| `DROPBY_MODEL` | `gpt-5.6-sol` | 首版所有成员共享模型，身份、上下文、记忆与工具选择独立 |
+| `DROPBY_MODEL` | `gpt-6.1-sol` | 研究、控制理解、真实性核对的主模型 |
+| `DROPBY_DECISION_MODEL` | `gpt-6-luna` | 参与判断与相关经历检索 |
+| `DROPBY_CHAT_MODEL` | `gpt-6.1-terra` | 普通发言，包括后续接话 |
 | `DROPBY_WEEKLY_BUDGET_USD` | `20` | 每周估算费用总上限 |
 | `DROPBY_AUTONOMOUS_WEEKLY_BUDGET_USD` | `7` | 包含在每周总额内的自主后台子上限，给真人交流留出空间 |
 | `DROPBY_WEEKLY_CALLS` | `4200` | 每周模型和联网工具调用总上限 |
@@ -62,13 +64,15 @@ HTTPS_PROXY=http://127.0.0.1:7790 NO_PROXY=localhost,127.0.0.1,::1 go run ./cmd/
 | `DROPBY_MAX_OUTPUT_TOKENS` | `8000` | 快速调用的输出与推理 token 总上限 |
 | `DROPBY_EXPLORE_INTERVAL` | `30m` | 闲时探索的起始间隔；之后逐渐放缓，最多间隔 6 小时；具体后续按自己的到期时间运行 |
 
-首句与后续探索采用同一 Sol 模型的不同推理配置：参与判断、控制理解和初步接话默认 `DROPBY_REASONING=none`；后续讨论、研究与成果生成使用 `DROPBY_DEEP_REASONING=high`，`DROPBY_DEEP_MAX_OUTPUT_TOKENS=25000`。这些是内部输出与推理额度，不要求成员写长回复。首句开放本地回忆、后台安排、后续取消和本地提问；群协调者也可委托同伴，需要查证或创作时持久化工作，其他成员仍可自行决定接话；交流机会结束后，后台研究继续。成员也可先安静地安排探索，不必为了成为第一个回应者而先发一句话。普通闲聊不强制安排研究。
+职责选择发生在已有调用节点，不额外调用模型分类。参与和发言使用 `none` 推理；主模型默认 `DROPBY_REASONING=low`，实际研究使用 `DROPBY_DEEP_REASONING=high` 和 `DROPBY_DEEP_MAX_OUTPUT_TOKENS=25000`。后续闲聊不会仅因不是首句而升级。身份、原话、记忆与工具结果继续属于同一个成员；核对不继承调用者的模型职责，使用主模型。原生压缩沿用当前请求的模型，不跨型号搬运加密推理或压缩项目。没有自动降级到旧型号或重放整段工具行动的回退。
 
-模型费率依据 [OpenAI GPT-5.6 Sol 文档](https://developers.openai.com/api/docs/models/gpt-5.6-sol)，会随供应商定价变化，需同步调整。每周 20 美元按用户要求设置，应用不读取账户余额或赠送额度到期日；调用次数上限为 4200，仍受费用上限约束。
+所有模型请求使用 `/responses`、`max_output_tokens`、`reasoning.effort` 和 `text.format`，保留原生工具及加密推理项目。返回的 `commentary` 不会拼入业务 JSON；只读取 `final_answer`，同时保留完整原生项目供后续调用。不保留旧模型识别、Chat Completions 或旧参数分支。三个职责各自读取配置，设置主模型不会隐式覆盖参与与聊天模型。
+
+当前费用仍按配置的统一费率估算，`4` / `20` 是本地预算折算参数，不能视为这些模型或本地网关的最新报价。每周 20 美元按用户要求设置，应用不读取账户账单、余额或赠送额度到期日；调用次数上限为 4200，仍受估算费用上限约束。选型证据、接口修复和验证边界见 [模型选择记录](docs/model-selection.md)。
 
 费用在调用前事务性预留，成功返回 token 用量后按配置费率结算；未知结果保留保守预留。账本保留每日明细，按服务进程本地时区的**周一 00:00 到下周一 00:00**累计；本机显式设置 `TZ=Asia/Shanghai`。升级前本周费用一并计入，重启不会清空。金额用完、余额不足以预留下一次请求、调用次数到顶、自主子额度不足分别说明。额度只在个人中心显示；聊天仅在当前额度不足时提示，预留结算释放余额或新周恢复后自动撤下提示并重新检查待执行工作。历史额度系统消息保留在数据库，但不再出现在聊天或列表。重启后也会重新核对当前配置，实际预留仍不可绕过。旧 `DROPBY_DAILY_*` 变量需迁移到新的周变量，避免把旧 3 美元误认为每周 3 美元。实际服务商账单可能包含缓存折扣和价格变更，界面资源限制不等于精确账单。
 
-联网工具目前采用 [DeepSeek Search & Fetch 官方接口](https://api-docs.deepseek.com/guides/search/)，搜索与读取按每次 0.00075 美元保守预留。深入推理与工具调用使用 OpenAI [Responses 推理接口](https://developers.openai.com/api/docs/guides/reasoning)，保留工具往返所需的加密推理项目，且设置 `store=false`；快速回应同样使用 Responses，Chat Completions 仅保留给原有兼容服务。请求都设置超时，失败不会伪造结果，也不会无限重试。
+联网工具目前采用 [DeepSeek Search & Fetch 官方接口](https://api-docs.deepseek.com/guides/search/)，搜索与读取按每次 0.00075 美元保守预留。深入推理与工具调用使用 OpenAI [Responses 推理接口](https://developers.openai.com/api/docs/guides/reasoning)，保留工具往返所需的加密推理项目，且设置 `store=false`；快速回应同样使用 Responses，没有其他生成接口或自动降级路径。请求都设置超时，失败不会伪造结果，也不会无限重试。
 
 ## 运行方式与边界
 

@@ -663,6 +663,7 @@ func (e *Engine) choose(ctx context.Context, c Conversation, w Work, turn int) (
 }
 
 func (e *Engine) observeMember(ctx context.Context, c Conversation, w Work, id string, turn int, previous *participationCandidate) participationCandidate {
+	ctx = context.WithValue(ctx, modelRoleKey{}, "decision")
 	result := participationCandidate{}
 	// 参与判断现在也可能整理经历，与实际行动共用同一成员锁。
 	// 同一个人在不同聊天同时被唤起时，先等前一次更新结束，再读自己的可携带记忆。
@@ -1051,6 +1052,14 @@ func (e *Engine) act(ctx context.Context, c Conversation, m Member, w Work, inst
 }
 
 func (e *Engine) actWithDecision(ctx context.Context, c Conversation, m Member, w Work, instruction string, previous *participationCandidate) (Outcome, error) {
+	// 后续聊天仍使用发言模型。只有已经进入实际研究的工作才用主模型深入执行，
+	// 不以“第几句话”决定升级，也不改写成员自己的参与意愿。
+	role := "chat"
+	if w.Kind == "research" {
+		role = ""
+	}
+	ctx = context.WithValue(ctx, modelRoleKey{}, role)
+
 	// 同一成员可能在多个群被同时叫到。把其实际行动串行化，避免两份旧上下文
 	// 同时改写这位成员的共同经历；等到机会后再读取最新记忆，不阻塞用户发消息。
 	gateValue, _ := e.memberGates.LoadOrStore(m.ID, make(chan struct{}, 1))
@@ -1072,7 +1081,7 @@ func (e *Engine) actWithDecision(ctx context.Context, c Conversation, m Member, 
 	// 首句不等待网页或长篇创作；后续行动和跟进允许更充分推理。
 	if w.Kind == "first_reply" {
 		instruction += "\n这是本次交流较早的参与机会；如果仍然想开口，用一两句具体的话自然回应，也允许改变主意不发言。可表达初步看法，但不装作已查证；需要查证、比较、创作或保存成果时，可用 schedule_exploration 安排具体行动。普通闲聊不必安排任务，不说空洞的收到或请稍候。区分初步判断与已查证结果。"
-	} else {
+	} else if w.Kind == "research" {
 		ctx = context.WithValue(ctx, deepReasoningKey{}, true)
 	}
 	input, err := e.contextFor(c, m, w)
@@ -1195,6 +1204,10 @@ ask_question 工具已在聊天里发出问题，最终 message 可以为空，�
 // 站队、评分或要求新事实。特别避免 AI 虚构身体经历，被其他成员误当独立证据。
 // 这仍是模型校验而非事实正确性的数学保证，失败时不会悄悄放行原稿。
 func (e *Engine) reviewText(ctx context.Context, c Conversation, m Member, w Work, kind, text string) (string, error) {
+	// 核对始终读取同一份证据，使用主模型；不继承调用者的聊天/判断职责或深入档。
+	ctx = context.WithValue(ctx, modelRoleKey{}, "")
+	ctx = context.WithValue(ctx, deepReasoningKey{}, false)
+
 	input, err := e.contextFor(c, m, w)
 	if err != nil {
 		return "", err

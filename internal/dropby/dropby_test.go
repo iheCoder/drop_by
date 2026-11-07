@@ -412,7 +412,14 @@ func TestModelJSONErrorsAndUsageSettlement(t *testing.T) {
 				if r.Header.Get("Authorization") != "Bearer test-only" {
 					t.Error("鉴权缺失")
 				}
-				respond(w, 200, map[string]any{"choices": []any{map[string]any{"message": map[string]string{"role": "assistant", "content": tc.content}, "finish_reason": tc.reason}}, "usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 5}})
+				if r.URL.Path != "/responses" {
+					t.Errorf("请求走错接口: %s", r.URL.Path)
+				}
+				status := "completed"
+				if tc.reason == "length" {
+					status = "incomplete"
+				}
+				respond(w, 200, map[string]any{"status": status, "output": []any{map[string]any{"type": "message", "phase": "final_answer", "content": []any{map[string]string{"type": "output_text", "text": tc.content}}}}, "usage": map[string]int{"input_tokens": 10, "output_tokens": 5}})
 			}))
 			defer upstream.Close()
 			cfg := testConfig()
@@ -793,12 +800,11 @@ func TestReasoningBudgetIsPerRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
-		effort := body["reasoning_effort"]
-		outputLimit := body["max_completion_tokens"]
-		if r.URL.Path == "/responses" {
-			effort = body["reasoning"].(map[string]any)["effort"]
-			outputLimit = body["max_output_tokens"]
+		if r.URL.Path != "/responses" {
+			t.Errorf("请求走错接口: %s", r.URL.Path)
 		}
+		effort := body["reasoning"].(map[string]any)["effort"]
+		outputLimit := body["max_output_tokens"]
 		expected := float64(8000)
 		if effort == "high" {
 			expected = 25000
@@ -812,16 +818,12 @@ func TestReasoningBudgetIsPerRequest(t *testing.T) {
 			t.Error("legacy output field sent")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/responses" {
-			w.Write([]byte(`{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"{}"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`))
-			return
-		}
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+		w.Write([]byte(`{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"{}"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
 	defer server.Close()
 	cfg := testConfig()
 	cfg.BaseURL = server.URL
-	cfg.Model = "gpt-5.6-sol"
+	cfg.Model = "gpt-6.1-terra"
 	cfg.Reasoning = "none"
 	cfg.DeepReasoning = "high"
 	cfg.MaxOutputTokens = 8000
@@ -874,7 +876,7 @@ func TestResponsesPreservesReasoningAndToolOutput(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.Model = "gpt-5.6-sol"
+	cfg.Model = "gpt-6.1-sol"
 	cfg.BaseURL = server.URL
 	cfg.DeepReasoning = "high"
 	cfg.DeepMaxOutputTokens = 25000

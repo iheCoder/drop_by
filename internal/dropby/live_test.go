@@ -2,9 +2,11 @@ package dropby
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -47,7 +49,27 @@ func TestLiveFirstReplyThenResearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := NewEngine(s, &HTTPModel{Config: cfg, Store: s, Client: &http.Client{Timeout: 4 * time.Minute}}, cfg)
+	// 可选记录真实模型接力的请求正文，方便确认各职责和工具续接；不保存凭据。
+	client := &http.Client{Timeout: 4 * time.Minute}
+	var requests atomic.Int64
+	trace := &selectionTransport{total: &requests}
+	if os.Getenv("DROPBY_PACING_REPORT") != "" {
+		client.Transport = trace
+	}
+	e := NewEngine(s, &HTTPModel{Config: cfg, Store: s, Client: client}, cfg)
+	defer func() {
+		if path := os.Getenv("DROPBY_PACING_REPORT"); path != "" {
+			messages, _ := s.Messages(c.ID, 0, 100)
+			work, _ := s.Works(c.ID)
+			artifacts, _ := s.Artifacts(c.ID)
+			runs, _ := s.ToolRuns(c.ID, "")
+			usage, _ := s.Usage()
+			raw, _ := json.MarshalIndent(map[string]any{"messages": messages, "work": work, "artifacts": artifacts, "tools": runs, "usage": usage, "trace": trace.traces}, "", "  ")
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
 	msg := userMessage(c, "@阿苇 我想比较纸飞机为什么有的飞得远、有的飞得稳。你先说一句初步想法，然后认真推敲两种设计的取舍，保存一份短草稿；不需要联网，不要假装做过实体实验。")
 	msg.Mentions = []string{m.ID}
 	if err := e.Submit(msg); err != nil {
@@ -77,7 +99,22 @@ func TestLiveFirstReplyThenResearch(t *testing.T) {
 		}
 	}
 	if research.ID == "" {
-		t.Fatal("没有持久化后续研究")
+		// 简短原理比较也可在后续聊天机会直接保存。用户要的是实际草稿，
+		// 不能为了满足旧测试而强迫每份短稿都创建后台研究。
+		artifacts, err := s.Artifacts(c.ID)
+		if err != nil || len(artifacts) == 0 || len(messages) < 3 {
+			t.Fatal("既没有后续研究，也没有实际保存并分享草稿")
+		}
+		var linked int
+		err = s.db.QueryRow(`SELECT count(*) FROM messages msg JOIN json_each(msg.evidence) ev
+ JOIN tool_runs tr ON tr.id=ev.value AND tr.status='succeeded' AND tr.name='save_artifact'
+ JOIN artifacts a ON a.id=json_extract(tr.result,'$.artifact_id')
+ WHERE msg.conversation_id=? AND a.conversation_id=?`, c.ID, c.ID).Scan(&linked)
+		if err != nil || linked == 0 {
+			t.Fatal("草稿没有通过成功的保存记录分享回群")
+		}
+		t.Log("实际在后续发言中保存并分享草稿，没有创建不必要的后台研究")
+		return
 	}
 	if err := e.process(ctx, research); err != nil {
 		t.Fatal(err)

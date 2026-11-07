@@ -207,7 +207,7 @@ func TestLargeEncryptedReasoningIsNotUserContextOrBudget(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.Model = "gpt-5.6-sol"
+	cfg.Model = "gpt-6.1-sol"
 	cfg.Reasoning = "high"
 	cfg.BaseURL = server.URL
 	cfg.WeeklyBudgetMicros = 50_000

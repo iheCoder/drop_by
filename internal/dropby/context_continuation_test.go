@@ -43,7 +43,7 @@ func TestActualInputCountOverridesByteFalsePositive(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.Model, cfg.Reasoning, cfg.BaseURL = "gpt-5.6-sol", "high", server.URL
+	cfg.Model, cfg.Reasoning, cfg.BaseURL = "gpt-6.1-sol", "high", server.URL
 	cfg.ContextTokenBudget = 2000
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	if _, err := model.Complete(context.Background(), largeArtifactChain(), nil, false); err != nil {
@@ -89,7 +89,7 @@ func TestNativeCompactionPreservesCoreProtocolAndContinuesFromReturnedWindow(t *
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.Model, cfg.Reasoning, cfg.BaseURL = "gpt-5.6-sol", "high", server.URL
+	cfg.Model, cfg.Reasoning, cfg.BaseURL = "gpt-6.1-sol", "high", server.URL
 	cfg.ContextTokenBudget = 3000
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	chain := largeArtifactChain()
@@ -127,7 +127,7 @@ func TestCountingFailurePreservesChainAndIsRecoverable(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.Model, cfg.Reasoning, cfg.BaseURL = "gpt-5.6-sol", "high", server.URL
+	cfg.Model, cfg.Reasoning, cfg.BaseURL = "gpt-6.1-sol", "high", server.URL
 	cfg.ContextTokenBudget = 2000
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	chain := largeArtifactChain()
