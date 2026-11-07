@@ -73,6 +73,8 @@ HTTPS_PROXY=http://127.0.0.1:7790 NO_PROXY=localhost,127.0.0.1,::1 go run ./cmd/
 
 联网工具目前采用 [DeepSeek Search & Fetch 官方接口](https://api-docs.deepseek.com/guides/search/)，搜索与读取按每次 0.00075 美元保守预留。深入推理与工具调用使用 OpenAI [Responses 推理接口](https://developers.openai.com/api/docs/guides/reasoning)，保留工具往返所需的加密推理项目，且设置 `store=false`；快速回应同样使用 Responses，没有其他生成接口或自动降级路径。请求都设置超时，失败不会伪造结果，也不会无限重试。
 
+本轮参与机制删减了对所有成员统一施加的简短、不催促等社交要求。成员依据自己的特质、状态和目标决定参与；已有后续预约用于观察交流进展。单次发言窗口结束后的续接仍受原来由的自主预算限制。真实辩论与 UI 验收、失败记录和适用边界见 [参与机制减法与辩论验收](docs/participation-simplification.md)。
+
 ## 运行方式与边界
 
 - 每名成员观察一段交流，根据人物说明、可见经历、当前关注和真实行动，选择零条、一条或多条消息作出 `speak / explore / revisit / pass` 判断。选择可跨越最新消息；各自意图保留到实际行动前，成员会重读此间的新发言，调整、缩短、转向或撤回。明确 `@` 优先提供机会，但不强迫回答；某位成员撤回不会结束其他人的机会，全员安静是正常结果。

@@ -78,6 +78,10 @@ async function cropAvatar(file, request) {
     cancelCrop=()=>finish(null);
     dialog.oncancel=e=>{e.preventDefault();finish(null);};
     dialog.onclick=e=>{
+      if(e.target===dialog) {
+        const r=dialog.getBoundingClientRect();
+        if(e.clientX<r.left || e.clientX>r.right || e.clientY<r.top || e.clientY>r.bottom) { finish(null); return; }
+      }
       const action=e.target.closest('[data-crop]')?.dataset.crop;
       if(action==='cancel')finish(null);
       if(action==='use') {
@@ -92,6 +96,23 @@ async function cropAvatar(file, request) {
 }
 
 // 原生 dialog 的 Escape 与页面 Escape 共用同一关闭路径，防止留下 hidden/open 不一致。
+// 详情面外按下再抬起才关闭；从面内拖选文字到外侧不能误关。
+// 在 pointerdown 记录旧面板，避免开启面板的同一次点击把新面板关掉。
+let outsidePanelPress = null;
+document.addEventListener('pointerdown',e=>{
+  outsidePanelPress = e.button===0 && !$('inspector').hidden && !$('inspector').contains(e.target)
+    && $('workspace-page').hidden && !$('crop-dialog').open
+    ? {request:panelRequest,pointer:e.pointerId} : null;
+});
+document.addEventListener('pointerup',e=>{
+  const press=outsidePanelPress; outsidePanelPress=null;
+  if(press && press.pointer===e.pointerId && press.request===panelRequest && !$('inspector').contains(e.target)) {
+    // 不抢走用户正准备点击的输入框或按钮的焦点。
+    const restore=$('inspector').contains(document.activeElement);
+    closePanel(restore);
+  }
+});
+document.addEventListener('pointercancel',()=>{outsidePanelPress=null;});
 $('workspace-page').addEventListener('cancel',e=>{e.preventDefault();closeWorkspace(true);});
 $('workspace-page').addEventListener('click',e=>{
   if(e.target!==$('workspace-page'))return;
@@ -113,7 +134,6 @@ document.addEventListener('click',e=>{
     if(input.value.length-(input.selectionEnd-input.selectionStart)+face.length<=input.maxLength)input.setRangeText(face,input.selectionStart,input.selectionEnd,'end');
     closeTransient();input.focus();sizeComposer();rememberDraft();
   }
-  if(action==='upload-avatar') target.closest('form').querySelector('#avatar-file').click();
   if(action==='close-person')closeTransient(true);
   if(action==='full-profile')fullProfile(target.dataset.id);
   if(action==='rail-chats' || action==='rail-people') {

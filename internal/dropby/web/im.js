@@ -64,7 +64,7 @@ function startGroup() {
 }
 function groupPortraitEditor(c) {
   avatarRequest++; avatarLoading=false; avatarData=c.avatar || '';
-  return `<div class="avatar-editor"><button type="button" class="avatar-edit-preview" data-action="upload-avatar" aria-label="更换群头像"><span id="group-avatar-preview">${groupAvatar(c)}</span><span class="avatar-camera">${icon('image')}</span></button><div class="avatar-edit-copy"><strong>群头像</strong><small>也可以用大家的头像</small><button type="button" class="avatar-upload" data-action="upload-avatar">${icon('upload')}更换头像</button><button type="button" class="quiet" data-action="reset-group-avatar">使用成员头像</button></div><input hidden id="avatar-file" type="file" accept="image/png,image/jpeg"></div>`;
+  return `<div class="avatar-editor"><label class="avatar-edit-preview" for="avatar-file" title="更换群头像"><span id="group-avatar-preview">${groupAvatar(c)}</span><span class="avatar-camera">${icon('image')}</span></label><div class="avatar-edit-copy"><strong>群头像</strong><small>也可以用大家的头像</small><label class="avatar-upload" for="avatar-file">${icon('upload')}更换头像</label><button type="button" class="quiet" data-action="reset-group-avatar">使用成员头像</button></div><input class="sr-only" id="avatar-file" type="file" aria-label="上传头像图片" accept="image/png,image/jpeg"></div>`;
 }
 function editGroup() {
   const c=roomData?.conversation; if (!c || c.kind!=='group') return;

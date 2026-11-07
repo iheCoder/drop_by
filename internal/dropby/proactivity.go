@@ -50,6 +50,30 @@ func rootOf(w Work) string {
 	return w.ID
 }
 
+// 单次执行窗口用尽时，最后一条新消息仍应有被同伴读到的机会。
+// 续接面向全群，不指定谁推进；共享原来由的自主预算和发言上限。
+// 全员 pass 不走这里，新真人消息也会像其他 followup 一样替换这次机会。
+func (e *Engine) continueConversation(ctx context.Context, c Conversation, w Work) error {
+	ctx = context.WithValue(ctx, autonomyKey{}, rootOf(w))
+	if allowed, err := e.Store.autonomousMessagesLeft(ctx, e.Config.MaxTurns); err != nil || !allowed {
+		return err
+	}
+	return e.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
+		id := "continuation_" + w.ID
+		var exists int
+		if err := tx.QueryRow(`SELECT count(*) FROM work WHERE id=?`, id).Scan(&exists); err != nil || exists > 0 {
+			return err
+		}
+		var source string
+		if err := tx.QueryRow(`SELECT id FROM messages WHERE conversation_id=? ORDER BY seq DESC LIMIT 1`, c.ID).Scan(&source); err != nil {
+			return err
+		}
+		return insertWork(tx, Work{ID: id, ParentID: w.ID, RootID: rootOf(w), ConversationID: c.ID,
+			Kind: "followup", Autonomous: true, SourceID: source, Status: "pending", CreatedAt: now(), DueAt: time.Now().UnixMilli(),
+			Instruction: "上一次处理窗口结束后又有了消息。结合最新交流和自己的特质、状态与目标决定下一步。"})
+	})
+}
+
 func (s *Store) initProactivity() error {
 	// 增量迁移保留历史数据；SQLite 的 pragma 支持在旧数据库中检查已有列。
 	for _, col := range []struct{ table, name, definition string }{
@@ -106,7 +130,7 @@ AND NOT EXISTS(SELECT 1 FROM work w WHERE w.conversation_id=c.id AND (w.status I
 		return err
 	}
 	for _, r := range rooms {
-		w := Work{ID: newID("work"), ConversationID: r.id, Kind: "explore", Autonomous: true, Instruction: "这是一次稀疏的闲时自主机会。结合自己的兴趣、当前挂念、共同经历和真实进展，可以尝试一个具体小方向、自然分享，也可以安静结束。不要求延续最后一个话题；已经聊充分的内容不用重开，不催回复。想稍后再考虑一件具体事情时可安排 followup，不必每次都安排。", Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
+		w := Work{ID: newID("work"), ConversationID: r.id, Kind: "explore", Autonomous: true, Instruction: "这是一次闲时观察机会。结合自己的特质、当前关注、共同经历和实际进展决定下一步。", Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
 		if err := insertWork(tx, w); err != nil {
 			return err
 		}

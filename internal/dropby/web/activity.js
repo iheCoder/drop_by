@@ -8,6 +8,22 @@ function technicalRecord(value, key='technical') {
   return `<details class="technical-record" data-detail="${escapeHTML(key)}"><summary>技术详情</summary><pre>${escapeHTML(JSON.stringify(value,null,2))}</pre></details>`;
 }
 
+// 已读只影响本机提醒，不改动工作的失败状态或朋友动态里的历史。
+// 同一工作重试后再次失败，attempts/result 的变化会形成新的提醒。
+let readWorkNotices = {};
+try {
+  const saved=JSON.parse(localStorage.getItem('dropby-read-work-notices') || '{}');
+  if(saved && typeof saved==='object' && !Array.isArray(saved))readWorkNotices=saved;
+} catch { /* 已读缓存损坏时重新提示，聊天记录不受影响。 */ }
+const workNoticeVersion = w => JSON.stringify([w.status,w.attempts,w.result]);
+const unreadWorkNotice = w => readWorkNotices[w.id]!==workNoticeVersion(w);
+function markWorkNoticesRead(jobs) {
+  for(const w of jobs)readWorkNotices[w.id]=workNoticeVersion(w);
+  try { localStorage.setItem('dropby-read-work-notices',JSON.stringify(readWorkNotices)); }
+  catch { /* 禁止本机存储时，本次打开期间仍保持已读。 */ }
+  renderActivity();
+}
+
 function renderActivity() {
   const active=(state.activities || []).filter(a=>a.conversation_id===selected);
   $('activity').hidden=!active.length;
@@ -17,8 +33,8 @@ function renderActivity() {
   // 普通聊天的局部判断失败留在成员近况。只有当前交流确实没有任何回应、
   // 或具体后台工作需要处理时，才占用输入框上方的一行提示。
   const latest=jobs[0];
-  const noReply=latest && latest.kind==='chat' && latest.status==='failed' && !messages.some(m=>m.author_id!=='user' && m.author_id!=='system' && m.created_at>=latest.created_at);
-  const unfinished=jobs.find(w=>backgroundWork(w) && ['failed','paused'].includes(w.status));
+  const noReply=latest && latest.kind==='chat' && latest.status==='failed' && unreadWorkNotice(latest) && !messages.some(m=>m.author_id!=='user' && m.author_id!=='system' && m.created_at>=latest.created_at);
+  const unfinished=jobs.find(w=>backgroundWork(w) && ['failed','paused'].includes(w.status) && unreadWorkNotice(w));
   const notice=noReply ? '这次回应未生成 · 查看详情' : unfinished ? `${authorName(unfinished.member_id)}的${unfinished.kind==='revisit'?'后续':'工作'}${unfinished.status==='paused'?'已暂停':'未完成'} · 查看详情` : '';
   $('work-notice').hidden=!notice;
   $('work-notice').textContent=notice;
@@ -64,6 +80,7 @@ function showActivity(scroll=true) {
   const replyIssue=failedChat && ![...decisions.values()].some(p=>p.work_id===failedChat.id && p.action==='error') ? `<div class="reply-issue"><p>这次回应未生成，已有消息保留。</p><div class="activity-links">${sourceLink(failedChat.source_id)}<button class="quiet" data-action="continue-work" data-id="${escapeHTML(failedChat.id)}">接着聊 ${icon('arrow-up')}</button></div>${technicalRecord({reason:failedChat.result},'reply-error')}</div>` : '';
   const history=[...jobs.filter(w=>!current.includes(w)).slice(0,6).map(workEntry),...other.slice(0,12).map(actionRow)].join('');
   showPanel('朋友动态','',`<div class="activity-view"><h3 class="section-label">近况</h3>${people}${replyIssue}${current.length ? `<h3 class="section-label">后续安排</h3>${current.slice(0,12).map(workEntry).join('')}`:''}${meaningful.length ? `<h3 class="section-label">最近行动</h3>${meaningful.slice(0,12).map(actionRow).join('')}`:''}${history ? `<details class="activity-history" data-detail="history"><summary>查看其他记录 ${icon('chevron-down')}</summary>${history}</details>`:''}${!jobs.length && !meaningful.length ? '<p class="activity-empty">没有额外安排，接着聊就好。</p>':''}</div>`,'activity');
+  if(scroll) markWorkNoticesRead([...current.slice(0,12).filter(w=>['failed','paused'].includes(w.status)), ...(failedChat?[failedChat]:[])]);
   if(!scroll) {
     for(const d of content.querySelectorAll('details[data-detail]'))d.open=expanded.includes(d.dataset.detail);
     content.scrollTop=top;

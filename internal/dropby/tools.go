@@ -51,7 +51,7 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 		definition("cancel_work", "取消自己在当前聊天里已经安排、但现在不再需要的后续或研究；不能取消同伴的工作，自己的已结束工作会返回实际终态。先从已有工作中取真实 ID；用户改意或事情已解决时及时取消。", map[string]any{"id": textField("自己的待执行工作 ID")}, "id"),
 	}
 	if !c.ResearchPaused {
-		defs = append(defs, definition("schedule_followup", "给自己的一个具体挂念安排稍后重新考虑的机会。到时读取最新交流后可发言、行动、改意或安静，不预写必发消息；不是定时问候。", map[string]any{"instruction": textField("到时想重新考虑的具体事情"), "reason": textField("来自哪段交流、兴趣或真实进展"), "delay_seconds": map[string]any{"type": "integer", "minimum": 60, "maximum": 604800}, "due_at": textField("可选绝对时间，RFC3339且含时区，例如2026-11-08T09:00:00+08:00；与delay_seconds只选一个。一次定时，不是周期任务，服务需运行。")}, "instruction", "reason"))
+		defs = append(defs, definition("schedule_followup", "预约稍后检查某件事，例如邀请后是否有人回应、约定是否有进展。到期会读取最新消息和工作，再自行决定行动；服务需运行。", map[string]any{"instruction": textField("到时要核对的具体事情或相关消息，以及自己的打算"), "reason": textField("来自哪段交流、兴趣或真实进展"), "delay_seconds": map[string]any{"type": "integer", "minimum": 60, "maximum": 604800}, "due_at": textField("可选绝对时间，RFC3339且含时区，例如2026-11-08T09:00:00+08:00；与delay_seconds只选一个。一次定时，不是周期任务，服务需运行。")}, "instruction", "reason"))
 		defs = append(defs, definition("schedule_exploration", "安排可真正执行的低风险后台探索。明确方向与实际来由；与已有未完研究相同则不要重复安排。会在预算和运行上限内继续。", map[string]any{"instruction": textField("可用现有工具执行的具体方向，不是泛泛关注"), "reason": textField("来自什么兴趣、经历或新材料"), "delay_seconds": map[string]any{"type": "integer", "minimum": 10, "maximum": 86400}}, "instruction", "reason"))
 	}
 	// 本轮已看到的本人临时职责允许重复确认结束；Store 仍核对本人和事项。

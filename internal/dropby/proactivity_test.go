@@ -445,3 +445,71 @@ func TestExplicitResumeGetsNewExecutionRootWithoutOrdinaryReset(t *testing.T) {
 		t.Fatalf("explicit resume retained exhausted quota: %v", err)
 	}
 }
+
+// 执行窗口结束不等于讨论完成：最后的新消息有一次全群观察机会，
+// 但它不会获得新的自主配额，也不会因为没人说话而自行无限重试。
+func TestConversationContinuationSharesBudgetAndYieldsToUser(t *testing.T) {
+	for _, nextAction := range []string{"speak", "pass", "new_user"} {
+		t.Run(nextAction, func(t *testing.T) {
+			s, c, _ := fixture(t)
+			msg := userMessage(c, "一起聊聊这个问题")
+			if err := s.AddUserMessage(msg, time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			c, _ = s.Conversation(c.ID)
+			w := latestChatWork(t, s, c.ID)
+			w.Kind = "followup"
+			cfg := testConfig()
+			cfg.MaxTurns = 1
+			action := "speak"
+			e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+				if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
+					return jsonReply(Decision{Action: action, Intent: "表达自己的看法", Reason: "想聊这个话题"}), nil
+				}
+				return jsonReply(Outcome{Message: "我有个想法。"}), nil
+			}), cfg)
+			if err := e.process(context.Background(), w); err != nil {
+				t.Fatal(err)
+			}
+			next, err := s.ReadWork(c.ID, "continuation_"+w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			messages, _ := s.Messages(c.ID, 0, 10)
+			if next.MemberID != "" || next.SourceID != messages[len(messages)-1].ID || next.RootID != w.ID || !next.Autonomous {
+				t.Fatalf("续接没有保留全群现场与原预算: %+v", next)
+			}
+			// 重复完成同一窗口不产生第二个队列项。
+			if err = e.continueConversation(context.Background(), c, w); err != nil {
+				t.Fatal(err)
+			}
+			if nextAction == "new_user" {
+				if err = e.Submit(userMessage(c, "先别聊")); err != nil {
+					t.Fatal(err)
+				}
+				next, _ = s.ReadWork(c.ID, next.ID)
+				if next.Status != "superseded" {
+					t.Fatal("新真人消息未替换旧续接")
+				}
+				return
+			}
+			action = nextAction
+			if err = e.process(context.Background(), next); err != nil {
+				t.Fatal(err)
+			}
+			var grandchildren int
+			s.db.QueryRow(`SELECT count(*) FROM work WHERE parent_id=?`, next.ID).Scan(&grandchildren)
+			if grandchildren != 0 {
+				t.Fatal("全员沉默或自主配额已满仍继续排队")
+			}
+			messages, _ = s.Messages(c.ID, 0, 10)
+			want := 2
+			if action == "speak" {
+				want = 3
+			}
+			if len(messages) != want {
+				t.Fatalf("消息数量=%d，预期=%d", len(messages), want)
+			}
+		})
+	}
+}
