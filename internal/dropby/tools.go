@@ -374,7 +374,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		}
 		return t.cachedWeb(ctx, c.ID, path, body, func() (map[string]any, error) {
 			var out map[string]any
-			if err := t.webRequest(ctx, path, body, &out); err != nil {
+			if err := t.webRequest(withUsageCall(ctx, workUsage(call.Function.Name, m.ID, c, w)), path, body, &out); err != nil {
 				return nil, err
 			}
 			if path == "fetch" {
@@ -521,23 +521,28 @@ func (t *Toolbox) webRequest(ctx context.Context, path string, body, out any) er
 		return fmt.Errorf("尚未配置搜索服务，不能执行真实网页探索")
 	}
 	return retryRequest(ctx, func() error {
-		day, err := t.Store.ReserveContext(ctx, t.Config, t.Config.ToolCostMicros)
+		purpose, model := "read_page", "DeepSeek Fetch"
+		if path == "search" {
+			purpose, model = "search", "DeepSeek Search"
+		}
+		call, err := t.Store.reserveCall(ctx, t.Config, t.Config.ToolCostMicros, "DeepSeek", model, purpose)
 		if err != nil {
 			return err
 		}
+		defer t.Store.finishUsageCall(call)
 		var response map[string]any
 		err = requestJSON(ctx, &http.Client{Timeout: 45 * time.Second}, t.Config.SearchURL+"/"+path, t.Config.SearchKey, []byte(asJSON(body)), &response)
 		if err != nil {
 			var failure *requestFailure
 			// 收到供应商非成功状态可确认免费；断线或本地超时不能推断服务端结果。
 			if errors.As(err, &failure) && failure.Status != 0 {
-				if settleErr := t.Store.SettleContext(ctx, day, t.Config.ToolCostMicros, 0, 0, 0); settleErr != nil {
+				if settleErr := t.Store.settleCall(call, 0, responseUsage{}, "released"); settleErr != nil {
 					return settleErr
 				}
 			}
 			return err
 		}
-		cost := t.Config.ToolCostMicros
+		cost, outcome := t.Config.ToolCostMicros, ""
 		if path == "search" {
 			results, ok := response["results"].([]any)
 			if !ok {
@@ -554,6 +559,7 @@ func (t *Toolbox) webRequest(ctx context.Context, path string, body, out any) er
 			}
 			if len(results) == 0 {
 				cost = 0
+				outcome = "empty"
 			}
 		} else {
 			content, ok := response["content"].(string)
@@ -561,13 +567,13 @@ func (t *Toolbox) webRequest(ctx context.Context, path string, body, out any) er
 				return fmt.Errorf("网页响应缺少正文，计费结果未知")
 			}
 			if strings.TrimSpace(content) == "" {
-				if err := t.Store.SettleContext(ctx, day, t.Config.ToolCostMicros, 0, 0, 0); err != nil {
+				if err := t.Store.settleCall(call, 0, responseUsage{}, "empty"); err != nil {
 					return err
 				}
 				return fmt.Errorf("网页没有返回可用正文")
 			}
 		}
-		if err := t.Store.SettleContext(ctx, day, t.Config.ToolCostMicros, cost, 0, 0); err != nil {
+		if err := t.Store.settleCall(call, cost, responseUsage{}, outcome); err != nil {
 			return err
 		}
 		data, _ := json.Marshal(response)

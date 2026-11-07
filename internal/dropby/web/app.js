@@ -69,11 +69,6 @@ function budgetResetLabel() {
     return `${reset.toLocaleString('zh-CN', format)}（本地时间）`;
   }
 }
-function weeklyBudgetNote() {
-  const usage = state.usage || {}, reset = budgetResetLabel();
-  const dollars = value => (Number(value || 0) / 1e6).toFixed(2);
-  return `<p class="budget-note">本周估算 $${dollars(usage.cost_micros)} / $${dollars(state.weekly_budget_micros)}${usage.unsettled_micros > 0 ? `<br>其中待核实预留 $${dollars(usage.unsettled_micros)}（含在途请求）` : ''}${usage.week_start ? `<br>本周从 ${escapeHTML(String(usage.week_start).split('T')[0])} 开始` : ''}${reset ? `<br>额度重置 ${escapeHTML(reset)}` : ''}</p>`;
-}
 
 // Markdown 先解析再用本地 DOMPurify 白名单清洗。聊天不是 HTML 执行环境；
 // 图片、表单和内联脚本不会被带入宿主页，作品页面仍走独立 sandbox 预览。
@@ -121,6 +116,7 @@ async function refresh() {
     const banner = !state.model_ready ? '聊天服务暂未连接，仍可以查看记录和编辑朋友资料。' : state.budget_blocked ? '可用额度暂时不足，进展已保留。恢复后会继续，也可以在个人中心查看。' : !state.search_ready ? '网页探索暂未接通，聊天和本地创作仍可使用。' : '';
     $('service-banner').textContent = banner; $('service-banner').hidden = !banner;
     if (workspaceView === 'account') updateAccountUsage();
+    if (workspaceView === 'usage') refreshUsageAnalysis();
     if (!selected || !state.conversations.some(c => c.id === selected)) selected = state.conversations[0]?.id || '';
     if (selected) await loadConversation(selected, true); else renderWelcome();
   } catch (error) { toast(error.message); }

@@ -1,0 +1,138 @@
+/* 额度详情仍是个人中心的下一层。沿用浮光对话框，桌面只为图表稍微加宽。 */
+.workspace-page[data-view="usage"] { width:min(550px,calc(100vw - 32px)); }
+.workspace-page[data-view="usage"] .workspace-header { gap:8px; }
+.workspace-page[data-view="usage"] .workspace-content { padding:19px 26px 24px; }
+#usage-back,.usage-date .icon-button { width:34px; height:34px; flex:0 0 auto; }
+#usage-back .icon,.usage-date .icon { width:17px; height:17px; }
+.usage-date [data-value="-1"] .icon { transform:rotate(180deg); }
+.usage-date .icon-button:disabled { opacity:.38; cursor:default; background:transparent; }
+
+.usage-entry {
+  width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px;
+  min-height:40px; margin-top:10px; padding:8px 0 0; border:0; border-top:1px solid var(--line);
+  color:var(--blue-hover); background:none; font-size:13px; font-weight:600;
+}
+.usage-entry:hover { color:var(--ink); }
+.usage-entry .icon { width:16px; height:16px; }
+
+.usage-analysis { color:var(--ink); font-variant-numeric:tabular-nums; }
+.usage-analysis h2,.usage-analysis h3,.usage-analysis p,.usage-analysis dl,.usage-analysis dd { margin:0; }
+.usage-period,.usage-section-head,.usage-error {
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;
+}
+.usage-date { display:flex; align-items:center; gap:2px; }
+.usage-date b { font-size:13px; font-weight:600; white-space:nowrap; }
+.usage-segment {
+  display:inline-flex; align-items:center; gap:1px; padding:3px; background:#e6f1f2; border-radius:20px;
+}
+.usage-segment button {
+  border:0; color:var(--muted); background:transparent; border-radius:18px; padding:4px 11px;
+  font-size:12px; min-height:30px; white-space:nowrap;
+}
+.usage-segment button:hover { color:var(--blue-hover); }
+.usage-segment button[aria-pressed="true"] {
+  background:#fff; color:var(--blue-hover); font-weight:600; box-shadow:0 1px 3px rgb(31 63 73 / 11%);
+}
+
+.usage-summary { margin:20px 0 19px; color:var(--muted); font-size:13px; }
+.usage-summary strong {
+  display:block; font-size:36px; font-weight:650; line-height:1.18; letter-spacing:-.9px; margin:4px 0 5px; color:var(--ink);
+}
+.usage-muted,.usage-notice { color:var(--muted); font-size:12px; line-height:1.65; }
+.usage-analysis .usage-notice { padding:10px 0; }
+.usage-title { font-size:15px; font-weight:650; }
+.usage-chart { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:4px; position:relative; margin:10px 0 1px; }
+.usage-chart.is-day { grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+.usage-chart::before { content:""; position:absolute; bottom:24px; inset-inline:0; height:1px; background:var(--line); pointer-events:none; }
+.usage-column {
+  display:grid; grid-template-rows:17px 70px 21px; gap:3px; align-items:end; justify-items:center; min-width:0; width:100%;
+  border:0; background:none; color:var(--muted); padding:3px 0 2px; font-size:12px; border-radius:9px;
+}
+button.usage-column:hover:enabled { background:#e8f3f3; }
+button.usage-column:disabled { cursor:default; }
+button.usage-column:disabled b,button.usage-column:disabled span { color:var(--muted); }
+.usage-column b { max-width:100%; overflow:hidden; text-overflow:ellipsis; font-size:11px; font-weight:600; white-space:nowrap; color:var(--ink); }
+.usage-column i { height:var(--height); width:min(54%,30px); border-radius:5px 5px 1px 1px; background:#a8cdce; }
+.usage-column.is-peak i { background:var(--blue); }
+.usage-chart.is-day .usage-column i { width:min(55%,40px); }
+
+/* 用空间和细分隔线划分三段，避免把统计内容重新做成一组拥挤的卡片。 */
+.usage-section { border-top:1px solid var(--line); margin-top:20px; padding-top:16px; }
+.usage-ranking { display:grid; margin-top:9px; }
+.usage-rank {
+  display:grid; grid-template-columns:minmax(0,1.2fr) minmax(24px,1fr) minmax(54px,auto);
+  gap:12px; align-items:center; min-height:38px; width:100%; text-align:left; padding:4px 6px; border-radius:8px;
+  color:var(--ink); border:0; background:transparent; font-size:13px;
+}
+.usage-rank:hover,.usage-rank[aria-pressed="true"] { background:#e6f1f2; }
+.usage-rank b { font-weight:600; text-align:right; }
+.usage-rank-name { display:flex; align-items:center; gap:8px; min-width:0; }
+.usage-rank-name > span:last-child { overflow-wrap:anywhere; }
+.usage-mini { height:6px; border-radius:8px; overflow:hidden; background:#e6f1f2; }
+.usage-mini i { display:block; height:100%; border-radius:8px; background:#78adaf; }
+.usage-analysis .avatar.small { width:25px; height:25px; border-radius:50%; }
+.usage-analysis .avatar.usage-shared { background:#e6f1f2; color:var(--blue-hover); }
+.usage-analysis .avatar.usage-shared .icon { width:15px; height:15px; }
+
+.usage-pill {
+  display:inline-flex; align-items:center; justify-content:center; gap:5px; min-height:32px; padding:3px 10px;
+  border:1px solid var(--line); border-radius:20px; color:var(--ink); background:rgb(255 255 255 / 50%);
+  font-size:12px; line-height:1.45;
+}
+.usage-pill:hover { background:#e6f1f2; }
+.usage-pill .icon { width:14px; height:14px; flex:0 0 auto; }
+.usage-pill[aria-expanded="true"] .icon { transform:rotate(180deg); }
+.usage-filters {
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(115px,1fr)); gap:10px;
+  padding:12px; margin-top:9px; border-radius:13px; background:#edf5f6;
+}
+.usage-filter-field { display:grid; gap:4px; min-width:0; font-size:12px; color:var(--muted); }
+.usage-filters select {
+  width:100%; min-height:36px; padding:4px 7px; border:1px solid #cbdfe1; border-radius:9px; background:var(--surface);
+  color:var(--ink); font-size:13px;
+}
+.usage-chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.usage-chips .usage-pill { background:#e6f1f2; color:var(--blue-hover); max-width:100%; overflow-wrap:anywhere; }
+.usage-analysis .usage-ledger-count { margin:5px 0 10px; }
+.usage-record { border-top:1px solid var(--line); }
+.usage-record summary {
+  display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center; gap:9px;
+  min-height:53px; list-style:none; padding:8px 2px; cursor:pointer;
+}
+.usage-record summary::-webkit-details-marker { display:none; }
+.usage-record summary:hover { background:#edf5f6; }
+.usage-record summary strong { display:block; font-size:13px; font-weight:600; }
+.usage-record summary small { display:block; font-size:11px; color:var(--muted); overflow-wrap:anywhere; }
+.usage-record summary b { font-size:12px; font-weight:600; white-space:nowrap; }
+.usage-record summary > .icon { width:14px; height:14px; }
+.usage-record[open] summary > .icon { transform:rotate(180deg); }
+.usage-record-body { display:grid; gap:8px; justify-items:start; margin-bottom:9px; padding:10px 12px; border-radius:10px; background:#edf5f6; }
+.usage-record dl { display:grid; gap:4px; }
+.usage-record dl > div { display:grid; grid-template-columns:68px minmax(0,1fr); gap:8px; font-size:12px; }
+.usage-record dt { color:var(--muted); }
+.usage-record dd { overflow-wrap:anywhere; }
+.usage-pending { color:#715d38; }
+.usage-more { display:flex; margin:12px auto 0; }
+.usage-history { margin-top:14px; padding:12px; border-radius:10px; background:#edf5f6; }
+.usage-history h3 { font-size:13px; margin-bottom:3px; }
+.usage-history-day { display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; padding-top:5px; font-size:12px; }
+.usage-error { margin-bottom:12px; font-size:13px; color:var(--muted); }
+
+@media (max-width:760px) {
+  .workspace-page[data-view="usage"] { width:min(550px,calc(100vw - 24px)); }
+}
+@media (max-width:440px) {
+  .workspace-page[data-view="usage"] .workspace-content { padding:15px 15px 20px; }
+  .workspace-page[data-view="usage"] .workspace-header { padding-inline:13px; }
+  .usage-segment button { padding-inline:8px; }
+  .usage-chart { gap:1px; }
+  .usage-chart.is-day { gap:3px; }
+  .usage-column { font-size:11px; }
+  .usage-column b { font-size:10px; }
+  .usage-rank { gap:8px; }
+}
+@media (pointer:coarse) {
+  .usage-date .icon-button,#usage-back { width:44px; height:44px; }
+  .usage-segment button,.usage-rank,.usage-pill,.usage-filters select { min-height:44px; }
+  .usage-filters select { font-size:16px; }
+}

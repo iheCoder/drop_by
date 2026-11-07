@@ -89,10 +89,15 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 	}
 	defer conn.CloseNow()
 	conn.SetReadLimit(-1) // 容量由模型请求边界管理，不另设截断工具正文的 WebSocket 大小限制。
-	day, err := m.Store.ReserveContext(ctx, m.Config, reserve)
+	call, err := m.Store.reserveCall(ctx, m.Config, reserve, "OpenAI", m.Config.Model, "")
 	if err != nil {
 		return modelResult{}, &modelAccountingError{err}
 	}
+	var queuedCall usageReservation
+	defer func() {
+		m.Store.finishUsageCall(call)
+		m.Store.finishUsageCall(queuedCall)
+	}()
 	var request map[string]any
 	if err = json.Unmarshal(raw, &request); err != nil {
 		return modelResult{}, err
@@ -130,8 +135,7 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 			}
 		}
 	}()
-	var responseID, queuedDay string
-	var queuedReserve int64
+	var responseID string
 	var queued []Message
 	sent := map[string]bool{}
 	active := false
@@ -159,10 +163,10 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 		// 自动续接也会计费，必须在触发它之前获得预算；额度不足时留到普通接续。
 		// 续接包含上一响应及追加原文，预留不能重复使用首次短输入的金额。
 		inputEstimate += m.Config.MaxOutputTokens + len(asJSON(batch))
-		queuedReserve = price.reserveMicros(inputEstimate, m.Config.MaxOutputTokens)
-		queuedDay, err = m.Store.ReserveContext(ctx, m.Config, queuedReserve)
+		queuedReserve := price.reserveMicros(inputEstimate, m.Config.MaxOutputTokens)
+		queuedCall, err = m.Store.reserveCall(ctx, m.Config, queuedReserve, "OpenAI", m.Config.Model, "")
 		if err != nil {
-			queuedDay = ""
+			queuedCall = usageReservation{}
 			return nil
 		}
 		queued = batch
@@ -200,8 +204,8 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 						*chain = append(*chain, completed.Message, ChatMessage{Role: "user", Content: "真人追加的消息：" + asJSON(queued)})
 					}
 					applied = append(applied, queued...)
-					day, queuedDay = queuedDay, ""
-					reserve = queuedReserve
+					m.Store.finishUsageCall(call)
+					call, queuedCall = queuedCall, usageReservation{}
 					queued = nil
 					completed = nil
 				}
@@ -222,7 +226,7 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 					if err != nil {
 						return modelResult{}, err
 					}
-					if err = m.Store.SettleContext(ctx, day, reserve, actual, result.Usage.InputTokens, result.Usage.OutputTokens); err != nil {
+					if err = m.Store.settleCall(call, actual, result.Usage, result.usageOutcome(ctx)); err != nil {
 						return modelResult{}, &modelAccountingError{err}
 					}
 				}
@@ -239,7 +243,7 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 				// 工具调用必须交由客户端执行，不能等待一个尚缺 tool output 的自动响应。
 				// 此时后续尚未启动，释放它的预留；原工具响应仍完整返回，不重演已经完成的工具。
 				if len(result.Message.ToolCalls) > 0 {
-					if err = m.Store.SettleContext(ctx, queuedDay, queuedReserve, 0, 0, 0); err != nil {
+					if err = m.Store.settleCall(queuedCall, 0, responseUsage{}, "released"); err != nil {
 						return modelResult{}, err
 					}
 					return result, nil
@@ -248,12 +252,12 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 					return result, fmt.Errorf("模型本次未完成输出")
 				}
 			case "response.steer.failed":
-				if queuedDay != "" {
-					if err = m.Store.SettleContext(ctx, queuedDay, queuedReserve, 0, 0, 0); err != nil {
+				if queuedCall.id != 0 {
+					if err = m.Store.settleCall(queuedCall, 0, responseUsage{}, "released"); err != nil {
 						return modelResult{}, err
 					}
 				}
-				queued, queuedDay = nil, ""
+				queued, queuedCall = nil, usageReservation{}
 				if completed != nil {
 					return *completed, nil
 				}

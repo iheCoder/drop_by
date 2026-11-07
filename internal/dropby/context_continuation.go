@@ -83,10 +83,11 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 		return nil, 0, nil, err
 	}
 	reserve := price.reserveMicros(count, m.Config.MaxOutputTokens)
-	day, err := m.Store.ReserveContext(ctx, m.Config, reserve)
+	call, err := m.Store.reserveCall(ctx, m.Config, reserve, "OpenAI", m.Config.Model, "compact")
 	if err != nil {
 		return nil, 0, nil, &modelAccountingError{err}
 	}
+	defer m.Store.finishUsageCall(call)
 	var compacted struct {
 		Output []json.RawMessage `json:"output"`
 		Usage  responseUsage     `json:"usage"`
@@ -99,7 +100,7 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 		if costErr != nil {
 			return nil, 0, nil, costErr
 		}
-		if err = m.Store.SettleContext(ctx, day, reserve, actual, compacted.Usage.InputTokens, compacted.Usage.OutputTokens); err != nil {
+		if err = m.Store.settleCall(call, actual, compacted.Usage, ""); err != nil {
 			return nil, 0, nil, &modelAccountingError{err}
 		}
 	}

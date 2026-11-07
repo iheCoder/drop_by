@@ -60,6 +60,12 @@ func TestWebCacheExactRequestsAndAccounting(t *testing.T) {
 	if requests.Load() != 1 || usage.CostMicros != cfg.ToolCostMicros {
 		t.Fatalf("requests=%d usage=%+v", requests.Load(), usage)
 	}
+	start, end := budgetWeek(time.Now())
+	report, err := s.readUsageReport(context.Background(), start, end, time.Now())
+	if err != nil || len(report.Entries) != 1 || report.Entries[0].Provider != "DeepSeek" ||
+		report.Entries[0].Purpose != "search" || report.Entries[0].MemberID != members[0].ID || report.Entries[0].ConversationID != c.ID {
+		t.Fatalf("缓存命中不重复入账，费用属于发出外部请求的成员: %+v %v", report, err)
+	}
 	runs, err := s.ToolRuns(c.ID, "")
 	if err != nil || len(runs) != 2 {
 		t.Fatalf("each member needs record: %v %v", runs, err)

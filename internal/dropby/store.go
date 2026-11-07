@@ -91,6 +91,10 @@ CREATE TABLE IF NOT EXISTS usage(day TEXT PRIMARY KEY, calls INTEGER NOT NULL DE
 		db.Close()
 		return nil, err
 	}
+	if err = s.initUsageCalls(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err = s.initCoordination(); err != nil {
 		db.Close()
 		return nil, err

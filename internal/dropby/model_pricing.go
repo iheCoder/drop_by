@@ -51,6 +51,9 @@ type responseUsage struct {
 			TwelveHours   int `json:"ttl_12h_tokens"`
 		} `json:"cache_write_tokens_details"`
 	} `json:"input_tokens_details"`
+	OutputDetails struct {
+		ReasoningTokens *int `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 func (u responseUsage) costMicros(p modelPrice) (int64, error) {

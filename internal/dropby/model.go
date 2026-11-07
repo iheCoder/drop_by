@@ -112,8 +112,14 @@ func (s *Store) ReserveContext(ctx context.Context, c Config, cost int64) (strin
 }
 
 func (s *Store) reserveContextAt(ctx context.Context, c Config, cost int64, at time.Time) (string, error) {
+	reservation, err := s.reserveBudget(ctx, c, cost, at, nil)
+	return reservation.day, err
+}
+
+func (s *Store) reserveBudget(ctx context.Context, c Config, cost int64, at time.Time, call *usageCall) (usageReservation, error) {
 	at = at.In(time.Local)
 	day := at.Format("2006-01-02")
+	reservation := usageReservation{day: day}
 	start, end := budgetWeek(at)
 	autonomous := autonomyRoot(ctx) != ""
 	var autoCost int64
@@ -121,36 +127,43 @@ func (s *Store) reserveContextAt(ctx context.Context, c Config, cost int64, at t
 		autoCost = cost
 	}
 	if cost < 0 {
-		return day, fmt.Errorf("预算预留不能为负数")
+		return reservation, fmt.Errorf("预算预留不能为负数")
 	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return day, err
+		return reservation, err
 	}
 	defer tx.Rollback()
 	// 先持有写事务，避免多个调用先读到同一个旧余额再各自获准。
 	if _, err = tx.Exec(`INSERT OR IGNORE INTO usage(day) VALUES(?)`, day); err != nil {
-		return day, err
+		return reservation, err
 	}
 	var total int64
 	if err = tx.QueryRow(`SELECT coalesce(sum(cost_micros),0) FROM usage WHERE day>=? AND day<?`, start.Format("2006-01-02"), end.Format("2006-01-02")).Scan(&total); err != nil {
-		return day, err
+		return reservation, err
 	}
 
 	// 只有一个总额度；预留不足与已用完分别反馈。
 	reset := end.Format("1月2日 15:04 MST")
 	remaining := max(int64(0), c.weeklyBudgetAt(at)-total)
 	if remaining == 0 {
-		return day, &budgetRejection{required: cost, message: fmt.Sprintf("本周 $%.2f 运行预算已用完，未完工作已保留，%s 恢复。", float64(c.weeklyBudgetAt(at))/1e6, reset)}
+		return reservation, &budgetRejection{required: cost, message: fmt.Sprintf("本周 $%.2f 运行预算已用完，未完工作已保留，%s 恢复。", float64(c.weeklyBudgetAt(at))/1e6, reset)}
 	}
 	if cost > remaining {
-		return day, &budgetRejection{required: cost, message: fmt.Sprintf("本周可用预算还剩 $%.3f，本次调用需预留 $%.3f，暂时无法开始；未完工作已保留，%s 恢复周额度。", float64(remaining)/1e6, float64(cost)/1e6, reset)}
+		return reservation, &budgetRejection{required: cost, message: fmt.Sprintf("本周可用预算还剩 $%.3f，本次调用需预留 $%.3f，暂时无法开始；未完工作已保留，%s 恢复周额度。", float64(remaining)/1e6, float64(cost)/1e6, reset)}
 	}
 	if _, err = tx.Exec(`UPDATE usage SET calls=calls+1,cost_micros=cost_micros+?,autonomous_cost_micros=autonomous_cost_micros+?,unsettled_micros=unsettled_micros+? WHERE day=?`, cost, autoCost, cost, day); err != nil {
-		return day, err
+		return reservation, err
 	}
-	return day, tx.Commit()
+	// 总账与单笔记录一同提交，避免请求已占用额度却没有可追溯的明细。
+	if call != nil {
+		reservation.id, err = insertUsageCall(tx, *call, day, at, cost, autonomous)
+		if err != nil {
+			return reservation, err
+		}
+	}
+	return reservation, tx.Commit()
 }
 
 func (s *Store) Settle(day string, reserved, actual int64, input, output int) error {
@@ -161,7 +174,7 @@ func (s *Store) SettleContext(ctx context.Context, day string, reserved, actual 
 	if autonomyRoot(ctx) != "" {
 		autoDelta = actual - reserved
 	}
-	_, e := s.db.Exec(`UPDATE usage SET cost_micros=max(0,cost_micros-?+?),autonomous_cost_micros=max(0,autonomous_cost_micros+?),input_tokens=input_tokens+?,output_tokens=output_tokens+?,unsettled_micros=max(0,unsettled_micros-?) WHERE day=?`, reserved, actual, autoDelta, input, output, reserved, day)
+	_, e := s.db.Exec(settleDailyUsage, reserved, actual, autoDelta, input, output, reserved, day)
 	return e
 }
 
@@ -180,6 +193,29 @@ type modelResult struct {
 	Message    ChatMessage
 	Usage      responseUsage
 	Incomplete bool
+}
+
+// 只描述供应商响应的形态。生成正文并不等同于发布，非成员调用也不猜测内部决策。
+func (r modelResult) usageOutcome(ctx context.Context) string {
+	if r.Incomplete {
+		return "incomplete"
+	}
+	if len(r.Message.ToolCalls) > 0 {
+		return "tool_calls"
+	}
+	call, _ := ctx.Value(usageCallKey{}).(usageCall)
+	if call.purpose == "chat" || call.purpose == "research" {
+		var out struct {
+			Message string `json:"message"`
+		}
+		if parseJSON(r.Message.Content, &out) == nil {
+			if strings.TrimSpace(out.Message) == "" {
+				return "no_message"
+			}
+			return "generated_message"
+		}
+	}
+	return ""
 }
 
 func (m *HTTPModel) Complete(ctx context.Context, messages []ChatMessage, defs []ToolDefinition, jsonOutput bool) (ChatMessage, error) {
@@ -247,10 +283,11 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 		response, e = m.steeredResponse(ctx, encoded, price, reserve, inputEstimate, steering, chain)
 	} else {
 		e = retryRequest(ctx, func() error {
-			day, err := m.Store.ReserveContext(ctx, m.Config, reserve)
+			call, err := m.Store.reserveCall(ctx, m.Config, reserve, "OpenAI", m.Config.Model, "")
 			if err != nil {
 				return &modelAccountingError{err}
 			}
+			defer m.Store.finishUsageCall(call)
 			response, err = m.responses(ctx, encoded)
 			if err != nil {
 				return err
@@ -260,7 +297,7 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 				if err != nil {
 					return err
 				}
-				if err = m.Store.SettleContext(ctx, day, reserve, actual, response.Usage.InputTokens, response.Usage.OutputTokens); err != nil {
+				if err = m.Store.settleCall(call, actual, response.Usage, response.usageOutcome(ctx)); err != nil {
 					return &modelAccountingError{err}
 				}
 			}
@@ -357,6 +394,9 @@ func parseJSON(raw string, out any) error {
 }
 
 func CreateQuestions(ctx context.Context, m Model, direction string) ([]Question, error) {
+	call, _ := ctx.Value(usageCallKey{}).(usageCall)
+	call.purpose = "preferences"
+	ctx = withUsageCall(ctx, call)
 	var out struct {
 		Questions []Question `json:"questions"`
 	}
@@ -375,6 +415,7 @@ func CreateQuestions(ctx context.Context, m Model, direction string) ([]Question
 	return out.Questions, nil
 }
 func CompleteMember(ctx context.Context, model Model, m Member) (Member, error) {
+	ctx = withUsageCall(ctx, usageCall{purpose: "preferences", member: m.ID})
 	var out struct {
 		Profile string   `json:"profile"`
 		Tools   []string `json:"tools"`

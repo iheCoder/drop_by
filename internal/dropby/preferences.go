@@ -328,7 +328,8 @@ func (a *API) memberQuestion(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	qs, err := CreateQuestions(r.Context(), a.engine.Model, m.Profile)
+	ctx := withUsageCall(r.Context(), usageCall{member: m.ID, room: c.ID})
+	qs, err := CreateQuestions(ctx, a.engine.Model, m.Profile)
 	if err != nil {
 		a.fail(w, err)
 		return

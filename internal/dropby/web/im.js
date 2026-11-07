@@ -10,8 +10,11 @@ function showWorkspace(title, description, body, view = '') {
   } else workspaceInvoker = $('person-popover').contains(document.activeElement) ? personAnchor : document.activeElement;
   closeTransient(); rememberDraft(); closePanel();
   workspaceView = view;
+  $('workspace-page').dataset.view = view;
+  $('usage-back').hidden = view !== 'usage';
   $('workspace-title').textContent = title;
   $('workspace-content').innerHTML = `${description ? `<p class="workspace-description">${escapeHTML(description)}</p>` : ''}${body}`;
+  $('workspace-content').scrollTop = 0;
   $('workspace-page').hidden = false;
   if (!$('workspace-page').open) $('workspace-page').showModal();
   document.querySelector('.app').classList.add('workspace-open');
@@ -74,15 +77,17 @@ function editGroup() {
 }
 function accountUsage() {
   const usage=state.usage || {}, total=Number(state.weekly_budget_micros || 0), used=Number(usage.cost_micros || 0);
-  const dollars=value=>(value/1e6).toFixed(2);
-  return `<div class="account-usage-heading"><h2>本周额度</h2><span>${state.budget_blocked?'暂时不足':'可用'}</span></div><p class="account-balance"><strong>$${dollars(Math.max(0,total-used))}</strong><span>剩余 / $${dollars(total)}</span></p><progress value="${Math.min(used,total)}" max="${total || 1}" aria-label="本周已使用额度"></progress><p class="account-usage-note">已使用约 $${dollars(used)}${budgetResetLabel()?` · ${escapeHTML(budgetResetLabel())} 重置`:''}</p><details class="usage-details"><summary>查看使用详情</summary>${weeklyBudgetNote()}<p>金额按请求用量估算，正在处理的请求会先预留额度，完成后结算。</p></details>`;
+  const reserved=Number(usage.unsettled_micros || 0);
+  const reset=budgetResetLabel();
+  return `<div class="account-usage-heading"><h2>本周额度</h2><span>${state.budget_blocked?'暂时不足':'可用'}</span></div><p class="account-balance"><strong>${usageMoney(Math.max(0,total-used),2)}</strong><span>剩余 / ${usageMoney(total,2)}</span></p><progress value="${Math.min(used,total)}" max="${total || 1}" aria-label="本周已占用额度"></progress><p class="account-usage-note">已花约 ${usageMoney(used-reserved)}${reserved ? ` · 暂占额度 ${usageMoney(reserved)}` : ''}${reset ? `<br>${escapeHTML(reset)} 重置` : ''}</p><button id="account-usage-entry" type="button" class="usage-entry" data-action="usage-open">额度分析 ${icon('chevron-right')}</button>`;
 }
 function updateAccountUsage() {
   const section=$('account-usage'); if(!section) return;
   const signature=JSON.stringify([state.usage,state.budget_blocked,state.weekly_budget_micros]);
   if(section.dataset.signature===signature) return;
-  const open=section.querySelector('details')?.open; section.innerHTML=accountUsage(); section.dataset.signature=signature;
-  section.querySelector('details').open=Boolean(open);
+  const focused=document.activeElement===$('account-usage-entry');
+  section.innerHTML=accountUsage(); section.dataset.signature=signature;
+  if (focused) $('account-usage-entry').focus({preventScroll:true});
 }
 function account() {
   const p=state.profile || {name:'你'};

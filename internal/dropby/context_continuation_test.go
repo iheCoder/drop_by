@@ -116,6 +116,11 @@ func TestNativeCompactionPreservesCoreProtocolAndContinuesFromReturnedWindow(t *
 	if usage.Calls != 3 || usage.InputTokens != 10200 || usage.CostMicros != 16500 {
 		t.Fatalf("压缩和生成都应结算，计数不当作生成: %+v", usage)
 	}
+	start, end := budgetWeek(time.Now())
+	report, err := s.readUsageReport(context.Background(), start, end, time.Now())
+	if err != nil || len(report.Entries) != 3 || report.Entries[2].Purpose != "compact" || report.Entries[2].CostMicros != 13700 {
+		t.Fatalf("应能单独查到压缩费用，计数不进入明细: %+v %v", report, err)
+	}
 }
 
 func TestCountingFailurePreservesChainAndIsRecoverable(t *testing.T) {

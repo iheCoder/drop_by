@@ -30,6 +30,7 @@ func NewHandler(engine *Engine) http.Handler {
 	a := &API{engine: engine}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", a.state)
+	mux.HandleFunc("GET /api/usage", a.usageDetails)
 	mux.HandleFunc("PATCH /api/profile", a.userProfile)
 	mux.HandleFunc("PATCH /api/conversations/{id}", a.updateGroup)
 	mux.HandleFunc("POST /api/member-questions", a.questions)

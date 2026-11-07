@@ -113,7 +113,11 @@ document.addEventListener('pointerup',e=>{
   }
 });
 document.addEventListener('pointercancel',()=>{outsidePanelPress=null;});
-$('workspace-page').addEventListener('cancel',e=>{e.preventDefault();closeWorkspace(true);});
+$('workspace-page').addEventListener('cancel',e=>{
+  // 文件选择器的取消也会从 input 冒泡；它只结束选文件，编辑内容继续保留。
+  if(e.target!==e.currentTarget)return;
+  e.preventDefault();closeWorkspace(true);
+});
 $('workspace-page').addEventListener('click',e=>{
   if(e.target!==$('workspace-page'))return;
   const r=e.target.getBoundingClientRect();

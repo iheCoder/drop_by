@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // 同一份用量包含普通输入、缓存读取、缓存写入与输出；人工算出的美元金额
@@ -94,6 +95,17 @@ func TestRoleModelsSettleTheirOwnPrices(t *testing.T) {
 			}
 			if usage.CostMicros != 100+tc.want || usage.AutonomousCostMicros != tc.want || usage.InputTokens != 1007 || usage.OutputTokens != 103 {
 				t.Fatalf("总账/自主账/历史用量错误: %+v", usage)
+			}
+			// 响应的原生用量在逐笔明细中保留。推理是输出中的一部分，只显示一次。
+			start, end := budgetWeek(time.Now())
+			report, err := s.readUsageReport(ctx, start, end, time.Now())
+			if err != nil || len(report.Entries) != 1 {
+				t.Fatalf("请求应对应一笔明细: %+v %v", report, err)
+			}
+			entry := report.Entries[0]
+			if entry.Model != tc.model || entry.CostMicros != tc.want || entry.CachedTokens != 400 || entry.CacheWrite != 200 ||
+				entry.ReasoningTokens == nil || *entry.ReasoningTokens != 60 || !entry.Autonomous {
+				t.Fatalf("模型与用量归属错误: %+v", entry)
 			}
 		})
 	}
