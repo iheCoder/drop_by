@@ -209,10 +209,10 @@ func (e *Engine) recallDecision(ctx context.Context, c Conversation, m Member, w
 		compactToolHistory(messages)
 		r, err := completeModel(ctx, e.Model, &messages, defs, step == 3)
 		if err != nil {
-			return err
+			return memberDecisionError(err)
 		}
 		if len(r.ToolCalls) == 0 {
-			return parseJSON(r.Content, out)
+			return memberDecisionError(parseJSON(r.Content, out))
 		}
 		if step == 3 || len(r.ToolCalls) > 4 {
 			return ErrRunLimit
@@ -220,7 +220,7 @@ func (e *Engine) recallDecision(ctx context.Context, c Conversation, m Member, w
 		messages = append(messages, r)
 		for _, call := range r.ToolCalls {
 			if !recallTool(call.Function.Name) {
-				return fmt.Errorf("参与判断阶段不能执行 %s", call.Function.Name)
+				return memberDecisionError(fmt.Errorf("参与判断阶段不能执行 %s", call.Function.Name))
 			}
 			result, err := e.Tools.Execute(ctx, c, m, w, call)
 			if err != nil {

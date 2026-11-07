@@ -402,8 +402,23 @@ func (a *API) conversation(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	// 列表只传动作摘要；完整结果按 ID 打开，避免 SSE 每次刷新重传所有网页正文。
+	// 展示文案从真实记录派生；执行指令和工具成功不能直接当作用户进度。
+	// 完整结果仍按 ID 打开，避免 SSE 每次刷新重传网页或作品正文。
+	for i := range jobs {
+		display, err := a.engine.Store.workSummary(jobs[i])
+		if err != nil {
+			a.fail(w, err)
+			return
+		}
+		jobs[i].Display = &display
+	}
 	for i := range runs {
+		display, err := a.engine.Store.actionSummary(runs[i])
+		if err != nil {
+			a.fail(w, err)
+			return
+		}
+		runs[i].Display = &display
 		runs[i].Result = ""
 	}
 	memberStates, err := a.engine.Store.MemberStates(c.ID)
@@ -494,6 +509,12 @@ func (a *API) toolRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run.Arguments = json.RawMessage(args)
+	display, err := a.engine.Store.actionSummary(run)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	run.Display = &display
 	respond(w, 200, run)
 }
 func (a *API) events(w http.ResponseWriter, r *http.Request) {

@@ -508,6 +508,11 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 			}
 			waiting, waveSeq, err = e.observeMembers(ctx, c, w, turn)
 			if err != nil {
+				// 已发出的回复独立成立。后续判断全部失败时保留逐人成因，
+				// 结束这次机会，不把已经完成的交流改成一场失败的行动。
+				if published > 0 && isParticipationFailure(err) {
+					return nil
+				}
 				return err
 			}
 			if len(waiting) == 0 {
@@ -526,7 +531,13 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 			if latest > candidate.SeenSeq {
 				candidate = e.observeMember(ctx, c, w, m.ID, turn, &candidate)
 				if candidate.Err != nil {
-					return candidate.Err
+					if recordErr := e.recordParticipation(w, candidate, false); recordErr != nil {
+						return recordErr
+					}
+					if !isParticipationFailure(candidate.Err) || (published == 0 && len(waiting) == 0) {
+						return candidate.Err
+					}
+					continue
 				}
 				decision = candidate.Decision
 			}
@@ -695,7 +706,8 @@ func (e *Engine) observeMember(ctx context.Context, c Conversation, w Work, id s
 		input["earlier_intention"] = previous.Decision
 		input["earlier_seen_through_seq"] = previous.SeenSeq
 	}
-	err = e.recallDecision(ctx, c, m, w, memberPrinciples+`\n此时只决定自己的下一步，不能替其他成员作决定。在给出最终判断前，先处理自己需要保留或纠正的经历。remember 是安静整理自己的理解，不是公开回复，也不是预约后续；不能因决定 pass、任务已完成或用户不想要额外回应就跳过值得保留的约定。
+	prompt := memberPrinciples + `
+此时只决定自己的下一步，不能替其他成员作决定。在给出最终判断前，先处理自己需要保留或纠正的经历。remember 是安静整理自己的理解，不是公开回复，也不是预约后续；不能因决定 pass、任务已完成或用户不想要额外回应就跳过值得保留的约定。
 你读的是一段多人交流，不是一组等待逐条答复的问题。从自己的性格、此刻在意的事、已有经历/行动和群里实际说过的话出发，选零条、一条或几条想回应的消息；可以接较早的话、综合几个人的话，也可以暂不参与。
 返回 {"action":"speak|explore|revisit|pass","intent":"具体想回应谁的哪一点、说或做什么","reason":"给用户看的简短参与来由","message_ids":["选中的当前聊天消息ID，可为空"]}。需要改变持续关注时可加 state 和 state_source_ids。
 先理解每个人已说了什么，以及这些话怎样改变自己的想法。别人已说过原本要说的，可以缩短为自然认同、进一步展开不同细节、换关注点或安静；不要换一套措辞再答一遍。没发过言不构成发言理由，也不必故意反对。认同、玩笑、共情和一起想象都可以有价值，不要求新事实。
@@ -703,32 +715,63 @@ func (e *Engine) observeMember(ctx context.Context, c Conversation, w Work, id s
 revisit 表示现在不发言、不开展研究，只给自己预约稍后重新考虑一个具体挂念；返回 delay_seconds（60 到 604800 秒）和具体 intent/reason。这个预约是可撤销的一次机会，不是必发消息，也不是每次都需要安排。
 explore 必须是能用当前工具实际开展的方向，已有同类未完工作不要重复安排；可以先去做而不发言。没有真人消息时也可以由兴趣、真实经历或研究进展开启具体话题，不机械问候或催回复。revisit 是自己先前留下的挂念，到期只需重读并决定是否还有必要，不必履约发消息。
 already_spoke 只是自己的发言事实，不是说话资格。等待用户、自己的内容已表达完或这次没兴趣就 pass；公开讨论暂停时仅 explore/revisit/pass，研究暂停时禁止 explore/revisit。
-earlier_intention 如存在只是你读到新消息之前的打算，现在可以改变或撤回。`+statePrompt+memoryContextPrompt+coordinationPrompt, input, &result.Decision)
+earlier_intention 如存在只是你读到新消息之前的打算，现在可以改变或撤回。` + statePrompt + memoryContextPrompt + coordinationPrompt
+	err = e.recallDecision(ctx, c, m, w, prompt, input, &result.Decision)
+	if err != nil {
+		result.Err = err
+		return result
+	}
+	// 无效引用只让本人纠正一次，不猜测目标，也不重跑已完成的同伴回复。
+	// 纠正阶段只读当前上下文，不再开放记忆写入等工具，避免重放副作用。
+	for attempt := 0; ; attempt++ {
+		err = e.validateDecision(c, &result.Decision)
+		if !errors.Is(err, errSelectedMessage) || attempt > 0 {
+			break
+		}
+		input["invalid_decision"] = result.Decision
+		input["correction"] = "选中的消息不在当前聊天中。请从实际可见消息重新决定；不能猜 ID，想保持安静可 pass 且不填 message_ids。只返回判断 JSON。"
+		result.Decision = Decision{}
+		if correctionErr := modelJSON(ctx, e.Model, prompt, input, &result.Decision); correctionErr != nil {
+			result.Err = memberDecisionError(correctionErr)
+			return result
+		}
+	}
 	if err != nil {
 		result.Err = err
 		return result
 	}
 	d := &result.Decision
-	if d.Action != "speak" && d.Action != "explore" && d.Action != "revisit" && d.Action != "pass" {
-		result.Err = fmt.Errorf("成员参与判断缺少有效 action")
-		return result
-	}
-	if len(d.MessageIDs) > 12 {
-		result.Err = fmt.Errorf("成员选择的消息数量超过本次上下文范围")
-		return result
-	}
-	if _, err = e.Store.selectedMessages(c.ID, d.MessageIDs); err != nil {
-		result.Err = err
-		return result
-	}
-	if (c.DiscussionPaused && d.Action == "speak") || (c.ResearchPaused && (d.Action == "explore" || d.Action == "revisit")) || (d.Action != "pass" && strings.TrimSpace(d.Intent) == "") {
-		d.Action = "pass"
-	}
 	result.Err = e.Store.recordObservation(c, m.ID, result.SeenSeq, d.State, d.StateSourceIDs)
 	if result.Err == nil {
 		result.Err = e.Store.rememberContextStart(c, m.ID, result.SeenSeq, d.ContextStartID)
 	}
 	return result
+}
+
+// 沉默不需要接话对象；状态来源仍由 recordObservation 单独核对。
+// 无效的主动意图不能偷偷降级成 pass，否则会把故障冒充为成员自己的选择。
+func (e *Engine) validateDecision(c Conversation, d *Decision) error {
+	if d.Action != "speak" && d.Action != "explore" && d.Action != "revisit" && d.Action != "pass" {
+		return memberDecisionError(fmt.Errorf("成员参与判断缺少有效 action"))
+	}
+	if (c.DiscussionPaused && d.Action == "speak") || (c.ResearchPaused && (d.Action == "explore" || d.Action == "revisit")) {
+		d.Action = "pass"
+	}
+	if d.Action == "pass" {
+		d.MessageIDs = nil
+		return nil
+	}
+	if strings.TrimSpace(d.Intent) == "" {
+		return memberDecisionError(fmt.Errorf("成员参与判断缺少具体意图"))
+	}
+	if len(d.MessageIDs) > 12 {
+		return memberDecisionError(fmt.Errorf("成员选择的消息数量超过本次上下文范围"))
+	}
+	_, err := e.Store.selectedMessages(c.ID, d.MessageIDs)
+	if errors.Is(err, errSelectedMessage) {
+		return memberDecisionError(err)
+	}
+	return err
 }
 
 func (e *Engine) observeMembers(ctx context.Context, c Conversation, w Work, turn int) ([]participationCandidate, int64, error) {
@@ -751,21 +794,26 @@ func (e *Engine) observeMembers(ctx context.Context, c Conversation, w Work, tur
 			decode(raw, &mentions)
 		}
 	}
-	var firstErr error
+	var firstErr, sharedErr error
 	var seen int64
+	completed := 0
 	candidates := []participationCandidate{}
 	for range members {
 		r := <-results
 		seen = max(seen, r.SeenSeq)
-		if err := e.recordParticipation(w, r, false); err != nil && firstErr == nil {
-			firstErr = err
+		if err := e.recordParticipation(w, r, false); err != nil && sharedErr == nil {
+			sharedErr = err
 		}
 		if r.Err != nil {
+			if !isParticipationFailure(r.Err) && sharedErr == nil {
+				sharedErr = r.Err
+			}
 			if firstErr == nil {
 				firstErr = r.Err
 			}
 			continue
 		}
+		completed++ // 自愿安静也是一次有效判断。
 		if r.Decision.Action == "pass" {
 			continue
 		}
@@ -776,8 +824,12 @@ func (e *Engine) observeMembers(ctx context.Context, c Conversation, w Work, tur
 			candidates = append(candidates, r)
 		}
 	}
-	// 判断失败与全员自愿安静不同，必须保留区别；成功的同伴仍可继续行动。
-	if len(candidates) == 0 && firstErr != nil {
+	// 局部失败已逐人保存，不能覆盖同伴的有效判断（包括沉默）。
+	// 共享执行边界始终传播；全员失败且尚无贡献也仍是真实失败。
+	if sharedErr != nil {
+		return nil, seen, sharedErr
+	}
+	if completed == 0 && firstErr != nil {
 		return nil, seen, firstErr
 	}
 	return candidates, seen, nil

@@ -47,6 +47,11 @@ type Model interface {
 // 只标记本次调用需要深入推理；不改变成员身份，也不持久化额外生命周期。
 type deepReasoningKey struct{}
 
+// 调用记账失败属于共享存储故障，不能被参与层当作某位成员的请求失败忽略。
+type modelAccountingError struct{ error }
+
+func (e *modelAccountingError) Unwrap() error { return e.error }
+
 type HTTPModel struct {
 	Config Config
 	Store  *Store
@@ -255,7 +260,7 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	reserve := int64(math.Ceil(float64(inputEstimate)*m.Config.InputPrice + float64(m.Config.MaxOutputTokens)*m.Config.OutputPrice))
 	day, e := m.Store.ReserveContext(ctx, m.Config, reserve)
 	if e != nil {
-		return ChatMessage{}, e
+		return ChatMessage{}, &modelAccountingError{e}
 	}
 	var response modelResult
 	// OpenAI 全部走推荐的 Responses；聊天接口仅保留给原有兼容服务。
@@ -270,7 +275,7 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	if response.Usage.PromptTokens+response.Usage.CompletionTokens > 0 {
 		actual := int64(math.Ceil(float64(response.Usage.PromptTokens)*m.Config.InputPrice + float64(response.Usage.CompletionTokens)*m.Config.OutputPrice))
 		if e = m.Store.SettleContext(ctx, day, reserve, actual, response.Usage.PromptTokens, response.Usage.CompletionTokens); e != nil {
-			return ChatMessage{}, e
+			return ChatMessage{}, &modelAccountingError{e}
 		}
 	}
 	if len(response.Choices) == 0 {

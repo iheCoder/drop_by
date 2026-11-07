@@ -331,27 +331,55 @@ func refreshCoordinationReviews(tx *sql.Tx, room string) error {
 
 // 临时组织者可以在结果都已收齐后结束自己的职责。是否该结束由角色根据语境
 // 判断；代码只验证真实范围和未完子工作，不能用一次工具调用静默取消别人的研究。
+type pendingResearchError struct{ Work []Work }
+
+func (e *pendingResearchError) Error() string {
+	return "这件事还有工作未结束；请核对列出的实际进展，等待结果或明确交接。"
+}
+
 func (s *Store) CloseResponsibility(c Conversation, m Member, w Work, id string) error {
 	return s.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 		var r Responsibility
-		if err := tx.QueryRow(`SELECT id,member_id,scope_id,body,source_id FROM responsibilities WHERE id=? AND conversation_id=? AND revoked=0`, id, c.ID).Scan(&r.ID, &r.MemberID, &r.ScopeID, &r.Body, &r.SourceID); err != nil {
+		var revoked bool
+		if err := tx.QueryRow(`SELECT id,member_id,scope_id,body,source_id,revoked FROM responsibilities WHERE id=? AND conversation_id=?`, id, c.ID).Scan(&r.ID, &r.MemberID, &r.ScopeID, &r.Body, &r.SourceID, &revoked); err != nil {
 			return fmt.Errorf("当前聊天没有这项有效职责")
 		}
 		if r.MemberID != m.ID || r.ScopeID == "" {
 			return fmt.Errorf("只能结束自己这件事的临时职责；长期约定由真人调整")
 		}
-		var related, unfinished int
-		if err := tx.QueryRow(`WITH RECURSIVE family(id) AS (SELECT id FROM work WHERE id=? UNION SELECT child.id FROM work child JOIN family f ON child.parent_id=f.id) SELECT count(*) FROM family WHERE id=?`, r.ScopeID, w.ID).Scan(&related); err != nil {
+		var related int
+		if err := tx.QueryRow(`WITH RECURSIVE family(id) AS (SELECT id FROM work WHERE id=? AND conversation_id=? UNION SELECT child.id FROM work child JOIN family f ON child.parent_id=f.id WHERE child.conversation_id=?) SELECT count(*) FROM family WHERE id=?`, r.ScopeID, c.ID, c.ID, w.ID).Scan(&related); err != nil {
 			return err
 		}
 		if related == 0 {
 			return fmt.Errorf("这次行动不属于该临时事项")
 		}
-		if err := tx.QueryRow(`WITH RECURSIVE family(id) AS (SELECT id FROM work WHERE id=? UNION SELECT child.id FROM work child JOIN family f ON child.parent_id=f.id) SELECT count(*) FROM work WHERE id IN (SELECT id FROM family) AND id<>? AND kind='research' AND status IN ('pending','running','waiting_budget','paused')`, r.ScopeID, w.ID).Scan(&unfinished); err != nil {
+		// 已结束的本人职责可重复确认；仍先核对所属事项，不能借幂等绕过权限。
+		if revoked {
+			return nil
+		}
+		rows, err := tx.Query(`WITH RECURSIVE family(id) AS (SELECT id FROM work WHERE id=? AND conversation_id=? UNION SELECT child.id FROM work child JOIN family f ON child.parent_id=f.id WHERE child.conversation_id=?) SELECT `+workColumns+` FROM work WHERE id IN (SELECT id FROM family) AND id<>? AND kind='research' AND status IN ('pending','running','waiting_budget','paused','failed') ORDER BY created_at`, r.ScopeID, c.ID, c.ID, w.ID)
+		if err != nil {
 			return err
 		}
-		if unfinished > 0 {
-			return fmt.Errorf("这件事还有未完研究；先核对或明确交接，不能把它们当作已经完成")
+		unfinished := []Work{}
+		for rows.Next() {
+			job, scanErr := scanWork(rows)
+			if scanErr != nil {
+				rows.Close()
+				return scanErr
+			}
+			unfinished = append(unfinished, job)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if len(unfinished) > 0 {
+			// 等待是正常前置条件，交还具体工作让成员据实判断，不创建轮询任务。
+			// 失败研究也未完成，不能因它退出执行队列就宣称结果已经收齐。
+			return &pendingResearchError{Work: unfinished}
 		}
 		if _, err := tx.Exec(`UPDATE responsibilities SET revoked=1 WHERE id=?`, id); err != nil {
 			return err

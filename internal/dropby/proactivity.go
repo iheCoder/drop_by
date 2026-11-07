@@ -145,21 +145,28 @@ func (s *Store) ScheduleFollowup(c Conversation, m Member, source Work, instruct
 }
 
 func (s *Store) CancelOwnWork(c Conversation, m Member, id string) (any, error) {
+	var status string
 	err := s.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
-		r, err := tx.Exec(`UPDATE work SET status='stopped',result='成员结合最新情境取消了这项后续。' WHERE id=? AND conversation_id=? AND member_id=? AND kind IN ('research','revisit') AND status IN ('pending','waiting_budget','paused')`, id, c.ID, m.ID)
-		if err != nil {
+		// 先确认归属与类型。已完成/已停止的本人工作可以再次确认结束，
+		// 但不能把同伴工作、其他聊天或未知 ID 当成一次成功的取消。
+		if err := tx.QueryRow(`SELECT status FROM work WHERE id=? AND conversation_id=? AND member_id=? AND kind IN ('research','revisit')`, id, c.ID, m.ID).Scan(&status); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("只能取消自己在当前聊天中的研究或后续")
+			}
 			return err
 		}
-		n, err := r.RowsAffected()
-		if err != nil {
+		switch status {
+		case "done", "stopped", "superseded":
+			return nil // 保留原有结果与实际终态，不把 done 改成 stopped。
+		case "pending", "waiting_budget", "paused", "failed":
+			_, err := tx.Exec(`UPDATE work SET status='stopped',result=CASE WHEN result='' THEN '成员结合最新情境取消了这项后续。' ELSE result END WHERE id=?`, id)
+			status = "stopped"
 			return err
+		default:
+			return fmt.Errorf("这项工作正在执行，尚未取消")
 		}
-		if n == 0 {
-			return fmt.Errorf("只能取消自己的、当前聊天中尚未执行的后续")
-		}
-		return nil
 	})
-	return map[string]string{"work_id": id, "status": "stopped"}, err
+	return map[string]string{"work_id": id, "status": status}, err
 }
 
 // 在公开消息和提问/私聊工具的副作用之前预留名额。崩溃或发布失败时保守保留，

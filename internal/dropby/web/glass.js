@@ -28,11 +28,22 @@ function profile(id, trigger=document.activeElement) {
   if(pop.matches(':popover-open') && personID===id) { closeTransient(true); return; }
   closeWorkspace(false); closeTransient();
   personID=id; personAnchor=trigger;
-  const status=roomData?.member_states?.find(s=>s.member_id===id)?.body || m.direction || '边聊，边认识';
-  pop.innerHTML=`<button class="icon-button floating-close" data-action="close-person" aria-label="关闭朋友资料">${icon('x')}</button><div class="person-card"><div class="person-portrait">${avatar(m)}</div><div class="person-card-copy"><h2>${escapeHTML(m.name)} <small>AI 朋友</small></h2><p>${escapeHTML(status)}</p><div class="person-card-actions"><button class="primary" data-action="direct" data-id="${m.id}">${icon('message-circle')}发消息</button><button class="secondary" data-action="edit-profile" data-id="${m.id}">${icon('pencil')}编辑资料</button></div><button class="profile-more" data-action="full-profile" data-id="${m.id}">查看完整资料 ${icon('chevron-right')}</button></div></div>`;
+  const status=memberIntroduction(m);
+  pop.innerHTML=`<button class="icon-button floating-close" data-action="close-person" aria-label="关闭朋友资料">${icon('x')}</button><div class="person-card"><div class="person-portrait">${avatar(m)}</div><div class="person-card-copy"><h2>${escapeHTML(m.name)} <small>AI 朋友</small></h2><p class="person-introduction">${escapeHTML(status)}</p><div class="person-card-actions"><button class="primary" data-action="direct" data-id="${m.id}">${icon('message-circle')}发消息</button><button class="secondary" data-action="edit-profile" data-id="${m.id}">${icon('pencil')}编辑资料</button></div><button class="profile-more" data-action="full-profile" data-id="${m.id}">查看完整资料 ${icon('chevron-right')}</button></div></div>`;
   pop.showPopover(); positionFloating(pop,trigger);
   // 键盘触发者可以顺着 Tab 进入卡片；鼠标用户不被强制跳焦点。
   if(trigger?.matches(':focus-visible')) pop.querySelector('[data-action=direct]').focus();
+}
+// SSE 更新资料时只更新浮卡内容，不重新打开，也不抢走入口或表单的焦点。
+function refreshPersonCard() {
+  const pop=$('person-popover');
+  if(!pop?.matches(':popover-open'))return;
+  const m=member(personID); if(!m){closeTransient();return;}
+  pop.querySelector('.person-introduction').textContent=memberIntroduction(m);
+  pop.querySelector('.person-card h2').innerHTML=`${escapeHTML(m.name)} <small>AI 朋友</small>`;
+  pop.querySelector('.person-portrait').innerHTML=avatar(m);
+  if(!personAnchor?.isConnected) personAnchor=[...document.querySelectorAll(`[data-action="profile"][data-id="${CSS.escape(personID)}"]`)].find(el=>el.getClientRects().length);
+  positionFloating(pop,personAnchor);
 }
 function cancelAvatarCrop() { if(cancelCrop) cancelCrop(); }
 async function cropAvatar(file, request) {

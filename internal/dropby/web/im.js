@@ -48,7 +48,7 @@ function renderMemberPicker() {
   if (!$('member-options')) return;
   const query=$('member-search').value.trim().toLocaleLowerCase();
   const people=state.members.filter(m=>m.name.toLocaleLowerCase().includes(query));
-  $('member-options').innerHTML=people.map(m=>`<label class="member-choice">${avatar(m)}<span class="copy"><strong>${escapeHTML(m.name)}</strong><small>${escapeHTML((m.direction || '边聊，边认识').split(/[，。；\n]/)[0].slice(0,28))}</small></span><input type="checkbox" name="members" value="${m.id}" ${groupSelection.includes(m.id)?'checked':''} aria-label="选择 ${escapeHTML(m.name)}"><span class="selection-check" aria-hidden="true">${icon('check')}</span></label>`).join('');
+  $('member-options').innerHTML=people.map(m=>`<label class="member-choice">${avatar(m)}<span class="copy"><strong>${escapeHTML(m.name)}</strong><small>${escapeHTML(memberIntroduction(m).split(/[，。；\n]/)[0].slice(0,28))}</small></span><input type="checkbox" name="members" value="${m.id}" ${groupSelection.includes(m.id)?'checked':''} aria-label="选择 ${escapeHTML(m.name)}"><span class="selection-check" aria-hidden="true">${icon('check')}</span></label>`).join('');
   $('picker-empty').hidden=Boolean(people.length);
   $('selected-people').innerHTML=groupSelection.map(id=>`<button type="button" class="selected-person" data-action="unselect-member" data-id="${id}" aria-label="移除已选 ${escapeHTML(authorName(id))}">${avatar(member(id),true)}<span>${escapeHTML(authorName(id))}</span>${icon('x')}</button>`).join('');
   const count=groupSelection.length;

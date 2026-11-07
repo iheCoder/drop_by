@@ -80,7 +80,7 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 	reserve := int64(math.Ceil(float64(count)*m.Config.InputPrice + float64(m.Config.MaxOutputTokens)*m.Config.OutputPrice))
 	day, err := m.Store.ReserveContext(ctx, m.Config, reserve)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, &modelAccountingError{err}
 	}
 	var compacted struct {
 		Output []json.RawMessage `json:"output"`
@@ -95,7 +95,7 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 	if compacted.Usage.Input+compacted.Usage.Output > 0 {
 		actual := int64(math.Ceil(float64(compacted.Usage.Input)*m.Config.InputPrice + float64(compacted.Usage.Output)*m.Config.OutputPrice))
 		if err = m.Store.SettleContext(ctx, day, reserve, actual, compacted.Usage.Input, compacted.Usage.Output); err != nil {
-			return nil, 0, nil, err
+			return nil, 0, nil, &modelAccountingError{err}
 		}
 	}
 	valid := false

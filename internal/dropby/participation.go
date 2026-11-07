@@ -1,11 +1,36 @@
 package dropby
 
 import (
+	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"strings"
 )
+
+// participationFailure 只标记一次成员判断没有形成有效结果。共享存储、预算、
+// 修订和取消错误仍向调度器传播；不能因同伴成功就吞掉这些执行边界。
+type participationFailure struct{ error }
+
+func (e *participationFailure) Unwrap() error { return e.error }
+
+func memberDecisionError(err error) error {
+	var accounting *modelAccountingError
+	if errors.As(err, &accounting) {
+		return err
+	}
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || errors.Is(err, ErrContextCapacity) || errors.Is(err, ErrRunLimit) {
+		return err
+	}
+	return &participationFailure{err}
+}
+
+func isParticipationFailure(err error) bool {
+	var failure *participationFailure
+	return errors.As(err, &failure)
+}
+
+var errSelectedMessage = errors.New("成员选择的消息不在当前聊天中")
 
 // MemberState 记录成员在这段交流里仍然在意的事情。自然语言可以表达感受、疑问
 // 或目标，不另造情绪分数或性格状态机。按会话保存，避免私聊的关注泄露到别的群。
@@ -112,7 +137,7 @@ func (s *Store) selectedMessages(room string, ids []string) ([]Message, error) {
 		 FROM messages m LEFT JOIN message_questions q ON q.message_id=m.id WHERE m.conversation_id=? AND m.id=?`, room, id).
 			Scan(&m.Seq, &m.ID, &m.AuthorID, &m.Body, &m.ReplyTo, &m.CreatedAt, &question, &m.QuestionStatus)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("成员选择的消息不在当前聊天中")
+			return nil, errSelectedMessage
 		}
 		if err != nil {
 			return nil, err

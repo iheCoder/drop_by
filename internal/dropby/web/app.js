@@ -29,6 +29,13 @@ async function api(path, options = {}) {
 const post = (path, data) => api(path, { method: 'POST', body: JSON.stringify(data) });
 function toast(text) { $('toast').textContent = text; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 5000); }
 function member(id) { return state.members.find(m => m.id === id); }
+// 列表、选择器和浮卡共享当前人物说明，不再展示创建时留下的 direction。
+// 摘录只截短原文，不根据一次聊天另生成或持久化一份人格。
+function memberIntroduction(m) {
+  const text=(m?.profile || '').trim();
+  if(!text || text==='性格和兴趣尚未设定，可在实际交流中逐步形成；不虚构过往经历。') return '边聊，边认识';
+  return text.length>90 ? `${text.slice(0,90)}…` : text;
+}
 function authorName(id) { return id === 'user' ? (state.profile?.name || '你') : member(id)?.name || '成员'; }
 // 已有成员使用稳定的图形头像；视觉升级不重写成员身份或历史记录。
 function presetFor(m) {
@@ -132,7 +139,7 @@ function renderSidebar() {
     const preview=previewNode.textContent.replace(/\s+/g,' ').trim();
     return `<button class="room-button ${c.id === selected ? 'selected' : ''}" data-action="open-room" data-id="${c.id}" ${c.id === selected ? 'aria-current="page"' : ''}>${m ? avatar(m) : groupAvatar(c)}<span class="room-copy"><span class="room-heading"><span class="room-name">${escapeHTML(c.name)}</span><time class="room-time">${c.updated_at ? timeLabel(c.updated_at) : ''}</time></span><span class="room-preview">${escapeHTML(preview || '从一句随口的话开始')}</span></span>${unread ? '<span class="unread" aria-label="有新消息"></span>' : ''}</button>`;
   }).join('') : `<p class="side-empty">${query ? '没有找到，换个词试试。' : '还没有聊天。<br>先认识一位新朋友吧。'}</p>`;
-  $('member-list').innerHTML = people.length ? people.map(m => `<button class="person-button" data-action="profile" data-id="${m.id}">${avatar(m)}<span class="person-copy"><span class="person-name">${escapeHTML(m.name)}</span><span class="person-note">${escapeHTML(m.direction || '边聊，边认识')}</span></span>${icon('chevron-right')}</button>`).join('') : `<p class="side-empty">${query ? '没有找到这位朋友。' : '一个名字，一个头像。<br>其余的，边聊边认识。'}</p>`;
+  $('member-list').innerHTML = people.length ? people.map(m => `<button class="person-button" data-action="profile" data-id="${m.id}">${avatar(m)}<span class="person-copy"><span class="person-name">${escapeHTML(m.name)}</span><span class="person-note">${escapeHTML(memberIntroduction(m))}</span></span>${icon('chevron-right')}</button>`).join('') : `<p class="side-empty">${query ? '没有找到这位朋友。' : '一个名字，一个头像。<br>其余的，边聊边认识。'}</p>`;
   $('conversation-list').hidden = sideTab !== 'chats';
   $('member-list').hidden = sideTab !== 'people';
   $('chats-tab').setAttribute('aria-selected', String(sideTab === 'chats'));
@@ -198,6 +205,12 @@ async function loadConversation(id, preserve) {
   renderActivity();
   $('show-activity').hidden = false;
   if (panelView === 'activity') showActivity(false);
+  if (panelView.startsWith('evidence:')) {
+    const run=data.tool_runs.find(r=>r.id===panelView.slice(9));
+    if(run) await refreshEvidence(run);
+    if(sequence!==loadSequence || selected!==id)return;
+  }
+  refreshPersonCard();
   if (panelView === 'artifacts' && $('panel-content').dataset.artifactListSignature !== JSON.stringify(data.artifacts.map(a => [a.id,a.version,a.title]))) {
     const top = $('panel-content').scrollTop; showArtifacts(); $('panel-content').scrollTop = top;
   }
@@ -344,40 +357,12 @@ async function askPreference(id, button) {
   } catch (error) { button.disabled = false; throw error; }
 }
 
-function renderActivity() {
-  const active = (state.activities || []).filter(a => a.conversation_id === selected);
-  $('activity').hidden = !active.length;
-  $('activity').innerHTML = active.map(a=>`<button data-action="activity"><span class="activity-dot"></span>${escapeHTML(authorName(a.member_id))} · ${escapeHTML(a.label)}</button>`).join('');
-  const jobs = roomData.work || [], working = jobs.filter(w=>['pending','running','waiting_budget'].includes(w.status));
-  $('work-count').textContent = working.length || '';
-  const latest = jobs[0], failed = latest && ['failed','paused'].includes(latest.status);
-  $('work-notice').hidden = !failed;
-  $('work-notice').textContent = failed ? `${latest.member_id ? authorName(latest.member_id)+'的' : '上一次'}行动暂时停下了 · 查看已保存的进展 →` : '';
-}
-const actionLabels = {close_responsibility:'结束这次组织职责',ask_question:'提出问题',search:'搜索网页',read_page:'阅读网页',save_artifact:'保存成果',remember:'更新经历',schedule_exploration:'安排探索',schedule_followup:'安排定时跟进',cancel_work:'放下不再需要的后续',read_history:'回顾聊天',read_artifact:'查看成果',read_tool_result:'核对已有材料',read_memory:'回顾经历',search_memory:'寻找相关经历',read_work:'查看工作进展',delegate_work:'委托朋友协作',send_private:'发起私聊'};
-const statusLabels = {pending:'已安排',running:'进行中',waiting_budget:'等待恢复',done:'已完成',failed:'暂时中断',paused:'已暂停',stopped:'已停止',superseded:'已根据新消息调整',succeeded:'已完成',cancelled:'已被新消息打断'};
-function showActivity(scroll = true) {
-  if (!roomData) return;
-  const expanded = [...$('panel-content').querySelectorAll('details[open][data-detail]')].map(d=>d.dataset.detail);
-  const top = $('panel-content').scrollTop, jobs = roomData.work || [], actions = roomData.tool_runs || [];
-  const decisions = new Map();
-  for (const p of roomData.participation || []) if (!decisions.has(p.member_id)) decisions.set(p.member_id,p);
-  const live = (state.activities || []).filter(a=>a.conversation_id===selected);
-  const people = roomData.conversation.member_ids.map(id=>{
-    const p=decisions.get(id), action=live.find(a=>a.member_id===id);
-    const focus = roomData.member_states?.find(s => s.member_id === id);
-    const label = action?.label || focus?.body || (!p ? '还没有参与记录' : p.action==='pass' ? '暂时没有补充' : p.action==='revisit' ? '想稍后再看看' : p.action==='error' ? '上次判断未完成' : p.selected ? (p.action==='explore' ? '已安排探索' : '最近参与了交流') : '有想法，尚未发言');
-    return `<div class="member-activity">${avatar(member(id),true)}<div><strong>${escapeHTML(authorName(id))}</strong><span>${escapeHTML(label)}</span>${p ? `<details data-detail="person-${id}"><summary>查看最近参与记录</summary><p>${escapeHTML(p.action === 'pass' ? '这次选择保持安静。' : p.action === 'error' ? '这次参与判断未完成。' : p.action === 'explore' ? '这次选择先探索。' : p.action === 'revisit' ? '这次想稍后再看看。' : '这次选择参与交流。')}</p><small>${timeLabel(p.created_at)}</small></details>` : ''}</div></div>`;
-  }).join('');
-  showPanel('最近动态', '', `<p class="background-note">浏览器关掉后，服务仍会继续探索。电脑睡眠或服务停止时会暂停，重新运行后恢复。新消息、约好的后续和闲时好奇都可以带来一次机会，是否继续由朋友们自己决定。</p><h3 class="section-label">朋友们</h3>${people}<h3 class="section-label">后台行动</h3>${jobs.filter(w=>['research','revisit'].includes(w.kind) || ['failed','paused','waiting_budget'].includes(w.status)).slice(0,12).map(w=>`<details class="work-item" data-detail="${w.id}"><summary><span>${escapeHTML(w.member_id ? authorName(w.member_id) : '这段交流')}</span><span class="status ${w.status}">${escapeHTML(statusLabels[w.status]||w.status)}</span><strong>${escapeHTML(w.instruction.slice(0,90))}</strong></summary>${w.assigned_by ? `<div class="work-assignment">${escapeHTML(authorName(w.assigned_by))} 委托 · ${escapeHTML(new Date(w.created_at).toLocaleString('zh-CN'))}</div>` : ''}<p>${escapeHTML(w.status === 'waiting_budget' ? '进展已保存，恢复后会继续。' : w.result || w.reason || '还没有执行结果')}</p>${w.status==='pending' ? `<small>${w.kind === 'revisit' ? '下次考虑' : '安排执行'} ${new Date(w.due_at).toLocaleString('zh-CN')}</small>`:''}${['failed','paused'].includes(w.status) ? `<button class="quiet" data-action="continue-work" data-id="${w.id}">在聊天中继续这个方向 →</button>`:''}</details>`).join('') || '<p class="empty-note">暂时没有安排研究。普通聊天不必变成任务。</p>'}<h3 class="section-label">实际做过的事</h3>${actions.slice(0,15).map(a=>`<button class="action-item" data-action="evidence" data-id="${a.id}"><span>${escapeHTML(authorName(a.member_id))} · ${escapeHTML(actionLabels[a.name]||a.name)}</span><small>${timeLabel(a.created_at)} · ${escapeHTML(statusLabels[a.status]||a.status)} ↗</small></button>`).join('')||'<p class="empty-note">还没有工具行动。</p>'}`, 'activity');
-  if (!scroll) { $('panel-content').scrollTop = top; for (const d of $('panel-content').querySelectorAll('details[data-detail]')) d.open = expanded.includes(d.dataset.detail); }
-}
 function newGroup() { startGroup(); }
 
 function focusBlock(id) {
   const focus = roomData?.member_states?.find(s => s.member_id === id);
   if (!focus?.body) return '';
-  return `<div class="focus-block"><h3 class="section-label">${icon('smile')}此刻在意</h3><div class="focus-body">${escapeHTML(focus.body)}</div>${focus.source_ids?.length ? `<div class="focus-sources">${focus.source_ids.map((source,i) => `<button data-action="${source.startsWith('tool_') ? 'evidence' : 'jump-message'}" data-id="${source}">${source.startsWith('tool_') ? '查看相关行动' : '回到相关交流'}${focus.source_ids.length > 1 ? ` ${i+1}` : ''} ↗</button>`).join('')}</div>` : ''}</div>`;
+  return `<div class="focus-block"><h3 class="section-label">${icon('smile')}在这段聊天里</h3><div class="focus-body">${escapeHTML(focus.body)}</div>${focus.source_ids?.length ? `<div class="focus-sources">${focus.source_ids.map((source,i) => `<button data-action="${source.startsWith('tool_') ? 'evidence' : 'jump-message'}" data-id="${source}">${source.startsWith('tool_') ? '查看相关行动' : '回到相关交流'}${focus.source_ids.length > 1 ? ` ${i+1}` : ''} ↗</button>`).join('')}</div>` : ''}</div>`;
 }
 function fullProfile(id) {
   const m = member(id); if (!m) return;
@@ -391,7 +376,7 @@ function roomDetails(scroll = true) {
   const signature=JSON.stringify([c,state.members,roomData.member_states]);
   if (!scroll && $('panel-content').dataset.roomSignature===signature) return;
   const top=$('panel-content').scrollTop;
-  const people=c.member_ids.map(id=>`<button class="person-button" data-action="profile" data-id="${id}">${avatar(member(id))}<span class="person-copy"><span class="person-name">${escapeHTML(authorName(id))}</span><span class="person-note">${escapeHTML(roomData.member_states?.find(s=>s.member_id===id)?.body || member(id)?.direction || '边聊，边认识')}</span></span>${icon('chevron-right')}</button>`).join('');
+  const people=c.member_ids.map(id=>`<button class="person-button" data-action="profile" data-id="${id}">${avatar(member(id))}<span class="person-copy"><span class="person-name">${escapeHTML(authorName(id))}</span><span class="person-note">${escapeHTML(memberIntroduction(member(id)))}</span></span>${icon('chevron-right')}</button>`).join('');
   const roles=(c.responsibilities || []).map(r=>`<div class="responsibility"><strong>${escapeHTML(authorName(r.member_id))}<small>${r.scope_id ? '这件事' : '长期约定'}</small></strong><p>${escapeHTML(r.body)}</p>${r.source_id ? `<button class="quiet" data-action="jump-message" data-id="${r.source_id}">回到这次约定 ${icon('arrow-up')}</button>` : ''}</div>`).join('');
   showPanel('聊天详情', '', `<div class="room-details-head">${groupAvatar(c)}<h3>${escapeHTML(c.name)}</h3><p>${c.member_ids.length+1} 位成员</p></div><button class="secondary full-width" data-action="edit-group">${icon('pencil')}编辑群资料与成员</button><h3 class="section-label">群成员</h3><div class="person-button own-member">${avatar(state.profile)}<span class="person-copy"><span class="person-name">${escapeHTML(authorName('user'))}</span><span class="person-note">我</span></span></div>${people}<h3 class="section-label">在这里的约定</h3>${roles || '<p class="empty-note">还没有特别的分工。需要一起做事时，在聊天里告诉大家就好。</p>'}<p class="profile-caption">例如「@小舟，这次你帮我们安排一下」。约定会留在这里，平时大家仍按自己的方式聊天。</p><div class="panel-nav"><button data-action="activity">${icon('activity')}朋友动态${icon('chevron-right')}</button><button data-action="artifacts">${icon('notebook')}聊天成果${icon('chevron-right')}</button></div>`, 'room');
   $('panel-content').dataset.roomSignature=signature;
@@ -473,7 +458,11 @@ document.addEventListener('click', async event => {
       if (avatarLoading) { avatarLoading = false; const save = button.closest('form')?.querySelector('button[type=submit]'); if (save) save.disabled = false; }
       avatarIcon = id; avatarData = ''; renderAvatarPreview();
     }
-    if (action === 'continue-work') { const w = roomData.work.find(w => w.id === id); if (w) composeFollowup(`继续这件事：${w.instruction}`); }
+    if (action === 'continue-member') {
+      composeFollowup(`@${authorName(id)} 刚才的话题，你有什么想法？`);
+      replyTo=messages.find(m=>m.id===button.dataset.source) || null; renderReply();
+    }
+    if (action === 'continue-work') { const w = roomData.work.find(w => w.id === id); if (w) { composeFollowup(`继续这件事：${w.display?.detail || w.display?.title || '之前的安排'}`); replyTo=messages.find(m=>m.id===w.source_id) || null; renderReply(); } }
     if (action === 'reply') { replyTo = messages.find(m => m.id === id); renderReply(); $('message-input').focus(); }
     if (action === 'clear-reply') { replyTo = null; renderReply(); }
     if (action === 'jump-message') await jumpToMessage(id);
@@ -493,10 +482,8 @@ document.addEventListener('click', async event => {
     if (action === 'artifact-tab') selectArtifactTab(button.dataset.mode);
     if (action === 'copy-artifact') { await navigator.clipboard.writeText(currentVersions[currentArtifactIndex].content); toast('源代码已复制。'); }
     if (action === 'continue-artifact') { const a = currentVersions[currentArtifactIndex]; composeFollowup(`关于《${a.title}》第 ${a.version} 版，`); }
-    if (action === 'evidence') {
-      const run = await api(`/api/tool-runs/${id}`);
-      showPanel(actionLabels[run.name] || '实际行动', `${authorName(run.member_id)} · ${dateLabel(run.created_at)} ${timeLabel(run.created_at)}`, `<div class="evidence"><p>执行结果：${escapeHTML(statusLabels[run.status] || run.status)}</p><div class="action-summary">${Object.entries(run.arguments).map(([key,value]) => `<p>${escapeHTML(String(value))}</p>`).join('')}</div><details><summary>查看完整记录</summary><pre>${escapeHTML(run.result)}</pre></details></div>`);
-    }
+    if (action === 'evidence') await showEvidence(id);
+
   } catch (error) { toast(error.message); button.disabled = false; }
 });
 

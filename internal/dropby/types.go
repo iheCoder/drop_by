@@ -82,9 +82,10 @@ type Memory struct {
 // Work 是可以真正执行和恢复的工作，不代表兴趣的生命周期。
 // chat/explore 是一次有限的交流机会；research 才是一项已安排的后台行动。
 type Work struct {
-	BudgetRequired int64    `json:"-"`
-	ParentID       string   `json:"parent_id,omitempty"`
-	FirstSpeakers  []string `json:"first_speakers,omitempty"`
+	Display        *ActivitySummary `json:"display,omitempty"` // 仅 HTTP 展示派生，不写入数据库或模型上下文。
+	BudgetRequired int64            `json:"-"`
+	ParentID       string           `json:"parent_id,omitempty"`
+	FirstSpeakers  []string         `json:"first_speakers,omitempty"`
 	// 真实委托者用于任务回报；空串仍表示成员自行安排的行动。
 	AssignedBy     string `json:"assigned_by,omitempty"`
 	Autonomous     bool   `json:"autonomous,omitempty"` // 计费来源与引用消息分离，记得真人原话不等于持续占用前台额度。
@@ -104,15 +105,16 @@ type Work struct {
 }
 
 type ToolRun struct {
-	ID             string          `json:"id"`
-	WorkID         string          `json:"work_id"`
-	ConversationID string          `json:"conversation_id"`
-	MemberID       string          `json:"member_id"`
-	Name           string          `json:"name"`
-	Arguments      json.RawMessage `json:"arguments"`
-	Result         string          `json:"result"`
-	Status         string          `json:"status"`
-	CreatedAt      string          `json:"created_at"`
+	Display        *ActivitySummary `json:"display,omitempty"`
+	ID             string           `json:"id"`
+	WorkID         string           `json:"work_id"`
+	ConversationID string           `json:"conversation_id"`
+	MemberID       string           `json:"member_id"`
+	Name           string           `json:"name"`
+	Arguments      json.RawMessage  `json:"arguments"`
+	Result         string           `json:"result"`
+	Status         string           `json:"status"`
+	CreatedAt      string           `json:"created_at"`
 }
 
 // Activity 是进程此刻真实执行的动作；Participation 是可回看的一次参与判断。

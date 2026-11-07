@@ -48,14 +48,22 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 		// 本地成果创作是基本能力，旧成员不必重新配置工具才能生成网页。
 		definition("save_artifact", "保存可查看的 Markdown 或 HTML 成果，如小卡片、文章、网页草稿。HTML 使用完整自包含文档和内联样式，不依赖 CDN 或外部资源。修改时提供原 id，新版本保留历史。保存不代表部署网站或实际执行程序。", map[string]any{"id": textField("修改已有成果的 ID，新建时省略"), "title": textField("具体标题"), "format": map[string]any{"type": "string", "enum": []string{"markdown", "html"}, "description": "新建默认 markdown；修改省略时沿用原格式"}, "content": textField("实际完整内容；HTML 返回完整源代码，草稿和设想应明确标注")}, "title", "content"),
 		definition("read_artifact", "发现当前聊天的成果，或读取指定成果及历史版本。不知道 ID 时用 query 按标题查找，空串浏览，可用 offset 翻页；知道 ID 后读取正文。", map[string]any{"id": textField("已有成果 ID，可省略"), "query": textField("要找的标题字词，省略则浏览"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
-		definition("cancel_work", "取消自己在当前聊天里已经安排、但现在不再需要的后续或研究。先从已有工作中取真实 ID；用户改意或事情已解决时及时取消。", map[string]any{"id": textField("自己的待执行工作 ID")}, "id"),
+		definition("cancel_work", "取消自己在当前聊天里已经安排、但现在不再需要的后续或研究；不能取消同伴的工作，自己的已结束工作会返回实际终态。先从已有工作中取真实 ID；用户改意或事情已解决时及时取消。", map[string]any{"id": textField("自己的待执行工作 ID")}, "id"),
 	}
 	if !c.ResearchPaused {
 		defs = append(defs, definition("schedule_followup", "给自己的一个具体挂念安排稍后重新考虑的机会。到时读取最新交流后可发言、行动、改意或安静，不预写必发消息；不是定时问候。", map[string]any{"instruction": textField("到时想重新考虑的具体事情"), "reason": textField("来自哪段交流、兴趣或真实进展"), "delay_seconds": map[string]any{"type": "integer", "minimum": 60, "maximum": 604800}, "due_at": textField("可选绝对时间，RFC3339且含时区，例如2026-11-08T09:00:00+08:00；与delay_seconds只选一个。一次定时，不是周期任务，服务需运行。")}, "instruction", "reason"))
 		defs = append(defs, definition("schedule_exploration", "安排可真正执行的低风险后台探索。明确方向与实际来由；与已有未完研究相同则不要重复安排。会在预算和运行上限内继续。", map[string]any{"instruction": textField("可用现有工具执行的具体方向，不是泛泛关注"), "reason": textField("来自什么兴趣、经历或新材料"), "delay_seconds": map[string]any{"type": "integer", "minimum": 10, "maximum": 86400}}, "instruction", "reason"))
 	}
+	// 本轮已看到的本人临时职责允许重复确认结束；Store 仍核对本人和事项。
+	// 真正委托权限每次查当前记录，结束职责后不能继续安排同伴。
+	for _, responsibility := range c.Responsibilities {
+		if responsibility.MemberID != m.ID || responsibility.ScopeID == "" {
+			continue
+		}
+		defs = append(defs, definition("close_responsibility", "当前事项已经完成时，结束自己对应的临时组织职责。不取消研究、不修改长期约定；需先收齐实际结果，有未完工作时返回 waiting 及具体工作。", map[string]any{"id": textField("conversation.responsibilities 中自己的临时职责ID")}, "id"))
+		break
+	}
 	if t.Store.CanDelegate(c, m, w) {
-		defs = append(defs, definition("close_responsibility", "当前事项已经完成时，结束自己对应的临时组织职责。不取消研究、不修改长期约定；需先收齐实际结果。", map[string]any{"id": textField("conversation.responsibilities 中自己的临时职责ID")}, "id"))
 		defs = append(defs, definition("delegate_work", "依据当前真实约定，委托同群成员完成一项具体工作。coordinate=true 可请对方组织这个子事项，不扩大原授权。写明预期结果、边界及选择理由；先查看已有工作避免重复。完成或遇到问题后会自动获得复看机会，不必定时催促。", map[string]any{"member_id": textField("本群另一成员ID"), "instruction": textField("具体任务、预期结果和边界"), "reason": textField("为什么需要这件事、为什么选择这位成员"), "coordinate": map[string]any{"type": "boolean", "description": "是否委托对方组织这项子工作；默认自己完成具体产出"}}, "member_id", "instruction", "reason"))
 	}
 	if !c.DiscussionPaused && w.Kind != "research" {
@@ -129,6 +137,13 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	if err != nil {
 		status = "failed"
 		result = map[string]any{"error": err.Error()}
+		var pending *pendingResearchError
+		if errors.As(err, &pending) {
+			// 工具没有结束职责，但也没有发生执行故障。明确返回未完工作，
+			// 模型可等待既有回报，不必把收尾反复尝试成新的后台任务。
+			status = "waiting"
+			result = map[string]any{"status": "waiting", "reason": err.Error(), "pending_work": pending.Work}
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, ErrStale) {
 			status = "cancelled"
 		}
