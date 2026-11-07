@@ -62,7 +62,8 @@ type Message struct {
 	Question       *Question `json:"question,omitempty"`
 	QuestionStatus string    `json:"question_status,omitempty"`
 	// 仅从这条公开消息的真实工具引用派生；保存作品本身不等于向群里分享。
-	Artifacts []Artifact `json:"artifacts,omitempty"`
+	Artifacts []Artifact        `json:"artifacts,omitempty"`
+	Reactions []MessageReaction `json:"reactions,omitempty"`
 }
 
 type Memory struct {

@@ -840,20 +840,37 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 type Hub struct {
 	mu          sync.Mutex
 	subscribers map[chan string]struct{}
+	reactions   map[chan string]struct{}
 }
 
-func NewHub() *Hub { return &Hub{subscribers: map[chan string]struct{}{}} }
+func NewHub() *Hub {
+	return &Hub{subscribers: map[chan string]struct{}{}, reactions: map[chan string]struct{}{}}
+}
 func (h *Hub) Subscribe() (chan string, func()) {
+	return h.subscribe(h.subscribers)
+}
+
+// 表情只通知网页。群聊调度和行动中的真人补充仍监听原有消息事件。
+func (h *Hub) SubscribeReactions() (chan string, func()) {
+	return h.subscribe(h.reactions)
+}
+func (h *Hub) subscribe(subscribers map[chan string]struct{}) (chan string, func()) {
 	c := make(chan string, 16)
 	h.mu.Lock()
-	h.subscribers[c] = struct{}{}
+	subscribers[c] = struct{}{}
 	h.mu.Unlock()
-	return c, func() { h.mu.Lock(); delete(h.subscribers, c); h.mu.Unlock() }
+	return c, func() { h.mu.Lock(); delete(subscribers, c); h.mu.Unlock() }
 }
 func (h *Hub) Publish(room string) {
+	h.publish(h.subscribers, room)
+}
+func (h *Hub) PublishReactions(room string) {
+	h.publish(h.reactions, room)
+}
+func (h *Hub) publish(subscribers map[chan string]struct{}, room string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for c := range h.subscribers {
+	for c := range subscribers {
 		select {
 		case c <- room:
 		default:

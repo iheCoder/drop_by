@@ -68,6 +68,15 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 		defs = append(defs, definition("delegate_work", "依据当前真实约定，委托同群成员完成一项具体工作。coordinate=true 可请对方组织这个子事项，不扩大原授权。写明预期结果、边界及选择理由；完成或遇到问题后会获得复看机会。", map[string]any{"member_id": textField("本群另一成员ID"), "instruction": textField("具体任务、预期结果和边界"), "reason": textField("为什么需要这件事、为什么选择这位成员"), "coordinate": map[string]any{"type": "boolean", "description": "是否委托对方组织这项子工作；默认自己完成具体产出"}}, "member_id", "instruction"))
 	}
 	if !c.DiscussionPaused && c.ID != "" {
+		faces := make([]string, 0, len(reactionPalette))
+		for _, face := range reactionPalette {
+			faces = append(faces, face.Emoji)
+		}
+		defs = append(defs, definition(reactionTool, "用表情回应当前聊天的一条消息，或撤回自己的回应。回应显示在原消息下，不发送新消息。可只回应表情，也可以继续交流。", map[string]any{
+			"message_id": textField("当前聊天的实际消息 ID"),
+			"emoji":      map[string]any{"type": "string", "enum": faces},
+			"present":    map[string]any{"type": "boolean", "description": "true 添加自己的回应；false 撤回自己的回应"},
+		}, "message_id", "emoji", "present"))
 		defs = append(defs, definition("ask_question", "在聊天里发布一个可自由回答的选择题。用户也可以直接聊别的；调用成功即已发布。", map[string]any{"text": textField("一个简短自然的问题"), "options": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "minItems": 2, "description": "可选答案"}}, "text", "options"))
 		defs = append(defs, definition("send_private", "向真人发送私聊消息。", map[string]any{"message": textField("自然的私聊内容"), "notify": map[string]string{"type": "boolean"}}, "message", "notify"))
 	}
@@ -154,15 +163,15 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	if call.ID != "" {
 		runID = fmt.Sprintf("tool_%x", sha256.Sum256([]byte(w.ID+"\x00"+m.ID+"\x00"+call.ID)))
 	}
-	resumingRead := false
+	resuming := false
 	var oldStatus, oldResult string
 	readErr := t.Store.db.QueryRow("SELECT status,result FROM tool_runs WHERE id=?", runID).Scan(&oldStatus, &oldResult)
 	if readErr == nil {
 		if oldStatus == "running" {
-			if !readOnlyTool(call.Function.Name) && call.Function.Name != "send_message" {
+			if !readOnlyTool(call.Function.Name) && call.Function.Name != "send_message" && call.Function.Name != reactionTool {
 				return "", errUncertainTool
 			}
-			resumingRead = true
+			resuming = true
 		} else {
 			return asJSON(map[string]any{"tool_run_id": runID, "status": oldStatus, "result": json.RawMessage(oldResult)}), nil
 		}
@@ -171,18 +180,25 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 		return "", readErr
 	}
 	run := ToolRun{ID: runID, WorkID: w.ID, ConversationID: c.ID, MemberID: m.ID, Name: call.Function.Name, Arguments: json.RawMessage(call.Function.Arguments), Status: "running", CreatedAt: now()}
-	if !resumingRead {
+	if !resuming {
 		if err := t.Store.RecordTool(run); err != nil {
 			return "", err
 		}
 	}
-	if t.Activity != nil {
+	if t.Activity != nil && call.Function.Name != reactionTool {
 		labels := map[string]string{"organize_context": "正在整理思路", "search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_message": "正在发送消息", "read_conversation": "正在看聊天近况", "send_private": "正在准备私聊", "read_history": "正在翻阅聊天记录", "read_artifact": "正在查看成果", "read_tool_result": "正在核对已有材料", "read_memory": "正在回顾经历", "search_memory": "正在找回相关经历", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
 		t.Activity(c.ID, m.ID, labels[call.Function.Name])
 	}
 	var result any
 	var err error
-	result, err = t.perform(ctx, c, m, w, call)
+	if call.Function.Name == reactionTool {
+		result, err = t.reactToMessage(ctx, c, m, call, run.ID)
+		if err == nil {
+			return asJSON(map[string]any{"tool_run_id": run.ID, "status": "succeeded", "result": result}), nil
+		}
+	} else {
+		result, err = t.perform(ctx, c, m, w, call)
+	}
 	status := "succeeded"
 	if err != nil {
 		status = "failed"
@@ -207,7 +223,9 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	if _, saveErr := t.Store.db.Exec(`UPDATE tool_runs SET result=?,status=? WHERE id=?`, raw, status, run.ID); saveErr != nil {
 		return "", saveErr
 	}
-	t.Hub.Publish(c.ID)
+	if call.Function.Name != reactionTool {
+		t.Hub.Publish(c.ID)
+	}
 	// 即使失败也返回实际记录 ID，成员可以如实说明失败的具体来由。
 	if errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || errors.Is(err, context.Canceled) {
 		return "", err

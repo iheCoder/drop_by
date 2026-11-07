@@ -202,9 +202,20 @@ button { transition:background .15s,box-shadow .15s,color .15s; }
 /* 表情是消息内容的快捷输入，选择后回到原草稿和插入点。 */
 .composer { padding-right:94px; }
 .composer-bottom .emoji-trigger { position:absolute; right:53px; bottom:11px; width:36px; height:36px; color:var(--muted); }
-.emoji-popover { position:fixed; inset:auto; margin:0; width:236px; padding:8px; border:1px solid #fff; border-radius:20px; background:#f5fafb; color:var(--ink); box-shadow:0 12px 35px rgb(38 66 76 / 17%); }
+.emoji-popover,.reaction-popover { position:fixed; inset:auto; margin:0; width:236px; padding:8px; border:1px solid #fff; border-radius:20px; background:#f5fafb; color:var(--ink); box-shadow:0 12px 35px rgb(38 66 76 / 17%); }
 .emoji-popover:popover-open { display:grid; grid-template-columns:repeat(4,1fr); }
 .emoji-popover button { font-size:24px; width:52px; height:48px; border-radius:13px; }.emoji-popover button:hover { background:#dfefef; }
+.message-reactions:not([hidden]) { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+.user-message .message-reactions { justify-content:flex-end; }
+.reaction-chip { display:inline-flex; align-items:center; gap:5px; min-height:28px; padding:2px 8px; border:1px solid #dce7e9; border-radius:16px; background:#f6fafb; color:#46616c; font-size:12px; }
+.reaction-chip span:first-child { font-size:15px; }
+.reaction-chip.is-mine { background:#e1f4f2; border-color:#72adb0; color:#214f56; }
+.reaction-chip:hover { background:#dceeed; }
+.reaction-popover:not(.emoji-popover) { width:max-content; min-width:148px; max-width:min(236px,calc(100vw - 24px)); padding:12px; font-size:13px; }
+.reaction-popover ul { padding:0; margin:6px 0; max-height:min(30vh,200px); overflow:auto; list-style:none; overflow-wrap:anywhere; }
+.reaction-popover li { padding:3px 0; }
+.reaction-roster-title { font-weight:650; }
+@media (hover:none) { .reaction-chip { min-height:36px; } }
 .mobile-account { padding:14px; border-top:1px solid var(--line); border-radius:14px; color:var(--muted); font-size:14px; }
 .crop-zoom > span { flex:0 0 auto; white-space:nowrap; }
 .crop-zoom input { min-width:0; flex:1; width:auto; }

@@ -111,7 +111,11 @@ func (s *Store) searchHistory(room, query, id string, before int64, offset int, 
 		}
 		end := offset + min(readDefault(pageSize, 1, 5000), len(chars)-offset)
 		m.Body = string(chars[offset:end])
-		return map[string]any{"message": m, "next_offset": end, "has_more": end < len(chars)}, nil
+		messages := []Message{m}
+		if err := s.attachMessageReactions(messages); err != nil {
+			return nil, err
+		}
+		return map[string]any{"message": messages[0], "next_offset": end, "has_more": end < len(chars)}, nil
 	}
 	clauses, values := likeTerms(query)
 	args := []any{room, before, before}
@@ -139,7 +143,14 @@ func (s *Store) searchHistory(room, query, id string, before int64, offset int, 
 		list = append(list, m)
 		cursor = m.Seq
 	}
-	return map[string]any{"messages": list, "before_seq": cursor, "has_more": more}, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err := s.attachMessageReactions(list); err != nil {
+		return nil, err
+	}
+	return map[string]any{"messages": list, "before_seq": cursor, "has_more": more}, nil
 }
 
 // 长消息尾部经常是用户的最后更正。窗口摘录保留头尾，原文用分页工具读取。

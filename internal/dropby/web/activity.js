@@ -76,7 +76,8 @@ function showActivity(scroll=true) {
     return `<div class="activity-person">${avatar(member(id),true)}<div><strong>${escapeHTML(authorName(id))}</strong><p>${escapeHTML(action?.label || (p?.action==='error' ? status : focus || status))}</p>${p?.action==='error' ? `<details class="participation-note" data-detail="person-${escapeHTML(id)}"><summary>查看这次回应</summary><p>这次没能生成新的回应，已经发出的消息仍然保留。</p><div class="activity-links">${sourceLink(source)}<button class="quiet" data-action="continue-member" data-id="${escapeHTML(id)}" data-source="${escapeHTML(source || '')}">再聊一句 ${icon('arrow-up')}</button></div>${technicalRecord({reason:p.reason,at:p.created_at},`reason-${id}`)}</details>`:''}</div></div>`;
   }).join('');
   const jobs=(roomData.work || []).filter(backgroundWork).sort((a,b)=>b.created_at.localeCompare(a.created_at)), current=jobs.filter(w=>openWorkStatuses.includes(w.status)||w.status==='failed');
-  const actions=[...(roomData.tool_runs || [])].sort((a,b)=>b.created_at.localeCompare(a.created_at));
+  // 表情呈现在原消息上。工具回执仍可按 ID 回读，不再单独占动态列表的一行。
+  const actions=(roomData.tool_runs || []).filter(a=>a.name!=='react_to_message').sort((a,b)=>b.created_at.localeCompare(a.created_at));
   // 读记录、整理经历保留在第二层；用户先看到真正的安排、产出和收尾。
   const meaningful=actions.filter(a=>!['organize_context','read_work','read_history','read_memory','read_tool_result','read_artifact','search_memory','remember'].includes(a.name));
   const other=actions.filter(a=>!meaningful.includes(a));

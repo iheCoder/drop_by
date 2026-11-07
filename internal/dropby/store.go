@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS participants(conversation_id TEXT NOT NULL REFERENCES
 CREATE TABLE IF NOT EXISTS messages(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, conversation_id TEXT NOT NULL REFERENCES conversations(id), author_id TEXT NOT NULL,
  body TEXT NOT NULL, reply_to TEXT NOT NULL DEFAULT '', mentions TEXT NOT NULL DEFAULT '[]', evidence TEXT NOT NULL DEFAULT '[]', notify INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS messages_room_seq ON messages(conversation_id,seq);
+CREATE TABLE IF NOT EXISTS message_reactions(message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+ emoji TEXT NOT NULL, actor_id TEXT NOT NULL, PRIMARY KEY(message_id,emoji,actor_id));
 CREATE TABLE IF NOT EXISTS message_questions(message_id TEXT PRIMARY KEY REFERENCES messages(id), question TEXT NOT NULL,
  status TEXT NOT NULL DEFAULT 'open', response_id TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS memories(id TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), conversation_id TEXT NOT NULL, body TEXT NOT NULL, source_id TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -312,7 +314,7 @@ func (s *Store) messagesAfter(room string, after, before int64, limit int) ([]Me
 	if e = s.attachMessageArtifacts(result); e != nil {
 		return nil, e
 	}
-	return result, nil
+	return result, s.attachMessageReactions(result)
 }
 
 func insertMessage(tx *sql.Tx, m Message) error {

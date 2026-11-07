@@ -15,8 +15,8 @@ function positionFloating(pop, anchor) {
 }
 function closeTransient(restoreFocus=false) {
   let closed=false;
-  const focusTarget=$('start-popover').matches(':popover-open') ? startAnchor : $('emoji-popover').matches(':popover-open') ? document.querySelector('[data-action=emoji-menu]') : personAnchor;
-  for (const id of ['person-popover','start-popover','emoji-popover']) {
+  const focusTarget=$('reaction-popover').matches(':popover-open') ? reactionAnchor : $('start-popover').matches(':popover-open') ? startAnchor : $('emoji-popover').matches(':popover-open') ? document.querySelector('[data-action=emoji-menu]') : personAnchor;
+  for (const id of ['person-popover','start-popover','emoji-popover','reaction-popover']) {
     const pop=$(id); if(pop?.matches(':popover-open')) { pop.hidePopover(); closed=true; }
   }
   if(closed && restoreFocus) (focusTarget?.isConnected ? focusTarget : $('message-input')).focus({preventScroll:true});
@@ -153,6 +153,7 @@ const chatObserver=new ResizeObserver(()=>{
     }
     positionFloating($('start-popover'),startAnchor);
     positionFloating($('emoji-popover'),document.querySelector('[data-action=emoji-menu]'));
+    positionReactionPopover();
   });
 });
 chatObserver.observe($('main'));
@@ -161,6 +162,7 @@ window.addEventListener('resize',()=>{
 });
 // 跟随消息头像的浮卡在滚动时继续锚定；头像离开视口就收起，避免悬空。
 $('chat-body').addEventListener('scroll',()=>{
+  positionReactionPopover();
   if(!$('person-popover').matches(':popover-open') || !personAnchor?.closest('#messages')) return;
   const a=personAnchor.getBoundingClientRect(), b=$('chat-body').getBoundingClientRect();
   if(a.bottom<b.top || a.top>b.bottom) closeTransient();
@@ -168,7 +170,8 @@ $('chat-body').addEventListener('scroll',()=>{
 },{passive:true});
 // 所有交互函数就绪后连接 SSE，快响应也不会早于浮层和裁剪初始化。
 const stream = new EventSource('/api/events');
-stream.addEventListener('ready', () => { $('connection-dot').className = 'ready'; $('connection-label').textContent = '已连接'; scheduleRefresh(); });
+stream.addEventListener('ready', () => { $('connection-dot').className = 'ready'; $('connection-label').textContent = '已连接'; scheduleRefresh(); refreshReactions(); });
 stream.addEventListener('change',scheduleRefresh);
+stream.addEventListener('reactions',event=>refreshReactions(JSON.parse(event.data).conversation_id));
 stream.onerror = () => { $('connection-dot').className = ''; $('connection-label').textContent = '正在重连'; };
 refresh();

@@ -41,6 +41,8 @@ func NewHandler(engine *Engine) http.Handler {
 	mux.HandleFunc("GET /api/conversations/{id}", a.conversation)
 	mux.HandleFunc("PATCH /api/conversations/{id}/coordinator", a.coordinator)
 	mux.HandleFunc("POST /api/conversations/{id}/messages", a.sendMessage)
+	mux.HandleFunc("PUT /api/conversations/{id}/messages/{message}/reaction", a.messageReaction)
+	mux.HandleFunc("GET /api/conversations/{id}/reactions", a.conversationReactions)
 	mux.HandleFunc("GET /api/artifacts/{id}", a.artifact)
 	mux.HandleFunc("GET /api/artifacts/{id}/preview", a.artifactPreview)
 	mux.HandleFunc("GET /api/artifacts/{id}/download", a.artifactDownload)
@@ -154,7 +156,7 @@ func (a *API) state(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	respond(w, 200, map[string]any{"profile": profile, "personal_focus": focus, "budget_blocked": a.engine.Store.budgetBlocked(a.engine.Config, usage), "members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "chat_model": a.engine.Config.ChatModel, "weekly_budget_micros": a.engine.Config.weeklyBudgetAt(time.Now()), "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
+	respond(w, 200, map[string]any{"profile": profile, "personal_focus": focus, "budget_blocked": a.engine.Store.budgetBlocked(a.engine.Config, usage), "members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "chat_model": a.engine.Config.ChatModel, "weekly_budget_micros": a.engine.Config.weeklyBudgetAt(time.Now()), "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes()), "reaction_palette": reactionPalette})
 }
 func (a *API) questions(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -549,6 +551,8 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	stream, closeStream := a.engine.Hub.Subscribe()
 	defer closeStream()
+	reactions, closeReactions := a.engine.Hub.SubscribeReactions()
+	defer closeReactions()
 	io.WriteString(w, "retry: 2000\nevent: ready\ndata: {}\n\n")
 	flusher.Flush()
 	heartbeat := time.NewTicker(20 * time.Second)
@@ -559,6 +563,9 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 			return
 		case room := <-stream:
 			fmt.Fprintf(w, "event: change\ndata: %s\n\n", asJSON(map[string]string{"conversation_id": room}))
+			flusher.Flush()
+		case room := <-reactions:
+			fmt.Fprintf(w, "event: reactions\ndata: %s\n\n", asJSON(map[string]string{"conversation_id": room}))
 			flusher.Flush()
 		case <-heartbeat.C:
 			io.WriteString(w, ": connected\n\n")
