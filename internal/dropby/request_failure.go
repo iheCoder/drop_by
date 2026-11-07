@@ -7,9 +7,10 @@ import (
 	"time"
 )
 
-// requestFailure 保留足够的故障分类，不携带 URL、密钥或供应商响应正文。
+// requestFailure 保留故障分类和供应商 error.message，凭据在请求边界脱敏。
 // 只在外部只读/模型请求边界重试；不重放工具，也不重跑整项工作。
 type requestFailure struct {
+	Detail     string
 	Stage      string
 	Status     int
 	RetryAfter time.Duration
@@ -18,7 +19,7 @@ type requestFailure struct {
 
 func (e *requestFailure) Error() string {
 	if e.Status != 0 {
-		return fmt.Sprintf("%s：HTTP %d", e.Stage, e.Status)
+		return fmt.Sprintf("%s：HTTP %d %s", e.Stage, e.Status, e.Detail)
 	}
 	return e.Stage
 }
@@ -43,6 +44,5 @@ func retryRequest(ctx context.Context, request func() error) error {
 	}
 }
 
-// 这两个错误只暂停无法安全继续的具体调用，不决定角色应否发言。
+// 写入结果未知时不盲目重放，避免重复发布或创建任务。
 var errUncertainTool = errors.New("上次工具执行结果尚未确认，未重复执行")
-var errRepeatedTool = errors.New("相同工具请求已连续失败，保留现场等待改变方法")

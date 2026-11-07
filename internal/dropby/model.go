@@ -315,17 +315,21 @@ func requestJSON(ctx context.Context, client *http.Client, endpoint, key string,
 		} else if date, err := http.ParseTime(r.Header.Get("Retry-After")); err == nil {
 			wait = time.Until(date)
 		}
-		return &requestFailure{Stage: "服务请求失败", Status: r.StatusCode, RetryAfter: wait, Temporary: r.StatusCode == 429 || r.StatusCode == 408 || r.StatusCode == 500 || r.StatusCode == 502 || r.StatusCode == 503 || r.StatusCode == 504}
+		var detail struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&detail)
+		message := strings.ReplaceAll(detail.Error.Message, key, "[credential]")
+		return &requestFailure{Detail: message, Stage: "服务请求失败", Status: r.StatusCode, RetryAfter: wait, Temporary: r.StatusCode == 429 || r.StatusCode == 408 || r.StatusCode == 500 || r.StatusCode == 502 || r.StatusCode == 503 || r.StatusCode == 504}
 	}
-	b, e := io.ReadAll(io.LimitReader(r.Body, 4<<20+1))
+	b, e := io.ReadAll(r.Body)
 	if e != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		return &requestFailure{Stage: "读取服务结果中断", Temporary: true}
-	}
-	if len(b) > 4<<20 {
-		return fmt.Errorf("服务结果超过大小限制")
 	}
 	if e = json.Unmarshal(b, out); e != nil {
 		return fmt.Errorf("服务返回了无法识别的 JSON")

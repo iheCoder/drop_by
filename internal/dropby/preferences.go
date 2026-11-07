@@ -238,13 +238,13 @@ func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 }
 
 func validateQuestion(q Question) error {
-	if strings.TrimSpace(q.Text) == "" || len([]rune(q.Text)) > 500 || len(q.Options) < 2 || len(q.Options) > 4 {
-		return fmt.Errorf("一个问题需要 2 到 4 个简短选项")
+	if strings.TrimSpace(q.Text) == "" || len(q.Options) < 2 {
+		return fmt.Errorf("一个问题需要 至少 2 个简短选项")
 	}
 	seen := map[string]bool{}
 	for _, option := range q.Options {
 		option = strings.TrimSpace(option)
-		if option == "" || len([]rune(option)) > 120 || seen[option] {
+		if option == "" || seen[option] {
 			return fmt.Errorf("问题选项需要简短且互不重复")
 		}
 		seen[option] = true
@@ -252,8 +252,7 @@ func validateQuestion(q Question) error {
 	return nil
 }
 
-// 可选问题只有一条实际消息。尚未处理的问题直接复用；工具也不能在没有新的真人消息
-// 时不断创建问题。这个约束只约束 UI 问题工具，不规定人物必须什么时候开口。
+// 每次新调用发布自己的问题；同次调用恢复由 Toolbox 处理，不替换成无关旧问题。
 func (s *Store) AskQuestion(c Conversation, m Member, q Question, body string, explicit bool) (Message, error) {
 	if !contains(c.MemberIDs, m.ID) {
 		return Message{}, fmt.Errorf("提问成员不在当前聊天中")
@@ -272,31 +271,6 @@ func (s *Store) AskQuestion(c Conversation, m Member, q Question, body string, e
 		}
 		if paused && !explicit {
 			return ErrStale
-		}
-		var id, raw, author, text, created string
-		err := tx.QueryRow(`SELECT m.id,q.question,m.author_id,m.body,m.created_at FROM message_questions q JOIN messages m ON m.id=q.message_id WHERE m.conversation_id=? AND q.status='open' ORDER BY m.seq DESC LIMIT 1`, c.ID).Scan(&id, &raw, &author, &text, &created)
-		if err == nil {
-			var existing Question
-			if err = json.Unmarshal([]byte(raw), &existing); err != nil {
-				return err
-			}
-			out = Message{ID: id, ConversationID: c.ID, AuthorID: author, Body: text, Question: &existing, QuestionStatus: "open", CreatedAt: created}
-			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if !explicit {
-			var recentQuestion, recentUser int64
-			if err = tx.QueryRow(`SELECT COALESCE(MAX(m.seq),0) FROM messages m JOIN message_questions q ON q.message_id=m.id WHERE m.conversation_id=?`, c.ID).Scan(&recentQuestion); err != nil {
-				return err
-			}
-			if err = tx.QueryRow(`SELECT COALESCE(MAX(seq),0) FROM messages WHERE conversation_id=? AND author_id='user'`, c.ID).Scan(&recentUser); err != nil {
-				return err
-			}
-			if recentQuestion > 0 && recentQuestion > recentUser {
-				return fmt.Errorf("已经问过一个问题，请先继续普通交流")
-			}
 		}
 		return insertMessage(tx, out)
 	})

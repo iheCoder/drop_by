@@ -341,8 +341,8 @@ func TestToolFailureHasRealRecordAndCannotBecomeSuccess(t *testing.T) {
 	cfg.SearchURL = upstream.URL
 	tbox := Toolbox{Store: s, Config: cfg, Hub: NewHub()}
 	result, err := tbox.Execute(context.Background(), c, m, w, toolCall("search", map[string]string{"query": "纸自行车"}))
-	if err == nil || !strings.Contains(err.Error(), "503") || result != "" {
-		t.Fatalf("故障应停留在执行层: %s %v", result, err)
+	if err != nil || !strings.Contains(result, `"status":"failed"`) {
+		t.Fatalf("工具失败应交回给本人: %s %v", result, err)
 	}
 	runs, _ := s.ToolRuns(c.ID, w.ID)
 	if len(runs) != 1 || runs[0].Status != "failed" {
@@ -753,43 +753,28 @@ func TestGroundingChecksPersistedContentAndFailsClosed(t *testing.T) {
 	}
 }
 
-// 首句的工具范围是真实执行限制：可以安排后台工作或发布一个本地问题卡，
-// 但不能先读网页拖住回复。停止研究不应连正常的可选聊天问题也一起禁掉。
-func TestFirstReplyDefersSlowTools(t *testing.T) {
+// 首轮可自主联网；用户暂停研究仍关闭联网入口。
+func TestFirstReplyAllowsToolsAndRespectsPause(t *testing.T) {
 	s, c, m := fixture(t)
 	e := NewEngine(s, nil, testConfig())
 	first := Work{Kind: "first_reply"}
-	defs := e.Tools.Definitions(m, c, first)
-	allowed := map[string]bool{"schedule_exploration": true, "schedule_followup": true, "cancel_work": true, "ask_question": true, "remember": true, "read_tool_result": true, "read_memory": true, "search_memory": true, "read_history": true, "read_work": true, "read_artifact": true}
-	if len(defs) != len(allowed) {
-		t.Fatalf("首句工具: %+v", defs)
+	names := map[string]bool{}
+	for _, d := range e.Tools.Definitions(m, c, first) {
+		names[d.Function.Name] = true
 	}
-	for _, def := range defs {
-		if !allowed[def.Function.Name] {
-			t.Fatalf("首句放行了慢工具 %s", def.Function.Name)
+	for _, name := range []string{"search", "read_page", "save_artifact", "read_tool_result"} {
+		if !names[name] {
+			t.Fatalf("missing %s", name)
 		}
-	}
-	_, err := e.Tools.Execute(context.Background(), c, m, first, toolCall("search", map[string]string{"query": "chair"}))
-	if err == nil {
-		t.Fatal("首句不应执行搜索")
 	}
 	c.ResearchPaused = true
-	defs = e.Tools.Definitions(m, c, first)
-	for _, def := range defs {
-		if !recallTool(def.Function.Name) && def.Function.Name != "cancel_work" && def.Function.Name != "ask_question" {
-			t.Fatalf("暂停研究后越权：%s", def.Function.Name)
-		}
-	}
-	c.DiscussionPaused = true
-	defs = e.Tools.Definitions(m, c, first)
-	for _, def := range defs {
-		if !recallTool(def.Function.Name) && def.Function.Name != "cancel_work" {
-			t.Fatalf("暂停讨论后越权：%s", def.Function.Name)
+	for _, d := range e.Tools.Definitions(m, c, first) {
+		if d.Function.Name == "search" || d.Function.Name == "read_page" || d.Function.Name == "schedule_exploration" {
+			t.Fatal("pause ignored")
 		}
 	}
 }
 
-// 同一个模型实例并发处理快速与深入请求，推理预算不能互相污染。
 func TestReasoningBudgetIsPerRequest(t *testing.T) {
 	s, _, _ := fixture(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

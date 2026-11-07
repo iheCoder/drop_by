@@ -56,9 +56,6 @@ func likeTerms(query string) ([]string, []any) {
 	if len(terms) == 0 {
 		terms = []string{""}
 	}
-	if len(terms) > 8 {
-		terms = terms[:8]
-	}
 	clauses, values := []string{}, []any{}
 	for _, term := range terms {
 		term = strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(term)
@@ -68,13 +65,14 @@ func likeTerms(query string) ([]string, []any) {
 	return clauses, values
 }
 
-func (s *Store) searchMemories(member, room, query string, before int64) (any, error) {
+func (s *Store) searchMemories(member, room, query string, before int64, pageSize ...int) (any, error) {
+	limit := readDefault(pageSize, 0, 12)
 	clauses, values := likeTerms(query)
 	args := []any{member, room, before, before}
 	args = append(args, values...)
 	rows, err := s.db.Query(strings.Replace(memorySelect, "SELECT m.id", "SELECT m.rowid,m.id", 1)+`
 	 WHERE m.member_id=? AND (m.conversation_id=? OR m.conversation_id='') AND (?=0 OR m.rowid<?)
-	 AND (`+strings.Join(clauses, " OR ")+`) ORDER BY m.rowid DESC LIMIT 13`, args...)
+	 AND (`+strings.Join(clauses, " OR ")+`) ORDER BY m.rowid DESC LIMIT ?`, append(args, limit+1)...)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +86,7 @@ func (s *Store) searchMemories(member, room, query string, before int64) (any, e
 		if err != nil {
 			return nil, err
 		}
-		if len(list) == 12 {
+		if len(list) == limit {
 			more = true
 			break
 		}
@@ -99,7 +97,8 @@ func (s *Store) searchMemories(member, room, query string, before int64) (any, e
 	return map[string]any{"memories": list, "before": cursor, "has_more": more}, rows.Err()
 }
 
-func (s *Store) searchHistory(room, query, id string, before int64, offset int) (any, error) {
+func (s *Store) searchHistory(room, query, id string, before int64, offset int, pageSize ...int) (any, error) {
+	limit := readDefault(pageSize, 0, 12)
 	if id != "" {
 		var m Message
 		m.ConversationID = room
@@ -111,7 +110,7 @@ func (s *Store) searchHistory(room, query, id string, before int64, offset int) 
 		if offset < 0 || offset > len(chars) {
 			return nil, fmt.Errorf("读取位置无效")
 		}
-		end := min(offset+5000, len(chars))
+		end := offset + min(readDefault(pageSize, 1, 5000), len(chars)-offset)
 		m.Body = string(chars[offset:end])
 		return map[string]any{"message": m, "next_offset": end, "has_more": end < len(chars)}, nil
 	}
@@ -120,7 +119,7 @@ func (s *Store) searchHistory(room, query, id string, before int64, offset int) 
 	args = append(args, values...)
 	args = append(args, query) // 保持旧版本 query=消息ID 的兼容行为。
 	rows, err := s.db.Query(`SELECT seq,id,author_id,body,reply_to,created_at FROM messages WHERE conversation_id=?
-	 AND (?=0 OR seq<?) AND (`+strings.Join(clauses, " OR ")+` OR id=?) ORDER BY seq DESC LIMIT 13`, args...)
+	 AND (?=0 OR seq<?) AND (`+strings.Join(clauses, " OR ")+` OR id=?) ORDER BY seq DESC LIMIT ?`, append(args, limit+1)...)
 	if err != nil {
 		return nil, err
 	}
@@ -133,11 +132,11 @@ func (s *Store) searchHistory(room, query, id string, before int64, offset int) 
 		if err := rows.Scan(&m.Seq, &m.ID, &m.AuthorID, &m.Body, &m.ReplyTo, &m.CreatedAt); err != nil {
 			return nil, err
 		}
-		if len(list) == 12 {
+		if len(list) == limit {
 			more = true
 			break
 		}
-		m.Body = contextExcerpt(m.Body, 700)
+		m.Body = contextExcerpt(m.Body, readDefault(pageSize, 1, 700))
 		list = append(list, m)
 		cursor = m.Seq
 	}
@@ -154,14 +153,15 @@ func contextExcerpt(body string, limit int) string {
 	return string(r[:head]) + "\n[中段省略；可按消息 ID 读取原文]\n" + string(r[len(r)-(limit-head):])
 }
 
-func (s *Store) artifactIndex(room, query string, offset int) (any, error) {
+func (s *Store) artifactIndex(room, query string, offset int, pageSize ...int) (any, error) {
+	limit := readDefault(pageSize, 0, 12)
 	if offset < 0 {
 		return nil, fmt.Errorf("读取位置无效")
 	}
 	// 这里只取元数据，较早的安静创作也能找到，不能要求模型先猜出成果 ID。
 	rows, err := s.db.Query(`SELECT a.id,a.member_id,a.title,a.version,a.format,a.created_at FROM artifacts a
 	 WHERE a.conversation_id=? AND a.version=(SELECT max(version) FROM artifacts b WHERE b.id=a.id)
-	 AND instr(lower(a.title),lower(?))>0 ORDER BY a.created_at DESC,a.id LIMIT 13 OFFSET ?`, room, query, offset)
+	 AND instr(lower(a.title),lower(?))>0 ORDER BY a.created_at DESC,a.id LIMIT ? OFFSET ?`, room, query, limit+1, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +173,7 @@ func (s *Store) artifactIndex(room, query string, offset int) (any, error) {
 		if err := rows.Scan(&a.ID, &a.MemberID, &a.Title, &a.Version, &a.Format, &a.CreatedAt); err != nil {
 			return nil, err
 		}
-		if len(list) == 12 {
+		if len(list) == limit {
 			more = true
 			break
 		}

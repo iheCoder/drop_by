@@ -74,9 +74,6 @@ func (s *Store) DelegateWork(c Conversation, coordinator Member, source Work, me
 	if w.Instruction == "" || w.Reason == "" {
 		return w, fmt.Errorf("委托需要具体任务、预期结果，以及选择这位同伴的理由")
 	}
-	if len([]rune(w.Instruction)) > 5000 || len([]rune(w.Reason)) > 1500 {
-		return w, fmt.Errorf("委托说明过长，请聚焦一个可以完成的具体任务")
-	}
 	err := s.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 		var kind, current string
 		var paused bool

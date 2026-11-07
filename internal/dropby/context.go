@@ -12,8 +12,8 @@ func compactToolHistory(messages []ChatMessage) {
 		}
 		limit := 700
 		if remaining > 0 {
-			limit = 6000
 			remaining--
+			continue
 		}
 		messages[i].Content = toolExcerpt(messages[i].Content, limit)
 	}
@@ -50,7 +50,7 @@ func toolExcerpt(raw string, limit int) string {
 	return asJSON(excerpt)
 }
 
-// 搜索列表先按条缩短摘要，保留所有来源入口，不能截取整段 JSON 的开头，
+// 搜索概览保留所有原始摘要和来源元信息，不能截取整段 JSON 的开头，
 // 让第一篇长文章遮住后面的结果。完整原文仍由 tool_run_id 分页读取。
 type searchResult struct {
 	Title   string `json:"title"`
@@ -76,23 +76,15 @@ func searchOverview(raw string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	var entries []searchResult
+	var entries []map[string]any
 	if json.Unmarshal(results, &entries) != nil {
 		return "", false
 	}
 	for i := range entries {
-		summary := entries[i].Summary
-		if summary == "" {
-			summary = entries[i].Snippet
-		}
-		if summary == "" {
-			summary = entries[i].Content
-		}
-		entries[i].Summary = clip(summary, 180)
-		entries[i].Snippet, entries[i].Content = "", ""
+		delete(entries[i], "content")
 	}
 	payload["results"] = json.RawMessage(asJSON(entries))
-	payload["excerpt_note"] = json.RawMessage(asJSON("各条摘要已缩短；完整结果可按 tool_run_id 读取。"))
+	payload["excerpt_note"] = json.RawMessage(asJSON("正文已省略；完整结果可按 tool_run_id 读取。"))
 	if _, ok := value["result"]; ok {
 		value["result"] = json.RawMessage(asJSON(payload))
 	} else {

@@ -22,7 +22,7 @@ type webResultCache struct {
 	entries map[[32]byte]*webCacheEntry
 }
 
-func (t *Toolbox) cachedWeb(ctx context.Context, room, path string, body any, fetch func() (map[string]any, error)) (any, error) {
+func (t *Toolbox) cachedWeb(ctx context.Context, room, path string, body any, fetch func() (map[string]any, error), refresh ...bool) (any, error) {
 	// JSON 对象键顺序不影响身份；字符串、URL 查询参数原样保留。凭据只参与哈希，
 	// 防止换服务或换账户后复用旧结果，缓存不跨聊天共享。
 	key := sha256.Sum256([]byte(asJSON([]any{room, t.Config.SearchURL, t.Config.SearchKey, path, body})))
@@ -36,7 +36,7 @@ func (t *Toolbox) cachedWeb(ctx context.Context, room, path string, body any, fe
 			delete(cache.entries, k)
 		}
 	}
-	if entry := cache.entries[key]; entry != nil {
+	if entry := cache.entries[key]; entry != nil && !(len(refresh) > 0 && refresh[0]) {
 		cache.mu.Unlock()
 		// 等待者取消只结束自己的等待，不取消发起者的请求。发起者失败时所有等待者
 		// 都收到该次错误，错误不会留下缓存，之后的新调用可以重新尝试。
@@ -55,7 +55,7 @@ func (t *Toolbox) cachedWeb(ctx context.Context, room, path string, body any, fe
 	result, err := fetch()
 	cache.mu.Lock()
 	entry.result, entry.err, entry.completed = result, err, time.Now()
-	if err != nil {
+	if err != nil && cache.entries[key] == entry {
 		delete(cache.entries, key)
 	}
 	close(entry.done)

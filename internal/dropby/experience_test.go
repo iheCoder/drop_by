@@ -175,7 +175,7 @@ func TestToolHistoryCompactionKeepsRecoverableResults(t *testing.T) {
 	var first map[string]any
 	json.Unmarshal([]byte(messages[1].Content), &first)
 	id := first["tool_run_id"].(string)
-	if len([]rune(messages[1].Content)) > 1000 || len([]rune(messages[17].Content)) > 6400 {
+	if len([]rune(messages[1].Content)) > 1000 || !strings.Contains(messages[17].Content, raw) {
 		t.Fatal("正文没有按新旧收缩")
 	}
 	tb := Toolbox{Store: s, Config: testConfig(), Hub: NewHub()}

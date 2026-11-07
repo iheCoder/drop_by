@@ -117,7 +117,7 @@ func TestQuestionAnswerBelongsToAskerAndUpdatesSameMember(t *testing.T) {
 	}
 }
 
-func TestQuestionFreeAnswerAndSingleOpenQuestion(t *testing.T) {
+func TestQuestionFreeAnswerAndDistinctCalls(t *testing.T) {
 	// 普通文字既可以答题，也可以换话题。这里只测试语义判断之后的持久化边界，
 	// 不把固定关键词当成“模型真的理解了”的证据。
 	s, c, m := fixture(t)
@@ -130,8 +130,8 @@ func TestQuestionFreeAnswerAndSingleOpenQuestion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ID != second.ID {
-		t.Fatal("同一聊天出现两个待回答问题")
+	if first.ID == second.ID {
+		t.Fatal("新调用被错误合并到旧问题")
 	}
 	answer := userMessage(c, "你以后可以短一点，像朋友一样就好。")
 	if err = s.AddUserMessage(answer, time.Hour); err != nil {
@@ -143,17 +143,17 @@ func TestQuestionFreeAnswerAndSingleOpenQuestion(t *testing.T) {
 		t.Fatal(err)
 	}
 	messages, _ := s.Messages(c.ID, 0, 10)
-	if messages[0].QuestionStatus != "answered" {
+	if messages[1].QuestionStatus != "answered" {
 		t.Fatal("自由文字回答没有归入原问题")
 	}
-	// 当前新问题尚未处理时，再一次工具提问仍返回同一条；不会循环发问。
+	// 每次新调用都保留自己的问题，不能用已有问题替换新意图。
 	third, err := s.AskQuestion(c, m, q, q.Text, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fourth, err := s.AskQuestion(c, m, q, q.Text, false)
-	if err != nil || third.ID != fourth.ID {
-		t.Fatal("工具反复发出待回答问题")
+	if err != nil || third.ID == fourth.ID {
+		t.Fatal("新提问被合并")
 	}
 }
 

@@ -1064,10 +1064,8 @@ func (e *Engine) actWithDecision(ctx context.Context, c Conversation, m Member, 
 	}
 	e.setActivity(c.ID, m.ID, "正在组织回应")
 	defer e.setActivity(c.ID, m.ID, "")
-	// 首句不等待网页或长篇创作；后续行动和跟进允许更充分推理。
-	if w.Kind == "first_reply" {
-		instruction += "\n本次先使用本地工具；联网研究或制作可用 schedule_exploration 安排后台执行。"
-	} else if w.Kind == "research" {
+	// 研究采用更充分推理，首轮也可自主使用工具。
+	if w.Kind == "research" {
 		ctx = context.WithValue(ctx, deepReasoningKey{}, true)
 	}
 	input, err := e.contextFor(c, m, w)
@@ -1192,14 +1190,13 @@ unfinished 只表示本次仍有未执行的具体步骤，已安排的未来工
 		}
 		for _, call := range r.ToolCalls {
 			result, err := e.Tools.Execute(ctx, c, m, w, call)
-			var transport *requestFailure
-			if errors.As(err, &transport) || errors.Is(err, errRepeatedTool) || errors.Is(err, errUncertainTool) || errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || errors.Is(err, context.Canceled) {
+			if errors.Is(err, errUncertainTool) || errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || errors.Is(err, context.Canceled) {
 				return Outcome{}, err
 			}
 			if err != nil {
 				result = asJSON(map[string]string{"error": err.Error(), "status": "failed"})
 			}
-			messages = append(messages, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: toolExcerpt(result, 6000)})
+			messages = append(messages, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
 		if updateAfterTools != "" {
 			messages = append(messages, ChatMessage{Role: "user", Content: updateAfterTools})
@@ -1249,9 +1246,6 @@ func (e *Engine) reviewText(ctx context.Context, c Conversation, m Member, w Wor
 	}
 	if strings.TrimSpace(out.Text) == "" {
 		return "", fmt.Errorf("内容无法通过真实性核对，未发布或保存这份草稿")
-	}
-	if len(out.Text) > 70_000 {
-		return "", fmt.Errorf("核对后的内容超过保存限制")
 	}
 	return out.Text, nil
 }

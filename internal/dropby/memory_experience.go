@@ -171,14 +171,11 @@ func (t *Toolbox) remember(ctx context.Context, c Conversation, m Member, w Work
 		return nil, fmt.Errorf("记忆范围无效")
 	}
 	next.Body = strings.TrimSpace(args.Body)
-	if len([]rune(next.Body)) > 5000 || (next.Body == "" && previous.ID == "") {
-		return nil, fmt.Errorf("经历需要非空正文且不超过 5000 字符；删除已有笔记需提供 ID 和 revision")
+	if next.Body == "" && previous.ID == "" {
+		return nil, fmt.Errorf("经历需要非空正文；删除已有笔记需提供 ID 和 revision")
 	}
 	if args.SubjectIDs != nil {
 		next.SubjectIDs = uniqueMemoryIDs(*args.SubjectIDs)
-	}
-	if len(next.SubjectIDs) > 8 {
-		return nil, fmt.Errorf("一次只记录与这段经历有关的人")
 	}
 	for _, id := range next.SubjectIDs {
 		if id != "user" && id != m.ID && !contains(c.MemberIDs, id) && !contains(previous.SubjectIDs, id) {
@@ -196,8 +193,8 @@ func (t *Toolbox) remember(ctx context.Context, c Conversation, m Member, w Work
 			}
 			next.SourceIDs = uniqueMemoryIDs([]string{source})
 		}
-		if len(next.SourceIDs) == 0 || len(next.SourceIDs) > 12 {
-			return nil, fmt.Errorf("经历需引用 1 到 12 条真实消息或行动来源")
+		if len(next.SourceIDs) == 0 {
+			return nil, fmt.Errorf("经历需引用真实消息或行动来源")
 		}
 		evidence, err := t.Store.memoryEvidence(m.ID, c.ID, next.SourceIDs, previous.SourceIDs)
 		if err != nil {
@@ -212,7 +209,7 @@ func (t *Toolbox) remember(ctx context.Context, c Conversation, m Member, w Work
 			if err != nil {
 				return nil, err
 			}
-			if strings.TrimSpace(next.Body) == "" || len([]rune(next.Body)) > 5000 {
+			if strings.TrimSpace(next.Body) == "" {
 				return nil, fmt.Errorf("核对后的经历为空或过长，本次未保存")
 			}
 		}

@@ -220,7 +220,7 @@ func TestUnknownRequestReservationRemainsVisible(t *testing.T) {
 	}
 }
 
-// 参数变化不是原样失败重试；只有同一错误操作连续失败才暂停。
+// 参数错误持续交还成员判断，不按固定失败次数强行终止。
 func TestRepeatedFailureDoesNotBlockChangedParameters(t *testing.T) {
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "research")
@@ -231,7 +231,7 @@ func TestRepeatedFailureDoesNotBlockChangedParameters(t *testing.T) {
 			t.Fatalf("应先反馈实际参数错误: %s %v", result, err)
 		}
 	}
-	if _, err := box.Execute(context.Background(), c, m, w, toolCall("read_tool_result", map[string]any{"offset": 0, "id": "missing"})); !errors.Is(err, errRepeatedTool) {
+	if _, err := box.Execute(context.Background(), c, m, w, toolCall("read_tool_result", map[string]any{"offset": 0, "id": "missing"})); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := box.Execute(context.Background(), c, m, w, toolCall("read_tool_result", map[string]any{"offset": 1, "id": "missing"})); err != nil {

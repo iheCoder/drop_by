@@ -63,10 +63,10 @@ func (s *Store) attachMessageArtifacts(messages []Message) error {
 
 func (t *Toolbox) saveArtifact(ctx context.Context, c Conversation, m Member, w Work, a Artifact) (any, error) {
 	validContent := func() bool {
-		return strings.TrimSpace(a.Title) != "" && strings.TrimSpace(a.Content) != "" && len([]rune(a.Title)) <= 160 && len(a.Content) <= 70_000
+		return strings.TrimSpace(a.Title) != "" && strings.TrimSpace(a.Content) != ""
 	}
 	if !validContent() {
-		return nil, fmt.Errorf("成果需要有效标题和完整内容，内容不能超过 70 KB")
+		return nil, fmt.Errorf("成果需要有效标题和完整内容")
 	}
 	// 编辑时省略格式就沿用原作，避免一次文字修改把可预览的 HTML 变成源码笔记。
 	// 事务内仍重新校验所属会话及版本，以防迟到的生成覆盖另一个聊天的成果。
