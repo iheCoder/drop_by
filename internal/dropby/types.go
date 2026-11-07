@@ -72,6 +72,11 @@ type Memory struct {
 	Body           string `json:"body"`
 	SourceID       string `json:"source_id"`
 	UpdatedAt      string `json:"updated_at"`
+	// 正文始终是这位成员的理解，不是共享的人物定论。少量元数据只负责
+	// 找回适用经历、核对原始依据和防止旧写入覆盖新纠正，不给人格打分。
+	Revision   int      `json:"revision"`
+	SubjectIDs []string `json:"subject_ids,omitempty"`
+	SourceIDs  []string `json:"source_ids,omitempty"`
 }
 
 // Work 是可以真正执行和恢复的工作，不代表兴趣的生命周期。

@@ -54,6 +54,8 @@ func TestQueuedMemberReconsidersPeersAndSelectedOlderMessages(t *testing.T) {
 	s, c, members := groupWithMembers(t, 3)
 	older := userMessage(c, "周末想去走走，不过不想排队。")
 	newer := userMessage(c, "其实这周很累，不太想再做计划。")
+	// 明确 @ 第一位来建立待发顺序，不用睡眠时长猜并发观察的完成顺序。
+	newer.Mentions = []string{members[0].ID}
 	if err := s.AddUserMessage(older, time.Hour); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +90,6 @@ func TestQueuedMemberReconsidersPeersAndSelectedOlderMessages(t *testing.T) {
 				return jsonReply(Decision{Action: "pass", Reason: "目前想先听听", State: &state, StateSourceIDs: []string{newer.ID}}), nil
 			}
 			if input.Self.ID == members[1].ID {
-				time.Sleep(10 * time.Millisecond)
 				return jsonReply(Decision{Action: "speak", Intent: "把不排队和省心放在一起考虑", MessageIDs: []string{older.ID, newer.ID}}), nil
 			}
 			return jsonReply(Decision{Action: "speak", Intent: "先理解这周太累的感受", MessageIDs: []string{newer.ID}}), nil

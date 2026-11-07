@@ -695,7 +695,7 @@ func (e *Engine) observeMember(ctx context.Context, c Conversation, w Work, id s
 		input["earlier_intention"] = previous.Decision
 		input["earlier_seen_through_seq"] = previous.SeenSeq
 	}
-	err = e.recallDecision(ctx, c, m, w, memberPrinciples+`\n此时只决定自己的下一步，不能替其他成员作决定。
+	err = e.recallDecision(ctx, c, m, w, memberPrinciples+`\n此时只决定自己的下一步，不能替其他成员作决定。在给出最终判断前，先处理自己需要保留或纠正的经历。remember 是安静整理自己的理解，不是公开回复，也不是预约后续；不能因决定 pass、任务已完成或用户不想要额外回应就跳过值得保留的约定。
 你读的是一段多人交流，不是一组等待逐条答复的问题。从自己的性格、此刻在意的事、已有经历/行动和群里实际说过的话出发，选零条、一条或几条想回应的消息；可以接较早的话、综合几个人的话，也可以暂不参与。
 返回 {"action":"speak|explore|revisit|pass","intent":"具体想回应谁的哪一点、说或做什么","reason":"给用户看的简短参与来由","message_ids":["选中的当前聊天消息ID，可为空"]}。需要改变持续关注时可加 state 和 state_source_ids。
 先理解每个人已说了什么，以及这些话怎样改变自己的想法。别人已说过原本要说的，可以缩短为自然认同、进一步展开不同细节、换关注点或安静；不要换一套措辞再答一遍。没发过言不构成发言理由，也不必故意反对。认同、玩笑、共情和一起想象都可以有价值，不要求新事实。
@@ -836,18 +836,6 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work) (map[string]any, e
 		messages[i].Body = contextExcerpt(messages[i].Body, limit)
 		remaining -= len([]rune(messages[i].Body))
 	}
-	memories, err := e.Store.Memories(m.ID, c.ID)
-	if err != nil {
-		return nil, err
-	}
-	// 常驻的是自己的身份与挂念。旧经历只提供索引，完整笔记按需检索，
-	// 避免最近写过的八条无关经历反复挤占每次发言的输入。
-	if len(memories) > 6 {
-		memories = memories[:6]
-	}
-	for i := range memories {
-		memories[i].Body = clip(memories[i].Body, 140)
-	}
 	jobs, err := e.Store.OpenWork(c.ID)
 	if err != nil {
 		return nil, err
@@ -908,6 +896,12 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work) (map[string]any, e
 	}
 	runContext := []map[string]any{}
 	for i := range runs {
+		if runs[i].Name == "remember" || runs[i].Name == "read_memory" || runs[i].Name == "search_memory" || runs[i].Name == "read_tool_result" {
+			// 工具日志是当时的快照。不能让刚纠正的旧印象通过历史读写日志
+			// 又进入默认输入；保留回查入口，需要时显式读当前笔记或历史记录。
+			runContext = append(runContext, map[string]any{"id": runs[i].ID, "member_id": runs[i].MemberID, "name": runs[i].Name, "status": runs[i].Status, "result": "历史读取/笔记操作已归档。当前经历以 memory 或 read_memory 的最新版本为准。"})
+			continue
+		}
 		runContext = append(runContext, map[string]any{"id": runs[i].ID, "member_id": runs[i].MemberID, "name": runs[i].Name, "status": runs[i].Status, "arguments": clip(string(runs[i].Arguments), 200), "result": clip(runs[i].Result, 650)})
 	}
 	artifacts, err := e.Store.Artifacts(c.ID)
@@ -956,6 +950,12 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work) (map[string]any, e
 			original.Body = contextExcerpt(original.Body, 8000)
 			sourceMessage = &original
 		}
+	}
+	// 当前任务和最新现场先完整组装；个人经历只在自己的固定小窗口里竞争。
+	// 本地召回提供线索，成员仍可补查原文或不采用，不预先分配赞同/反对的戏份。
+	memories, err := e.Store.relevantMemories(m.ID, c.ID, memoryQuery(w, sourceMessage, messages))
+	if err != nil {
+		return nil, err
 	}
 	identity := map[string]any{"id": m.ID, "name": m.Name, "profile": m.Profile, "tools": m.Tools}
 	seen, currentState, err := e.Store.observation(c.ID, m.ID)
@@ -1149,6 +1149,9 @@ func (e *Engine) reviewText(ctx context.Context, c Conversation, m Member, w Wor
 	}
 	input["draft_kind"] = kind
 	input["draft"] = text
+	if evidence := ctx.Value(memoryReviewKey{}); evidence != nil {
+		input["memory_evidence"] = evidence
+	}
 	var out struct {
 		Text string `json:"text"`
 	}
@@ -1157,7 +1160,9 @@ func (e *Engine) reviewText(ctx context.Context, c Conversation, m Member, w Wor
 尤其不能把“另一位 AI 说自己坐过”改写成“该成员的真实使用体验”，也不能用“听朋友讲过”替换虚构亲身经历。可改成明确的结构推测或想象，保留有用观点。如果用户纠正过，必须尊重更正。
 “已安排/已经委托某位同伴”必须有成功的 delegate_work 工具记录或 work.assigned_by 指向说话人的真实工作；仅真人说「请 B 做」、另一位自行开始、或正文写了计划，都不是这位成员已执行委托。没有真实分工记录时不能保留“已安排”表述，也不能把他人行动说成自己的组织成果。
 搜索、阅读外部页面、制作、保存、验证等完成性陈述必须有 tool_runs 中成功的记录，或当前可见的实际成果支持。失败记录不能说成功；模型已经看到的聊天与成果片段可以说看到，但不能声称读取过不存在的完整材料。别人完成的行动要正确归属。
-保留来源链接、事实/推测/草稿区分。不要对未找到的来源补写事实，不新增工具行动，不添加无关免责声明。经历笔记和成果也不能储存无依据的真实经历。如果原文真实，逐字保留；若有问题，最小改写纠正其证据强度与归属。无法忠实修正时 text 为空。返回 {"text":"核对后的文本"}。`, input, &out)
+保留来源链接、事实/推测/草稿区分。不要对未找到的来源补写事实，不新增工具行动，不添加无关免责声明。经历笔记和成果也不能储存无依据的真实经历。
+若有 memory_evidence，直接核对 sources 原文与作者，previous 只是旧理解。允许形成有适用范围的个人看法、默契、兴趣和行动习惯，但一次经历不证明普遍人格；转述不升级成亲历，重复转述不算独立印证，系统/工具故障不归因成人品。明确纠正应修正原来的理解，临时例外不能扩大成永久偏好；portable=true 时只保留可携带的非敏感自身理解。保留理解的适用场景和例外，不把有限认识改成永久标签。
+如果原文真实，逐字保留；若有问题，最小改写纠正其证据强度与归属。无法忠实修正时 text 为空。返回 {"text":"核对后的文本"}。`, input, &out)
 	if err != nil {
 		return "", err
 	}

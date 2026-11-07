@@ -72,9 +72,9 @@ func (s *Store) searchMemories(member, room, query string, before int64) (any, e
 	clauses, values := likeTerms(query)
 	args := []any{member, room, before, before}
 	args = append(args, values...)
-	rows, err := s.db.Query(`SELECT rowid,id,body,source_id,conversation_id,updated_at FROM memories
-	 WHERE member_id=? AND (conversation_id=? OR conversation_id='') AND (?=0 OR rowid<?)
-	 AND (`+strings.Join(clauses, " OR ")+`) ORDER BY rowid DESC LIMIT 13`, args...)
+	rows, err := s.db.Query(strings.Replace(memorySelect, "SELECT m.id", "SELECT m.rowid,m.id", 1)+`
+	 WHERE m.member_id=? AND (m.conversation_id=? OR m.conversation_id='') AND (?=0 OR m.rowid<?)
+	 AND (`+strings.Join(clauses, " OR ")+`) ORDER BY m.rowid DESC LIMIT 13`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -84,8 +84,8 @@ func (s *Store) searchMemories(member, room, query string, before int64) (any, e
 	more := false
 	for rows.Next() {
 		var id int64
-		m := Memory{MemberID: member}
-		if err := rows.Scan(&id, &m.ID, &m.Body, &m.SourceID, &m.ConversationID, &m.UpdatedAt); err != nil {
+		m, err := scanMemory(rows, &id)
+		if err != nil {
 			return nil, err
 		}
 		if len(list) == 12 {
@@ -234,8 +234,12 @@ func (e *Engine) recallDecision(ctx context.Context, c Conversation, m Member, w
 
 const memoryContextPrompt = `
 身份 self.profile、当前仍有效的方向 conversation.guidance、自己的 current_state 和未完 work 是持续上下文；近期聊天和 memory/artifacts 索引只是一小部分入口，不代表全部经历。
+memory 是按当前事项找出的少量个人经历线索，不是所有人共享的事实或完整人物画像。先理解眼前任务、最新条件和自己的倾向，再判断哪条旧理解适用；无关往事无需提起，也不必证明自己记得。兴趣、默契、玩笑、分歧可以影响关注与行动，不只影响措辞；可以赞同、补充、独立切入或安静，不为表现个性故意反对。
 涉及过去约定、关系变化、以前的作品或“还记得”时，先用 search_memory/read_history/read_work 找回具体内容；可换词或翻页，不要把没看见当作没发生。必须根据真实记录回应，不能编造共同经历。
-remember 保存值得以后找回的经历、约定及其变化，已过时就更新已有笔记；日常闲聊不逐句写。即使本次决定 pass，也可先保存重要经历。当前持续挂念放 state，长期身份仍来自用户编辑的 profile，不因一次交流改写性格。
+出现有意义的合作结果、共同玩笑、分歧或理解变化时，用 remember 保留自己的少量理解及原始来源、适用场景，而不是给每位成员写评语。每个人可注意到不同部分，也可以没有新结论。同一成员换群仍是同一个人：可跨场景复用的非敏感相处理解、工作习惯和自身经历用 scope=member；只限本群的约定或私密内容留 conversation。当前持续挂念放 state，稳定身份仍来自 profile，不因一次交流改写性格。
+真人明确表达“以后这类事情怎么做”的偏好，或刚完成的合作确实改变了自己下次的做法，应在结束本次判断/行动前用 remember 保存；state 和 conversation.guidance 只在本聊天里，不能代替可携带经历。区分这次的时间地点等临时条件与以后适用的方式，不把两者一起固化。已有相同理解则无需重写；每次合作也不必编造一条新的感悟。完成整理后仍可 pass，不需要公开宣告记住了。
+不要把有意义的共同经历全部压成“用户喜欢某流程”。确实形成合作认识时，简短保留和谁、发生何事、自己的理解，以及它可能怎样影响下一次行动；相关人用实际名字和 subject_ids 保留，便于以后知道自己在说谁。已有同一认识就更新原笔记，不再另存近似总结。只写有依据的部分，也允许暂时没有对人的新判断，不强行制造感悟或不同意见。
+本轮若明确纠正了自己保存的理解，结束前先 search_memory/read_memory 找到旧笔记，用原 id 和已读 revision 更新；即使最终 pass 也完成纠正。不要仅口头答应，也不要新建相反笔记留下旧结论。明确偏好/事实纠正立即应用；对人的泛化评价需保留场景和不确定性；临时例外只改变这次做法。旧版本只供审计，系统故障不能归因成成员性格，相同来源反复转述不能加强判断。
 若话题已明显转变，旧闲聊对当前判断无帮助，可返回 context_start_id=本聊天中新话题起点的消息ID，使之后自动上下文从这里开始。先把仍有意义的约定或经历留进 state/remember；不要丢掉未解决的更正或承诺。无需切换就省略；空串恢复默认近期窗口。历史始终可检索，选择起点不删除任何原文。`
 
 func observationLabel(c Conversation, w Work) string {

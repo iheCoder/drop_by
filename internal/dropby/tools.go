@@ -34,8 +34,14 @@ func textField(desc string) any { return map[string]string{"type": "string", "de
 func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition {
 	defs := []ToolDefinition{
 		definition("read_tool_result", "分段查看当前聊天已保存的完整工具结果，供旧正文折叠后核对。不要为了找回已有材料重复联网。", map[string]any{"id": textField("真实 tool_run ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}, "id"),
-		definition("read_memory", "读取当前可见经历笔记的完整内容，供截断摘要不足时核对；只能读取自己的当前聊天或可携带笔记。", map[string]any{"id": textField("已有记忆 ID")}, "id"),
-		definition("remember", "保存或更新足以影响后续的自然语言经历。优先更新已有 ID；一次性闲聊不必记录。body 为空且提供 id 时删除过时记忆。", map[string]any{"id": textField("更新已有记录的 ID，新建可省略"), "scope": map[string]any{"type": "string", "enum": []string{"conversation", "member"}, "description": "默认 conversation；member 只能保存自己的非敏感经历，不可搬运用户隐私或保密原文"}, "body": textField("记忆及其来由，事实、推测、已完成和未完成要如实区分")}, "body"),
+		definition("read_memory", "读取自己的当前聊天或可携带经历及其来源。默认只读最新理解；显式 revision 仅用于回查已被修正的旧版本，不能把旧版当成当前结论。", map[string]any{"id": textField("已有记忆 ID"), "revision": map[string]any{"type": "integer", "minimum": 0, "description": "通常省略；回查历史版本时才填写"}}, "id"),
+		definition("remember", "保存有出处的个人经历或理解。更正时必须更新原 ID 并带已读 revision，不能另存一条相反笔记让旧误解继续存在。body 为空且带 ID/revision 时删除。普通闲聊无需记录。", map[string]any{
+			"id": textField("更新已有笔记的 ID；新建省略"), "revision": map[string]any{"type": "integer", "minimum": 0, "description": "更新/删除时填写读到的 revision；发生冲突先重新读取"},
+			"scope":       map[string]any{"type": "string", "enum": []string{"conversation", "member"}, "description": "新建默认 conversation，更新默认沿用；member 可携带自己的非敏感经历与相处理解，不搬运秘密或私聊原文"},
+			"body":        textField("以自己的视角简要区分实际发生/听说的事情、自己的理解、适用场景与后续倾向；保留例外，不把猜测或一次经历写成永久人格"),
+			"subject_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "maxItems": 8, "description": "实际涉及的人，用 people/self 中的 ID；不必为所有人建档"},
+			"source_ids":  map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "maxItems": 12, "description": "直接依据的真实消息或成功行动 ID；优先原始来源，同一件事的转述不算多份证据；省略时绑定本次触发"},
+		}, "body"),
 		definition("read_history", "检索当前聊天原话。可用多词换词搜索、before_seq 向前翻页；指定 id 后用 offset 分段读取完整原文。只能访问当前聊天。", map[string]any{"query": textField("字词以空格分隔，任一匹配；空串浏览记录"), "before_seq": map[string]any{"type": "integer", "minimum": 0}, "id": textField("完整读取某条消息时填写实际ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
 		definition("search_memory", "查找自己的当前聊天及可携带经历。多个词以空格分隔，任一匹配；空串浏览，before 用返回游标翻页。旧经历不必常驻上下文，需要时 read_memory 读全文。", map[string]any{"query": textField("想找回的词；可换词检索，不是向量语义搜索"), "before": map[string]any{"type": "integer", "minimum": 0}}, "query"),
 		definition("read_work", "查看当前聊天的实际工作状态与结果。提供 id 读完整工作；省略 id 列出未完工作，可按 member_id 筛选、offset 翻页。不能访问其他群或私聊。", map[string]any{"id": textField("实际工作ID"), "member_id": textField("可选，浏览某位成员的未完工作"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
@@ -73,7 +79,7 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 	if w.Kind == "first_reply" {
 		first := []ToolDefinition{}
 		for _, def := range defs {
-			if def.Function.Name == "schedule_exploration" || def.Function.Name == "schedule_followup" || def.Function.Name == "cancel_work" || def.Function.Name == "ask_question" || def.Function.Name == "delegate_work" || def.Function.Name == "close_responsibility" || (recallTool(def.Function.Name) && def.Function.Name != "remember") {
+			if def.Function.Name == "schedule_exploration" || def.Function.Name == "schedule_followup" || def.Function.Name == "cancel_work" || def.Function.Name == "ask_question" || def.Function.Name == "delegate_work" || def.Function.Name == "close_responsibility" || recallTool(def.Function.Name) {
 				first = append(first, def)
 			}
 		}
@@ -163,6 +169,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		MemberID     string   `json:"member_id"`
 		DueAt        string   `json:"due_at"`
 		Coordinate   bool     `json:"coordinate"`
+		Revision     *int     `json:"revision"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
 		return nil, fmt.Errorf("工具参数格式不正确")
@@ -202,12 +209,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		end := min(args.Offset+5000, len(chars))
 		return map[string]any{"tool_run_id": args.ID, "content": string(chars[args.Offset:end]), "next_offset": end, "has_more": end < len(chars)}, nil
 	case "read_memory":
-		var body, source string
-		err := t.Store.db.QueryRow(`SELECT body,source_id FROM memories WHERE id=? AND member_id=? AND (conversation_id=? OR conversation_id='')`, args.ID, m.ID, c.ID).Scan(&body, &source)
-		if err != nil {
-			return nil, fmt.Errorf("当前没有权限读取这条经历")
-		}
-		return map[string]string{"id": args.ID, "body": body, "source_id": source}, nil
+		return t.Store.readMemory(m.ID, c.ID, args.ID, args.Revision)
 	case "search":
 		if utf8.RuneCountInString(strings.TrimSpace(args.Query)) < 1 || utf8.RuneCountInString(args.Query) > 128 {
 			return nil, fmt.Errorf("检索词需要 1 到 128 个字符")
@@ -242,43 +244,11 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		}
 		return map[string]string{"url": args.URL, "title": out.Title, "content": clip(out.Content, 16000)}, nil
 	case "remember":
-		scope := c.ID
-		if args.Scope == "member" {
-			scope = ""
-		} else if args.Scope != "" && args.Scope != "conversation" {
-			return nil, fmt.Errorf("记忆范围无效")
+		var memory memoryWrite
+		if err := json.Unmarshal([]byte(call.Function.Arguments), &memory); err != nil {
+			return nil, fmt.Errorf("经历参数格式不正确")
 		}
-		if len([]rune(args.Body)) > 5000 {
-			return nil, fmt.Errorf("记忆过长，请保留影响后续的内容")
-		}
-		if args.Body != "" && t.Review != nil {
-			args.Body, err = t.Review(ctx, c, m, w, "经历笔记", args.Body)
-			if err != nil {
-				return nil, err
-			}
-		}
-		id := args.ID
-		if id == "" {
-			id = newID("memory")
-		}
-		err = t.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
-			if args.ID != "" {
-				var n int
-				if err := tx.QueryRow(`SELECT count(*) FROM memories WHERE id=? AND member_id=? AND (conversation_id=? OR conversation_id='')`, id, m.ID, c.ID).Scan(&n); err != nil {
-					return err
-				}
-				if n == 0 {
-					return fmt.Errorf("不能修改其他成员或其他聊天的记忆")
-				}
-			}
-			if strings.TrimSpace(args.Body) == "" {
-				_, err := tx.Exec(`DELETE FROM memories WHERE id=? AND member_id=?`, id, m.ID)
-				return err
-			}
-			_, err := tx.Exec(`INSERT INTO memories VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body,source_id=excluded.source_id,updated_at=excluded.updated_at`, id, m.ID, scope, args.Body, w.SourceID, now())
-			return err
-		})
-		return map[string]string{"memory_id": id, "body": args.Body}, err
+		return t.remember(ctx, c, m, w, memory)
 	case "read_history":
 		return t.Store.searchHistory(c.ID, args.Query, args.ID, args.BeforeSeq, args.Offset)
 	case "search_memory":

@@ -103,6 +103,10 @@ CREATE TABLE IF NOT EXISTS usage(day TEXT PRIMARY KEY, calls INTEGER NOT NULL DE
 		db.Close()
 		return nil, err
 	}
+	if err = s.initMemories(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// 进程退出不等于工作完成。只读网络行动可再次执行，已保存的工具记录会回到上下文。
 	_, err = db.Exec(`UPDATE work SET status='pending', result=CASE WHEN result='' THEN '上次运行因服务退出中断；继续前请检查已有工具结果和最新聊天。' ELSE result END WHERE status='running'`)
 	if err != nil {
@@ -551,16 +555,16 @@ func (s *Store) Finish(w Work, status, result string, due time.Time) error {
 }
 
 func (s *Store) Memories(member, room string) ([]Memory, error) {
-	rows, e := s.db.Query(`SELECT id,member_id,conversation_id,body,source_id,updated_at FROM memories WHERE member_id=? AND (conversation_id=? OR conversation_id='') ORDER BY updated_at DESC LIMIT 30`, member, room)
+	rows, e := s.db.Query(memorySelect+` WHERE m.member_id=? AND (m.conversation_id=? OR m.conversation_id='') ORDER BY m.updated_at DESC,m.rowid DESC LIMIT 30`, member, room)
 	if e != nil {
 		return nil, e
 	}
 	defer rows.Close()
 	list := []Memory{}
 	for rows.Next() {
-		var m Memory
-		if e = rows.Scan(&m.ID, &m.MemberID, &m.ConversationID, &m.Body, &m.SourceID, &m.UpdatedAt); e != nil {
-			return nil, e
+		m, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
 		}
 		list = append(list, m)
 	}

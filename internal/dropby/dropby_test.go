@@ -758,7 +758,7 @@ func TestFirstReplyDefersSlowTools(t *testing.T) {
 	e := NewEngine(s, nil, testConfig())
 	first := Work{Kind: "first_reply"}
 	defs := e.Tools.Definitions(m, c, first)
-	allowed := map[string]bool{"schedule_exploration": true, "schedule_followup": true, "cancel_work": true, "ask_question": true, "read_tool_result": true, "read_memory": true, "search_memory": true, "read_history": true, "read_work": true, "read_artifact": true}
+	allowed := map[string]bool{"schedule_exploration": true, "schedule_followup": true, "cancel_work": true, "ask_question": true, "remember": true, "read_tool_result": true, "read_memory": true, "search_memory": true, "read_history": true, "read_work": true, "read_artifact": true}
 	if len(defs) != len(allowed) {
 		t.Fatalf("首句工具: %+v", defs)
 	}
