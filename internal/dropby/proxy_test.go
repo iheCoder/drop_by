@@ -2,53 +2,103 @@ package dropby
 
 import (
 	"context"
-	"errors"
-	"net"
-	"reflect"
+	"golang.org/x/net/http/httpproxy"
+	"net/http"
 	"testing"
 )
 
-func TestProxyFallbackOnlyBeforeConnection(t *testing.T) {
-	// 模拟 TCP 拒绝连接：只有已确认的本机代理才允许换端口。
+func TestProxyConfigurationPriority(t *testing.T) {
+	// 系统端口故意使用任意值，验证没有限定旧端口；显式配置和 NO_PROXY 都不读取系统。
 	for _, tc := range []struct {
-		name, address, marked string
-		want                  []string
+		name, target, explicit, noProxy, want string
+		reads                                 int
 	}{
-		{"old to current", "127.0.0.1:7790", "127.0.0.1:7790", []string{"127.0.0.1:7790", "127.0.0.1:7890"}},
-		{"current to old", "127.0.0.1:7890", "127.0.0.1:7890", []string{"127.0.0.1:7890", "127.0.0.1:7790"}},
-		{"direct target unchanged", "127.0.0.1:7790", "", []string{"127.0.0.1:7790"}},
+		{"explicit", "https://example.com", "http://localhost:4567", "", "http://localhost:4567", 0},
+		{"system", "https://example.com", "", "", "http://127.0.0.1:12345", 1},
+		{"no proxy", "https://example.com", "", "example.com", "", 0},
+		{"explicit exclusion", "https://example.com", "http://localhost:4567", "example.com", "", 0},
+		{"localhost", "http://127.0.0.1:8090", "", "", "", 0},
+		{"system wildcard", "https://192.168.1.3", "", "", "", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var calls []string
-			dial := proxyDial(func(_ context.Context, _, address string) (net.Conn, error) {
-				calls = append(calls, address)
-				return nil, errors.New("refused")
+			calls := 0
+			req, _ := http.NewRequest("GET", tc.target, nil)
+			config := &httpproxy.Config{HTTPSProxy: tc.explicit, NoProxy: tc.noProxy}
+			proxy, err := requestProxy(req, config, func(context.Context) (map[string]string, []string, error) {
+				calls++
+				return map[string]string{"HTTPSEnable": "1", "HTTPSProxy": "127.0.0.1", "HTTPSPort": "12345"}, []string{"192.168.*"}, nil
 			})
-			ctx := context.WithValue(context.Background(), localProxyAddress{}, tc.marked)
-			_, _ = dial(ctx, "tcp", tc.address)
-			if !reflect.DeepEqual(calls, tc.want) {
-				t.Fatalf("calls %v, want %v", calls, tc.want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := ""
+			if proxy != nil {
+				got = proxy.String()
+			}
+			if got != tc.want || calls != tc.reads {
+				t.Fatalf("proxy=%q reads=%d", got, calls)
 			}
 		})
 	}
-	// 连接成功不探测备用端口；取消的请求也不再建立连接。
-	for _, cancelled := range []bool{false, true} {
-		calls := 0
-		ctx, cancel := context.WithCancel(context.WithValue(context.Background(), localProxyAddress{}, "127.0.0.1:7790"))
-		if cancelled {
-			cancel()
+}
+
+func TestSystemProxyChangesWithoutRestart(t *testing.T) {
+	req, _ := http.NewRequest("GET", "https://example.com", nil)
+	settings := map[string]string{"HTTPSEnable": "1", "HTTPSProxy": "localhost", "HTTPSPort": "1234"}
+	read := func(context.Context) (map[string]string, []string, error) { return settings, nil, nil }
+	for _, port := range []string{"1234", "5678"} {
+		settings["HTTPSPort"] = port
+		proxy, err := requestProxy(req, &httpproxy.Config{}, read)
+		if err != nil || proxy.Port() != port {
+			t.Fatalf("did not follow port %s: %v %v", port, proxy, err)
 		}
-		dial := proxyDial(func(context.Context, string, string) (net.Conn, error) {
-			calls++
-			if cancelled {
-				return nil, context.Canceled
-			}
-			return nil, nil
-		})
-		_, _ = dial(ctx, "tcp", "127.0.0.1:7790")
-		cancel()
-		if calls != 1 {
-			t.Fatalf("unexpected fallback: %d", calls)
+	}
+	// 系统关闭代理应回到直连，不继续沿用旧地址。
+	settings["HTTPSEnable"] = "0"
+	proxy, err := requestProxy(req, &httpproxy.Config{}, read)
+	if proxy != nil || err != nil {
+		t.Fatalf("disabled: %v %v", proxy, err)
+	}
+}
+
+func TestParseSystemProxy(t *testing.T) {
+	// 忽略接口级嵌套配置，只使用系统当前有效的顶层值和例外列表。
+	settings, exceptions := parseSystemProxy(`<dictionary> {
+ HTTPSProxy : 127.0.0.1
+ HTTPSPort : 3456
+ HTTPSEnable : 1
+ ExceptionsList : <array> {
+  0 : *.local
+ }
+ __SCOPED__ : <dictionary> {
+  HTTPSPort : 9999
+ }
+}`)
+	if settings["HTTPSPort"] != "3456" || len(exceptions) != 1 || exceptions[0] != "*.local" {
+		t.Fatalf("%v %v", settings, exceptions)
+	}
+}
+
+// HTTP 和 SOCKS 都从系统给出的任意地址构造；PAC 不会被误当成直连。
+func TestSystemProxyModes(t *testing.T) {
+	for _, tc := range []struct {
+		target   string
+		settings map[string]string
+		want     string
+		wantErr  bool
+	}{
+		{"http://example.com", map[string]string{"HTTPEnable": "1", "HTTPProxy": "proxy.example", "HTTPPort": "8888"}, "http://proxy.example:8888", false},
+		{"https://example.com", map[string]string{"SOCKSEnable": "1", "SOCKSProxy": "::1", "SOCKSPort": "2345"}, "socks5://[::1]:2345", false},
+		{"https://example.com", map[string]string{"ProxyAutoConfigEnable": "1"}, "", true},
+	} {
+		req, _ := http.NewRequest("GET", tc.target, nil)
+		proxy, err := requestProxy(req, &httpproxy.Config{}, func(context.Context) (map[string]string, []string, error) { return tc.settings, nil, nil })
+		got := ""
+		if proxy != nil {
+			got = proxy.String()
+		}
+		if (err != nil) != tc.wantErr || got != tc.want {
+			t.Fatalf("proxy=%q err=%v", got, err)
 		}
 	}
 }

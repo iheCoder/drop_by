@@ -289,7 +289,7 @@ func requestJSON(ctx context.Context, client *http.Client, endpoint, key string,
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
-	// 共享连接池兼容本机两个代理端口；保留测试或调用方显式提供的 transport。
+	// 共享连接池遵循显式代理或当前系统代理；保留测试或调用方显式提供的 transport。
 	if client.Transport == nil {
 		copy := *client
 		copy.Transport = serviceTransport
