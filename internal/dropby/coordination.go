@@ -111,16 +111,7 @@ func (s *Store) DelegateWork(c Conversation, coordinator Member, source Work, me
 			return fmt.Errorf("委托必须来自当前聊天中实际存在的工作")
 		}
 		w.RootID, w.SourceID, w.Autonomous, w.ParentID = rootOf(parent), parent.SourceID, autonomousWork(parent), parent.ID
-		// 先找仍在执行的同项工作。工具重试不复制任务，也不把同伴自己已安排
-		// 的相同研究偷换为协调者的功劳。
-		existing, err := scanWork(tx.QueryRow(`SELECT `+workColumns+` FROM work WHERE conversation_id=? AND member_id=? AND kind='research' AND instruction=? AND status IN ('pending','running','waiting_budget','paused') ORDER BY created_at LIMIT 1`, c.ID, memberID, w.Instruction))
-		if err == nil {
-			w = existing
-			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
+		// 新委托即使文字相同也有自己的目的；工具入口负责同次调用的恢复。
 		if err := insertWork(tx, w); err != nil {
 			return err
 		}

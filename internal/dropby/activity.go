@@ -123,6 +123,18 @@ var actionTitles = map[string]string{
 
 func (s *Store) actionSummary(run ToolRun) (ActivitySummary, error) {
 	d := ActivitySummary{Title: actionTitles[run.Name]}
+	var cached struct {
+		Reused bool `json:"reused"`
+	}
+	if json.Unmarshal([]byte(run.Result), &cached) == nil && cached.Reused {
+		if run.Name == "search" {
+			d.Title = "查看已有搜索结果"
+		}
+		if run.Name == "read_page" {
+			d.Title = "查看已有网页内容"
+		}
+	}
+
 	if d.Title == "" {
 		d.Title = "查看行动"
 	}
@@ -239,11 +251,17 @@ func (s *Store) actionSummary(run ToolRun) (ActivitySummary, error) {
 		d.Detail = activityExcerpt(args.Query)
 		if run.Status == "succeeded" {
 			d.Status = "已搜索"
+			if cached.Reused {
+				d.Status = "已查看"
+			}
 		}
 	case "read_page":
 		d.Detail = activityExcerpt(args.URL)
 		if run.Status == "succeeded" {
 			d.Status = "已读取"
+			if cached.Reused {
+				d.Status = "已查看"
+			}
 		}
 	case "save_artifact":
 		d.Detail = activityExcerpt(args.Title)

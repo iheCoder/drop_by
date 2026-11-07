@@ -412,7 +412,7 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 		if err != nil {
 			return err
 		}
-		out, err := e.act(ctx, c, m, w, "开展这项真实研究。先检查最新更正和已保存工具记录，避免重复已完成行动；若已无必要可以无结果结束。此阶段不发公开消息，只返回 outcome 记录结果。")
+		out, err := e.act(ctx, c, m, w, "开展这项真实研究。结合最新更正和已保存工具记录；若已无必要可以无结果结束。此阶段不发公开消息，只返回 outcome 记录结果。")
 		if err != nil {
 			return err
 		}
@@ -933,7 +933,15 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work) (map[string]any, e
 			runContext = append(runContext, map[string]any{"id": runs[i].ID, "member_id": runs[i].MemberID, "name": runs[i].Name, "status": runs[i].Status, "result": "历史读取/笔记操作已归档。当前经历以 memory 或 read_memory 的最新版本为准。"})
 			continue
 		}
-		runContext = append(runContext, map[string]any{"id": runs[i].ID, "member_id": runs[i].MemberID, "name": runs[i].Name, "status": runs[i].Status, "arguments": clip(string(runs[i].Arguments), 200), "result": clip(runs[i].Result, 650)})
+		var purpose string
+		if err := e.Store.db.QueryRow("SELECT instruction FROM work WHERE id=?", runs[i].WorkID).Scan(&purpose); err != nil {
+			return nil, err
+		}
+		arguments := clip(string(runs[i].Arguments), 200)
+		if runs[i].Name == "search" || runs[i].Name == "read_page" {
+			arguments = string(runs[i].Arguments)
+		}
+		runContext = append(runContext, map[string]any{"id": runs[i].ID, "member_id": runs[i].MemberID, "name": runs[i].Name, "status": runs[i].Status, "arguments": arguments, "created_at": runs[i].CreatedAt, "work_id": runs[i].WorkID, "purpose": clip(purpose, 500), "result": sharedToolResult(runs[i].Result)})
 	}
 	artifacts, err := e.Store.Artifacts(c.ID)
 	if err != nil {

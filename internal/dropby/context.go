@@ -20,6 +20,9 @@ func compactToolHistory(messages []ChatMessage) {
 }
 
 func toolExcerpt(raw string, limit int) string {
+	if overview, ok := searchOverview(raw); ok {
+		return overview
+	}
 	if len([]rune(raw)) <= limit {
 		return raw
 	}
@@ -29,9 +32,86 @@ func toolExcerpt(raw string, limit int) string {
 	if excerpt, ok := value["excerpt"].(string); ok && value["truncated"] == true {
 		raw = excerpt
 	}
-	return asJSON(map[string]any{
+	excerpt := map[string]any{
 		"tool_run_id": value["tool_run_id"], "status": value["status"],
 		"excerpt": clip(raw, limit), "truncated": true,
-		"note": "完整结果已保存，需要时用 read_tool_result 按 ID 分段读取，不要重复联网搜索同一内容。",
-	})
+		"note": "完整结果已保存，需要时用 read_tool_result 按 ID 分段读取。",
+	}
+	// 正文可能排在 JSON 时间字段之前；折叠时把网页来源时间单独留下。
+	provenance := value
+	if result, ok := value["result"].(map[string]any); ok {
+		provenance = result
+	}
+	for _, key := range []string{"retrieved_at", "reused"} {
+		if v, ok := provenance[key]; ok {
+			excerpt[key] = v
+		}
+	}
+	return asJSON(excerpt)
+}
+
+// 搜索列表先按条缩短摘要，保留所有来源入口，不能截取整段 JSON 的开头，
+// 让第一篇长文章遮住后面的结果。完整原文仍由 tool_run_id 分页读取。
+type searchResult struct {
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	Summary string `json:"summary"`
+	Snippet string `json:"snippet"`
+	Content string `json:"content"`
+}
+
+func searchOverview(raw string) (string, bool) {
+	var value map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &value) != nil {
+		return "", false
+	}
+	payload := value
+	if nested, ok := value["result"]; ok {
+		payload = nil
+		if json.Unmarshal(nested, &payload) != nil {
+			return "", false
+		}
+	}
+	results, ok := payload["results"]
+	if !ok {
+		return "", false
+	}
+	var entries []searchResult
+	if json.Unmarshal(results, &entries) != nil {
+		return "", false
+	}
+	for i := range entries {
+		summary := entries[i].Summary
+		if summary == "" {
+			summary = entries[i].Snippet
+		}
+		if summary == "" {
+			summary = entries[i].Content
+		}
+		entries[i].Summary = clip(summary, 180)
+		entries[i].Snippet, entries[i].Content = "", ""
+	}
+	payload["results"] = json.RawMessage(asJSON(entries))
+	payload["excerpt_note"] = json.RawMessage(asJSON("各条摘要已缩短；完整结果可按 tool_run_id 读取。"))
+	if _, ok := value["result"]; ok {
+		value["result"] = json.RawMessage(asJSON(payload))
+	} else {
+		value = payload
+	}
+	return asJSON(value), true
+}
+
+func sharedToolResult(raw string) string {
+	if overview, ok := searchOverview(raw); ok {
+		return overview
+	}
+	// 网页正文缩短时保留取得时间及缓存来源，避免把旧快照当成本次联网结果。
+	var page map[string]any
+	if json.Unmarshal([]byte(raw), &page) == nil && page["retrieved_at"] != nil {
+		if content, ok := page["content"].(string); ok {
+			page["content"] = clip(content, 650)
+		}
+		return asJSON(page)
+	}
+	return clip(raw, 650)
 }

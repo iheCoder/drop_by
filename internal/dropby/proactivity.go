@@ -125,17 +125,7 @@ func (s *Store) ScheduleFollowup(c Conversation, m Member, source Work, instruct
 	}
 	w := Work{ID: newID("work"), ParentID: source.ID, RootID: rootOf(source), ConversationID: c.ID, MemberID: m.ID, Kind: "revisit", Autonomous: true, Instruction: clip(instruction, 5000), Reason: clip(reason, 1500), SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
 	err := s.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
-		// 同一成员已有完全相同的预约时更新时机，不堆积重复待办。
-		var existing string
-		err := tx.QueryRow(`SELECT id FROM work WHERE conversation_id=? AND member_id=? AND kind='revisit' AND instruction=? AND status IN ('pending','waiting_budget')`, c.ID, m.ID, w.Instruction).Scan(&existing)
-		if err == nil {
-			w.ID = existing
-			_, err = tx.Exec(`UPDATE work SET due_at=?,reason=? WHERE id=?`, w.DueAt, w.Reason, w.ID)
-			return err
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
+		// 不同调用可以预约不同观察时点；同一次调用恢复由工具入口保护。
 		return insertWork(tx, w)
 	})
 	return map[string]any{"work_id": w.ID, "due_at": w.DueAt, "status": "pending"}, err

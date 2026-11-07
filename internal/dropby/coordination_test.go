@@ -185,8 +185,8 @@ func TestDelegationUsesActualPermissionAndPreservesCharacter(t *testing.T) {
 		t.Fatalf("delegation rewrote character: %+v %v", still, err)
 	}
 	duplicate, err := s.DelegateWork(c, members[0], parent, members[1].ID, delegated.Instruction, delegated.Reason)
-	if err != nil || duplicate.ID != delegated.ID {
-		t.Fatalf("retry duplicated real work: %+v %v", duplicate, err)
+	if err != nil || duplicate.ID == delegated.ID {
+		t.Fatalf("new delegation was swallowed: %+v %v", duplicate, err)
 	}
 	for _, candidate := range []struct {
 		actor     Member
@@ -207,7 +207,7 @@ func TestDelegationUsesActualPermissionAndPreservesCharacter(t *testing.T) {
 }
 
 func TestDelegationAllowsDistinctWorkBeyondOldCap(t *testing.T) {
-	// 已有真实职责下，十二项不同工作不因旧六次配额被截断；重复安排仍复用原记录。
+	// 已有真实职责下，十二项不同工作不因旧六次配额被截断；新调用仍可独立安排。
 	s, c, members := groupWithMembers(t, 4)
 	c, err := s.SetCoordinator(c, members[0].ID)
 	if err != nil {
@@ -222,7 +222,7 @@ func TestDelegationAllowsDistinctWorkBeyondOldCap(t *testing.T) {
 	if _, err := s.DelegateWork(c, members[0], root, members[1].ID, "又一份材料", "新的明确任务"); err != nil {
 		t.Fatalf("legitimate followup rejected: %v", err)
 	}
-	// 已有任务的工具重试仍可找到同一条记录，不浪费最后一个名额。
+	// 即使指令相同，新安排也不因数量限制被拒绝；调用重放另由工具入口测试。
 	if _, err := s.DelegateWork(c, members[0], root, members[1].ID, "核对第0份材料", "重试实际安排"); err != nil {
 		t.Fatalf("idempotent retry failed at cap: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestCoordinationSurvivesStoreReopen(t *testing.T) {
 	if err != nil || c.CoordinatorID != members[0].ID {
 		t.Fatalf("coordinator lost on reopen: %+v %v", c, err)
 	}
-	stored, err := s.DelegateWork(c, members[0], root, members[1].ID, assigned.Instruction, assigned.Reason)
+	stored, err := scanWork(s.db.QueryRow(`SELECT `+workColumns+` FROM work WHERE id=?`, assigned.ID))
 	if err != nil || stored.ID != assigned.ID || stored.AssignedBy != members[0].ID || stored.RootID != root.ID {
 		t.Fatalf("delegation lost on reopen: %+v %v", stored, err)
 	}

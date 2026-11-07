@@ -17,6 +17,7 @@ import (
 )
 
 type Toolbox struct {
+	webCache webResultCache
 	Store    *Store
 	Config   Config
 	Hub      *Hub
@@ -35,7 +36,7 @@ func textField(desc string) any { return map[string]string{"type": "string", "de
 
 func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition {
 	defs := []ToolDefinition{
-		definition("read_tool_result", "分段查看当前聊天已保存的完整工具结果，供旧正文折叠后核对。不要为了找回已有材料重复联网。", map[string]any{"id": textField("真实 tool_run ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}, "id"),
+		definition("read_tool_result", "分段查看当前聊天已保存的完整工具结果，供旧正文折叠后核对。", map[string]any{"id": textField("真实 tool_run ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}, "id"),
 		definition("read_memory", "读取自己的当前聊天或可携带经历及其来源。默认只读最新理解；显式 revision 仅用于回查已被修正的旧版本，不能把旧版当成当前结论。", map[string]any{"id": textField("已有记忆 ID"), "revision": map[string]any{"type": "integer", "minimum": 0, "description": "通常省略；回查历史版本时才填写"}}, "id"),
 		definition("remember", "保存有出处的个人经历或理解。更正时必须更新原 ID 并带已读 revision，不能另存一条相反笔记让旧误解继续存在。body 为空且带 ID/revision 时删除。普通闲聊无需记录。", map[string]any{
 			"id": textField("更新已有笔记的 ID；新建省略"), "revision": map[string]any{"type": "integer", "minimum": 0, "description": "更新/删除时填写读到的 revision；发生冲突先重新读取"},
@@ -54,7 +55,7 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 	}
 	if !c.ResearchPaused {
 		defs = append(defs, definition("schedule_followup", "预约稍后检查某件事，例如邀请后是否有人回应、约定是否有进展。到期会读取最新消息和工作，再自行决定行动；服务需运行。", map[string]any{"instruction": textField("到时要核对的具体事情或相关消息，以及自己的打算"), "reason": textField("来自哪段交流、兴趣或真实进展"), "delay_seconds": map[string]any{"type": "integer", "minimum": 1}, "due_at": textField("可选绝对时间，RFC3339且含时区，例如2026-11-08T09:00:00+08:00；与delay_seconds只选一个。一次定时，不是周期任务，服务需运行。")}, "instruction", "reason"))
-		defs = append(defs, definition("schedule_exploration", "安排可真正执行的低风险后台探索。明确方向与实际来由；与已有未完研究相同则不要重复安排。", map[string]any{"instruction": textField("可用现有工具执行的具体方向，不是泛泛关注"), "reason": textField("来自什么兴趣、经历或新材料"), "delay_seconds": map[string]any{"type": "integer", "minimum": 10, "maximum": 86400}}, "instruction", "reason"))
+		defs = append(defs, definition("schedule_exploration", "安排可真正执行的低风险后台探索。明确方向与实际来由。", map[string]any{"instruction": textField("可用现有工具执行的具体方向，不是泛泛关注"), "reason": textField("来自什么兴趣、经历或新材料"), "delay_seconds": map[string]any{"type": "integer", "minimum": 10, "maximum": 86400}}, "instruction", "reason"))
 	}
 	// 本轮已看到的本人临时职责允许重复确认结束；Store 仍核对本人和事项。
 	// 真正委托权限每次查当前记录，结束职责后不能继续安排同伴。
@@ -66,7 +67,7 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 		break
 	}
 	if t.Store.CanDelegate(c, m, w) {
-		defs = append(defs, definition("delegate_work", "依据当前真实约定，委托同群成员完成一项具体工作。coordinate=true 可请对方组织这个子事项，不扩大原授权。写明预期结果、边界及选择理由；先查看已有工作避免重复。完成或遇到问题后会获得复看机会。", map[string]any{"member_id": textField("本群另一成员ID"), "instruction": textField("具体任务、预期结果和边界"), "reason": textField("为什么需要这件事、为什么选择这位成员"), "coordinate": map[string]any{"type": "boolean", "description": "是否委托对方组织这项子工作；默认自己完成具体产出"}}, "member_id", "instruction", "reason"))
+		defs = append(defs, definition("delegate_work", "依据当前真实约定，委托同群成员完成一项具体工作。coordinate=true 可请对方组织这个子事项，不扩大原授权。写明预期结果、边界及选择理由；完成或遇到问题后会获得复看机会。", map[string]any{"member_id": textField("本群另一成员ID"), "instruction": textField("具体任务、预期结果和边界"), "reason": textField("为什么需要这件事、为什么选择这位成员"), "coordinate": map[string]any{"type": "boolean", "description": "是否委托对方组织这项子工作；默认自己完成具体产出"}}, "member_id", "instruction", "reason"))
 	}
 	if !c.DiscussionPaused && w.Kind != "research" {
 		defs = append(defs, definition("ask_question", "在聊天里提出一个可自由回答的选择题。只在这个问题对当前交流确有帮助时使用，不能连着追问或把聊天变成问卷；真人聊别的就自然略过。工具已发布问题，最终回复不要重复它。", map[string]any{"text": textField("一个简短自然的问题"), "options": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "minItems": 2, "maxItems": 4}}, "text", "options"))
@@ -252,7 +253,8 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		return t.Store.AskQuestion(c, m, Question{Text: args.Text, Options: args.Options}, args.Text, false)
 	case "read_tool_result":
 		var run ToolRun
-		if err := t.Store.db.QueryRow(`SELECT member_id,name,result FROM tool_runs WHERE id=? AND conversation_id=?`, args.ID, c.ID).Scan(&run.MemberID, &run.Name, &run.Result); err != nil {
+		var originalArguments string
+		if err := t.Store.db.QueryRow(`SELECT member_id,name,result,arguments,created_at FROM tool_runs WHERE id=? AND conversation_id=?`, args.ID, c.ID).Scan(&run.MemberID, &run.Name, &run.Result, &originalArguments, &run.CreatedAt); err != nil {
 			return nil, fmt.Errorf("当前聊天没有这条可读取的行动记录")
 		}
 		if !toolResultVisibleTo(run, m.ID) {
@@ -263,42 +265,42 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 			return nil, fmt.Errorf("读取位置无效")
 		}
 		end := min(args.Offset+5000, len(chars))
-		return map[string]any{"tool_run_id": args.ID, "content": string(chars[args.Offset:end]), "next_offset": end, "has_more": end < len(chars)}, nil
+		return map[string]any{"tool_run_id": args.ID, "name": run.Name, "arguments": json.RawMessage(originalArguments), "created_at": run.CreatedAt, "content": string(chars[args.Offset:end]), "next_offset": end, "has_more": end < len(chars)}, nil
 	case "read_memory":
 		return t.Store.readMemory(m.ID, c.ID, args.ID, args.Revision)
 	case "search":
 		if utf8.RuneCountInString(strings.TrimSpace(args.Query)) < 1 || utf8.RuneCountInString(args.Query) > 128 {
 			return nil, fmt.Errorf("检索词需要 1 到 128 个字符")
 		}
-		var out struct {
-			Results []struct {
-				Title   string `json:"title"`
-				URL     string `json:"url"`
-				Summary string `json:"summary"`
-				Snippet string `json:"snippet"`
-				Content string `json:"content"`
-			} `json:"results"`
-		}
-		err = t.webRequest(ctx, "search", map[string]any{"query": args.Query, "count": 5, "need_content": false}, &out)
-		if err != nil {
-			return nil, err
-		}
-		return out, nil
+		body := map[string]any{"query": args.Query, "count": 5, "need_content": false}
+		return t.cachedWeb(ctx, c.ID, "search", body, func() (map[string]any, error) {
+			var out struct {
+				Results []searchResult `json:"results"`
+			}
+			if err := t.webRequest(ctx, "search", body, &out); err != nil {
+				return nil, err
+			}
+			return map[string]any{"results": out.Results}, nil
+		})
 	case "read_page":
-		if err = validatePublicURL(ctx, args.URL); err != nil {
-			return nil, err
-		}
-		var out struct {
-			Title   string `json:"title"`
-			Content string `json:"content"`
-		}
-		if err = t.webRequest(ctx, "fetch", map[string]string{"url": args.URL}, &out); err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(out.Content) == "" {
-			return nil, fmt.Errorf("网页没有返回可用正文")
-		}
-		return map[string]string{"url": args.URL, "title": out.Title, "content": clip(out.Content, 16000)}, nil
+		body := map[string]string{"url": args.URL}
+		return t.cachedWeb(ctx, c.ID, "fetch", body, func() (map[string]any, error) {
+			if err := validatePublicURL(ctx, args.URL); err != nil {
+				return nil, err
+			}
+			var out struct {
+				Title   string `json:"title"`
+				Content string `json:"content"`
+			}
+			if err := t.webRequest(ctx, "fetch", body, &out); err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(out.Content) == "" {
+				return nil, fmt.Errorf("网页没有返回可用正文")
+			}
+			return map[string]any{"url": args.URL, "title": out.Title, "content": clip(out.Content, 16000)}, nil
+		})
+
 	case "remember":
 		var memory memoryWrite
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &memory); err != nil {
@@ -409,15 +411,6 @@ func (t *Toolbox) Schedule(ctx context.Context, c Conversation, m Member, source
 	}
 	w := Work{ID: newID("work"), ParentID: source.ID, ConversationID: c.ID, MemberID: m.ID, RootID: rootOf(source), Autonomous: source.Autonomous, Kind: "research", Instruction: clip(instruction, 5000), Reason: clip(reason, 1500), SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
 	err := t.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
-		var existing string
-		err := tx.QueryRow(`SELECT id FROM work WHERE conversation_id=? AND member_id=? AND kind='research' AND instruction=? AND status IN ('pending','running','waiting_budget','paused')`, c.ID, m.ID, w.Instruction).Scan(&existing)
-		if err == nil {
-			w.ID = existing
-			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
 		return insertWork(tx, w)
 	})
 	return map[string]any{"work_id": w.ID, "due_at": w.DueAt, "status": "pending"}, err
