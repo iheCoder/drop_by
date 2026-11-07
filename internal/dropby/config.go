@@ -19,6 +19,8 @@ type Config struct {
 	ExploreInterval                                                time.Duration
 	MaxTurns, MaxToolRounds, MaxOutputTokens, WeeklyCalls          int
 	WeeklyBudgetMicros                                             int64
+	TemporaryBudgetMicros                                          int64
+	TemporaryBudgetUntil                                           time.Time
 	AutonomousBudgetMicros                                         int64
 	ToolCostMicros                                                 int64
 }
@@ -75,6 +77,15 @@ func LoadConfig() (Config, error) {
 		}
 		c.WeeklyBudgetMicros = int64(n * 1e6)
 	}
+	// 临时开发额度必须带明确截止时间；运行中到期即回到通常周额度，无需重启。
+	if v := os.Getenv("DROPBY_TEMPORARY_BUDGET_USD"); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		until, dateErr := time.Parse(time.RFC3339, os.Getenv("DROPBY_TEMPORARY_BUDGET_UNTIL"))
+		if err != nil || dateErr != nil || math.IsNaN(n) || n <= 0 || n > 1000 {
+			return c, fmt.Errorf("临时预算需要有效金额与带时区的截止时间")
+		}
+		c.TemporaryBudgetMicros, c.TemporaryBudgetUntil = int64(n*1e6), until
+	}
 	if v := os.Getenv("DROPBY_AUTONOMOUS_WEEKLY_BUDGET_USD"); v != "" {
 		n, err := strconv.ParseFloat(v, 64)
 		if err != nil || n < 0 || n > 1000 || math.IsNaN(n) {
@@ -113,4 +124,13 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// weeklyBudgetAt 只改变获准的预算上限，不修改账目或重置既有消费。
+// 传入时刻让请求记账、界面和等待恢复使用一致的到期规则。
+func (c Config) weeklyBudgetAt(at time.Time) int64 {
+	if c.TemporaryBudgetMicros > 0 && at.Before(c.TemporaryBudgetUntil) {
+		return c.TemporaryBudgetMicros
+	}
+	return c.WeeklyBudgetMicros
 }

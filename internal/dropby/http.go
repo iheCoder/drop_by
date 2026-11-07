@@ -146,7 +146,7 @@ func (a *API) state(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	respond(w, 200, map[string]any{"profile": profile, "budget_blocked": a.engine.Store.budgetBlocked(a.engine.Config, usage), "members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "decision_model": a.engine.Config.DecisionModel, "chat_model": a.engine.Config.ChatModel, "weekly_budget_micros": a.engine.Config.WeeklyBudgetMicros, "autonomous_weekly_budget_micros": a.engine.Config.AutonomousBudgetMicros, "weekly_calls": a.engine.Config.WeeklyCalls, "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
+	respond(w, 200, map[string]any{"profile": profile, "budget_blocked": a.engine.Store.budgetBlocked(a.engine.Config, usage), "members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "decision_model": a.engine.Config.DecisionModel, "chat_model": a.engine.Config.ChatModel, "weekly_budget_micros": a.engine.Config.weeklyBudgetAt(time.Now()), "autonomous_weekly_budget_micros": a.engine.Config.AutonomousBudgetMicros, "weekly_calls": a.engine.Config.WeeklyCalls, "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
 }
 func (a *API) questions(w http.ResponseWriter, r *http.Request) {
 	var in struct {

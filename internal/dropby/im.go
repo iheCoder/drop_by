@@ -172,11 +172,11 @@ func (a *API) updateGroup(w http.ResponseWriter, r *http.Request) {
 // 额度是当前账户状态。已恢复的等待不会继续制造群消息，也不能因一次大预留
 // 把剩余可用额度误称为零；预留释放或跨周时重新检查可以恢复的实际工作。
 func (s *Store) budgetBlocked(cfg Config, usage Usage) bool {
-	if usage.CostMicros >= cfg.WeeklyBudgetMicros || usage.Calls >= cfg.WeeklyCalls {
+	if usage.CostMicros >= cfg.weeklyBudgetAt(time.Now()) || usage.Calls >= cfg.WeeklyCalls {
 		return true
 	}
 	var blocked int
-	_ = s.db.QueryRow(`SELECT count(*) FROM work WHERE status='waiting_budget' AND autonomous=0 AND budget_required>?`, cfg.WeeklyBudgetMicros-usage.CostMicros).Scan(&blocked)
+	_ = s.db.QueryRow(`SELECT count(*) FROM work WHERE status='waiting_budget' AND autonomous=0 AND budget_required>?`, cfg.weeklyBudgetAt(time.Now())-usage.CostMicros).Scan(&blocked)
 	return blocked > 0
 }
 
@@ -188,6 +188,6 @@ func (s *Store) recheckBudgetWait(cfg Config) error {
 	if u.Calls >= cfg.WeeklyCalls {
 		return nil
 	}
-	_, err = s.db.Exec(`UPDATE work SET status='pending',due_at=? WHERE status='waiting_budget' AND budget_required>0 AND budget_required<=? AND (autonomous=0 OR budget_required<=?)`, time.Now().UnixMilli(), max(int64(0), cfg.WeeklyBudgetMicros-u.CostMicros), max(int64(0), cfg.AutonomousBudgetMicros-u.AutonomousCostMicros))
+	_, err = s.db.Exec(`UPDATE work SET status='pending',due_at=? WHERE status='waiting_budget' AND budget_required>0 AND budget_required<=? AND (autonomous=0 OR budget_required<=?)`, time.Now().UnixMilli(), max(int64(0), cfg.weeklyBudgetAt(time.Now())-u.CostMicros), max(int64(0), cfg.AutonomousBudgetMicros-u.AutonomousCostMicros))
 	return err
 }

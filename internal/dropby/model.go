@@ -144,9 +144,9 @@ func (s *Store) reserveContextAt(ctx context.Context, c Config, cost int64, at t
 	if calls >= c.WeeklyCalls {
 		return day, &budgetRejection{required: cost, message: fmt.Sprintf("本周已达到 %d 次调用上限，未完工作已保留，%s 恢复。", c.WeeklyCalls, reset)}
 	}
-	remaining := max(int64(0), c.WeeklyBudgetMicros-total)
+	remaining := max(int64(0), c.weeklyBudgetAt(at)-total)
 	if remaining == 0 {
-		return day, &budgetRejection{required: cost, message: fmt.Sprintf("本周 $%.2f 运行预算已用完，未完工作已保留，%s 恢复。", float64(c.WeeklyBudgetMicros)/1e6, reset)}
+		return day, &budgetRejection{required: cost, message: fmt.Sprintf("本周 $%.2f 运行预算已用完，未完工作已保留，%s 恢复。", float64(c.weeklyBudgetAt(at))/1e6, reset)}
 	}
 	if cost > remaining {
 		return day, &budgetRejection{required: cost, message: fmt.Sprintf("本周可用预算还剩 $%.3f，本次调用需预留 $%.3f，暂时无法开始；未完工作已保留，%s 恢复周额度。", float64(remaining)/1e6, float64(cost)/1e6, reset)}
