@@ -1,7 +1,6 @@
 'use strict';
 
 const usageWeekdays=['周日','周一','周二','周三','周四','周五','周六'];
-const usageHours=['00–06 时','06–12 时','12–18 时','18–24 时'];
 const usageGroups={member:'成员',purpose:'用途',matter:'事项'};
 const usagePurposes={chat:'日常交流',research:'研究与探索',compact:'上下文压缩',search:'网页搜索',read_page:'网页读取',control:'指令理解',preferences:'偏好设置',model:'模型调用'};
 const usageOutcomes={incomplete:'模型未完成输出',tool_calls:'生成了工具调用',no_message:'未生成消息正文',generated_message:'生成了消息正文',released:'预留已释放',empty:'没有可用结果，本次免费'};
@@ -24,8 +23,8 @@ function usageSum(rows, key='cost_micros') { return rows.reduce((total,row)=>tot
 
 function openUsageAnalysis() {
   showWorkspace('额度分析','', '<div id="usage-analysis" class="usage-analysis"></div>','usage');
-  usageView={root:$('usage-analysis'),period:'week',date:'',group:'member',filters:{},filterNames:{},showFilters:false,limit:usagePageSize,sequence:0};
-  loadUsageAnalysis('week','');
+  usageView={root:$('usage-analysis'),period:'day',date:'',group:'member',filters:{},filterNames:{},filterMenu:'',ascending:false,limit:usagePageSize,sequence:0};
+  loadUsageAnalysis('day','');
 }
 
 async function loadUsageAnalysis(period,date,quiet=false) {
@@ -44,14 +43,14 @@ async function loadUsageAnalysis(period,date,quiet=false) {
     if (date) query.set('date',date);
     const report=await api('/api/usage?'+query);
     if (!view.root.isConnected || sequence!==view.sequence) return;
-    if (quiet && view.root.contains(document.activeElement) && document.activeElement.matches('select')) return;
+    if (quiet && view.filterMenu) return;
     const same=quiet && JSON.stringify(view.report)===JSON.stringify(report);
     view.report=report;
     view.period=period;
     view.date=date || report.today;
     view.budget=budget;
     view.error=false;
-    if (!quiet) view.limit=usagePageSize;
+    if (!quiet) {view.limit=usagePageSize;view.filterMenu='';}
     if (!same) renderUsageAnalysis(view);
   } catch {
     if (!view.root.isConnected || sequence!==view.sequence || quiet) return;
@@ -68,11 +67,11 @@ async function loadUsageAnalysis(period,date,quiet=false) {
 
 function refreshUsageAnalysis() {
   const view=usageView;
-  // SSE 刷新可更新在途用量；浏览历史或正在操作下拉菜单时保留当前画面。
+  // SSE 刷新可更新在途用量；浏览历史或正在选择筛选项时保留当前画面。
   if (!view?.root.isConnected || !view.report || view.loading || view.error) return;
   const running=view.report.entries.some(row=>row.status==='running');
   if (!running && (view.report.end<=view.report.today || view.budget===JSON.stringify(state.usage))) return;
-  if (view.root.contains(document.activeElement) && document.activeElement.matches('select')) return;
+  if (view.filterMenu) return;
   loadUsageAnalysis(view.period,view.date,true);
 }
 
@@ -95,28 +94,22 @@ function usagePeriod(view) {
 
 function usageChart(view) {
   const {report,period}=view;
-  const daily=period==='day', names=daily ? usageHours : usageWeekdays.slice(1).concat(usageWeekdays[0]);
-  const data=names.map((label,index)=>({label,date:daily?'':usageShift(report.start,index),cost:0}));
-  const buckets=new Map(data.map(bucket=>[bucket.date,bucket]));
-  for (const row of report.entries) {
-    const bucket=daily ? data[Math.floor(Number(row.started_at.slice(11,13))/6)] : buckets.get(row.day);
-    bucket.cost+=row.cost_micros;
-  }
-  // 旧账有日期，所以可进入周图；日视图的时段只用有实际时间的记录。
-  if (!daily) for (const row of report.legacy) buckets.get(row.day).cost+=row.cost_micros;
-  const max=Math.max(1,...data.map(bucket=>bucket.cost));
-  const columns=data.map(({label,date,cost})=>{
-    const future=!daily && date>report.today;
-    const amount=future ? '—' : usageMoney(cost);
-    const mark=`<b>${amount}</b><i style="--height:${cost/max*70}px" aria-hidden="true"></i><span>${label}</span>`;
-    const css=`usage-column${cost===max?' is-peak':''}`;
-    return daily ? `<div class="${css}">${mark}</div>` :
-      `<button class="${css}" type="button" data-action="usage-day" data-value="${date}" aria-label="${usageDateLabel(date)} ${label}${future?'，未到该日期':'，花费 '+amount}" ${future?'disabled':''}>${mark}</button>`;
+  const daily=period==='day';
+  const max=Math.max(1,...report.trend.map(bucket=>bucket.cost_micros));
+  const columns=report.trend.map(({day,calls,cost_micros:cost})=>{
+    const active=day===report.start;
+    const end=usageShift(day,6);
+    const unavailable=!active && (daily ? day : end)<report.first_day;
+    const amount=calls || cost ? usageMoney(cost) : '—';
+    const label=daily ? usageDateLabel(day) : usageDateLabel(day)+' 起';
+    const range=daily ? usageDateLabel(day)+' '+usageWeekdays[usageDate(day).getUTCDay()] :
+      usageDateLabel(day)+' 至 '+usageDateLabel(end);
+    return `<button class="usage-column" type="button" data-action="usage-bucket" data-value="${day}" aria-pressed="${active}"
+      aria-label="${range}，${amount==='—'?'无记录':'花费 '+amount}" ${unavailable?'disabled':''}>
+      <b>${amount}</b><i style="--height:${cost/max*70}px" aria-hidden="true"></i><span>${label}</span></button>`;
   }).join('');
-  const plot=daily && report.legacy.length && !report.entries.length ?
-    '<p class="usage-notice">这天的旧账只有当日合计。</p>' :
-    `<div class="usage-chart${daily?' is-day':''}" role="group" aria-label="估算花费，单位美元">${columns}</div>`;
-  return `<section><h2 class="usage-title">${daily?'各时段花费':'每天花费'}</h2>${plot}${daily && report.legacy.length && report.entries.length?'<p class="usage-muted">时段图按有时间的调用绘制，旧账计入当天合计。</p>':''}</section>`;
+  return `<section><div class="usage-section-head"><h2 class="usage-title">${daily?'每天花费':'每周花费'}</h2><span class="usage-muted">${daily?'每柱一天':'每柱一周 · 周一至周日'}</span></div>
+    <div class="usage-chart" role="group" aria-label="估算花费，单位美元">${columns}</div></section>`;
 }
 
 function usageMatterName(row) {
@@ -174,33 +167,54 @@ function usageRecord(row,daily,open) {
     <div class="usage-record-body"><dl><div><dt>模型 / 工具</dt><dd>${escapeHTML(row.model)}</dd></div><div><dt>用量</dt><dd>${usage}</dd></div><div><dt>结果</dt><dd>${status}</dd></div>
     ${row.autonomous?'<div><dt>来源</dt><dd>成员自主行动</dd></div>':''}</dl>${link}</div></details>`;
 }
+function usageHistory(report,ascending) {
+  const {entries,legacy}=report;
+  if (!legacy.length) return '';
+  const calls=usageSum(legacy,'calls');
+  const days=[...legacy].sort((a,b)=>usageAmountOrder(a,b,!entries.length && ascending));
+  return `<section class="usage-history" aria-label="历史汇总"><div class="usage-section-head"><h2>历史汇总 · ${calls.toLocaleString('zh-CN')} 笔调用</h2>
+    ${!entries.length && days.length>1?usageSort(ascending):''}</div>
+    <p class="usage-muted">${entries.length?'以下旧账已计入合计。':'这些费用已计入合计，当前时段还没有逐笔记录。'}旧账只记录到天。</p>
+    ${days.map(row=>`<div class="usage-history-day"><span>${usageDateLabel(row.day)} · ${row.calls.toLocaleString('zh-CN')} 笔</span><span>${usageMoney(row.cost_micros)}${row.reserved_micros?' · 暂占 '+usageMoney(row.reserved_micros):''}</span></div>`).join('')}</section>`;
+}
+function usageAmountOrder(a,b,ascending) {
+  // 已结算行按花费排序，待核实行按展示的暂占金额排序。相同金额保留原来的时间顺序。
+  const difference=(a.cost_micros+a.reserved_micros)-(b.cost_micros+b.reserved_micros);
+  return ascending?difference:-difference;
+}
+function usageSort(ascending) {
+  return `<button class="usage-pill usage-sort" type="button" data-action="usage-sort" aria-label="金额排序，${ascending?'当前从低到高，点击切换为从高到低':'当前从高到低，点击切换为从低到高'}">金额${ascending?'从低到高':'从高到低'} ${icon(ascending?'arrow-up':'arrow-down')}</button>`;
+}
 function usageLedger(view,open) {
   const {entries,legacy}=view.report;
   const groups=Object.entries(usageGroups);
   const active=groups.filter(([key])=>view.filters[key]);
   const filtered=entries.filter(row=>active.every(([key])=>usageIdentity(row,key)[0]===view.filters[key]));
-  const all=Object.fromEntries(groups.map(([key])=>[key,usageCategories(entries,key)]));
+  filtered.sort((a,b)=>usageAmountOrder(a,b,view.ascending));
   const filters=groups.map(([key,label])=>{
-    // 切日期后仍可辨认已选条件；这个时段没有匹配时，筛选不会静默清空。
-    const id=view.filters[key];
-    if (id && !all[key].some(item=>item.id===id)) all[key].unshift({id,name:view.filterNames[key]});
-    const options=all[key].map(({id,name})=>`<option value="${escapeHTML(id)}" ${view.filters[key]===id?'selected':''}>${escapeHTML(name)}</option>`).join('');
-    return `<div class="usage-filter-field"><label for="usage-filter-${key}">${label}</label><select id="usage-filter-${key}" data-usage-filter="${key}"><option value="">不限</option>${options}</select></div>`;
+    const expanded=view.filterMenu===key;
+    const name=view.filters[key]?view.filterNames[key]:'不限';
+    return `<button class="usage-filter" type="button" data-action="usage-filter" data-value="${key}" aria-expanded="${expanded}" aria-controls="usage-filter-options"
+      aria-label="${label} ${escapeHTML(name)}" ${entries.length?'':'disabled'}><span>${label}</span><strong title="${escapeHTML(name)}">${escapeHTML(name)}</strong>${icon('chevron-down')}</button>`;
   }).join('');
-  const chips=active.map(([key,label])=>{
-    const name=all[key].find(item=>item.id===view.filters[key])?.name || label;
-    return `<button class="usage-pill" type="button" data-action="usage-clear" data-value="${key}" aria-label="移除${label}筛选 ${escapeHTML(name)}">${escapeHTML(name)} ${icon('x')}</button>`;
-  }).join('');
-  const counts=`${filtered.length} 笔调用${active.length ? ' · 花费约 '+usageMoney(usageSum(filtered))+(usageSum(filtered,'reserved_micros')?' · 暂占 '+usageMoney(usageSum(filtered,'reserved_micros')):'') : ''}`;
-  const old=!active.length && legacy.length ? `<div class="usage-history"><h3>历史汇总</h3><p class="usage-muted">这部分旧账只记录到天，已计入上方合计。</p>
-    ${legacy.map(row=>`<div class="usage-history-day"><span>${usageDateLabel(row.day)} · ${row.calls} 笔</span><span>${usageMoney(row.cost_micros)}${row.reserved_micros?' · 暂占 '+usageMoney(row.reserved_micros):''}</span></div>`).join('')}</div>` : '';
-  return `<section class="usage-section"><div class="usage-section-head"><h2 class="usage-title">逐笔明细</h2><button class="usage-pill" type="button" data-action="usage-filters" aria-expanded="${view.showFilters}" aria-controls="usage-filters">筛选 ${icon('chevron-down')}</button></div>
-    <div class="usage-filters" id="usage-filters" ${view.showFilters?'':'hidden'}>${filters}</div>
-    ${chips?`<div class="usage-chips" aria-label="当前筛选">${chips}</div>`:''}
+  const key=view.filterMenu;
+  let options='';
+  if (key && entries.length) {
+    const values=usageCategories(entries,key);
+    const selected=view.filters[key] || '';
+    if (selected && !values.some(item=>item.id===selected)) values.unshift({id:selected,name:view.filterNames[key]});
+    values.unshift({id:'',name:'不限'});
+    options=values.map(({id,name})=>usageChoice(escapeHTML(name),'usage-filter-option',id,selected===id)).join('');
+  }
+  const counts=entries.length ? `${filtered.length.toLocaleString('zh-CN')} 笔逐笔记录${active.length?' · 花费约 '+usageMoney(usageSum(filtered)):''}` :
+    legacy.length?'新增调用会在这里显示成员、用途和事项。':'这段时间还没有调用记录。';
+  return `<section class="usage-section"><div class="usage-section-head"><h2 class="usage-title">逐笔明细</h2>
+    ${entries.length>1?usageSort(view.ascending):''}</div>
+    <div class="usage-filters" aria-label="筛选逐笔明细">${filters}</div>
+    <div class="usage-filter-options" id="usage-filter-options" role="group" aria-label="${usageGroups[key] || '筛选'}选项" ${options?'':'hidden'}>${options}</div>
     <p class="usage-muted usage-ledger-count" aria-live="polite">${counts}</p>
     ${filtered.slice(0,view.limit).map(row=>usageRecord(row,view.period==='day',open.has(String(row.id)))).join('')}
-    ${filtered.length>view.limit?'<button type="button" class="usage-pill usage-more" data-action="usage-more">查看更多明细</button>':''}
-    ${!filtered.length && !old?`<p class="usage-notice">${active.length?'这组条件下没有调用记录。':'这段时间还没有调用记录。'}</p>`:''}${old}</section>`;
+    ${filtered.length>view.limit?'<button type="button" class="usage-pill usage-more" data-action="usage-more">查看更多明细</button>':''}${active.length && entries.length && !filtered.length?'<p class="usage-notice">这组条件下没有匹配的调用。</p>':''}</section>`;
 }
 
 function renderUsageAnalysis(view,focusSelector='') {
@@ -208,9 +222,7 @@ function renderUsageAnalysis(view,focusSelector='') {
   const focused=root.contains(active);
   const action=focused && active.dataset.action;
   const record=focused && active.closest('[data-record]')?.dataset.record;
-  const filter=focused && active.dataset.usageFilter;
   if (!focusSelector && action) focusSelector=`[data-action="${CSS.escape(action)}"]${active.dataset.value?`[data-value="${CSS.escape(active.dataset.value)}"]`:''}`;
-  if (!focusSelector && filter) focusSelector=`[data-usage-filter="${CSS.escape(filter)}"]`;
   if (!focusSelector && record) focusSelector=`[data-record="${record}"] summary`;
   const scroller=$('workspace-content'), scrollTop=scroller.scrollTop;
   const open=new Set([...root.querySelectorAll('details[open]')].map(item=>item.dataset.record));
@@ -223,7 +235,7 @@ function renderUsageAnalysis(view,focusSelector='') {
   const reserved=running && waiting ? `处理中 ${usageMoney(running)} · 待核实 ${usageMoney(waiting)}` :
     running ? '请求处理中' : waiting ? '结果待核实' : '';
   root.innerHTML=error+usagePeriod(view)+`<div class="usage-summary" aria-live="polite"><span>${view.period==='day'?'这天花了':'这周花了'}（估算）</span><strong>${usageMoney(used)}</strong>
-    ${reserved?`<p class="usage-muted">另有 ${usageMoney(running+waiting)} 暂占额度 · ${reserved}</p>`:''}</div>`+usageChart(view)+usageBreakdown(view)+usageLedger(view,open);
+    ${reserved?`<p class="usage-muted">另有 ${usageMoney(running+waiting)} 暂占额度 · ${reserved}</p>`:''}</div>`+usageChart(view)+usageHistory(view.report,view.ascending)+(entries.length?usageBreakdown(view):'')+usageLedger(view,open);
   const target=focusSelector && root.querySelector(focusSelector);
   scroller.scrollTop=scrollTop;
   if (target && !target.disabled) target.focus({preventScroll:true});
@@ -242,12 +254,14 @@ document.addEventListener('click',event=>{
   if (action==='usage-retry') {loadUsageAnalysis(view.request.period,view.request.date);return;}
   const {report,period,date}=view;
   if (action==='usage-period') {
-    if (value!==period) loadUsageAnalysis(value,date<report.first_day?report.first_day:date);
+    if (value!==period) {
+      const anchor=value==='day' && period==='week' ? usageShift(report.end,-1) : date;
+      loadUsageAnalysis(value,anchor>report.today?report.today:anchor);
+    }
     return;
   }
-  if (action==='usage-day') {
-    // 返回日视图后，键盘焦点落在按天按钮，原周柱已不在页面上。
-    loadUsageAnalysis('day',value);
+  if (action==='usage-bucket') {
+    if (value!==report.start) loadUsageAnalysis(period,value);
     return;
   }
   if (action==='usage-step') {
@@ -260,17 +274,40 @@ document.addEventListener('click',event=>{
     view.filters[view.group]=view.filters[view.group]===value?'':value;
     view.filterNames[view.group]=button.querySelector('.usage-rank-name').textContent.trim();
   }
-  if (action==='usage-filters') view.showFilters=!view.showFilters;
-  if (action==='usage-clear') delete view.filters[value];
+  if (action==='usage-sort') view.ascending=!view.ascending;
+  if (action==='usage-filter') {
+    view.filterMenu=view.filterMenu===value?'':value;
+    renderUsageAnalysis(view,view.filterMenu?'#usage-filter-options [aria-pressed="true"]':'');
+    if (view.filterMenu) document.activeElement.scrollIntoView({block:'nearest'});
+    return;
+  }
+  if (action==='usage-filter-option') {
+    const key=view.filterMenu;
+    view.filters[key]=value;
+    view.filterNames[key]=button.textContent.trim();
+    view.filterMenu='';
+    view.limit=usagePageSize;
+    renderUsageAnalysis(view,`[data-action="usage-filter"][data-value="${key}"]`);
+    return;
+  }
   const nextRecord=action==='usage-more'?view.limit+1:0;
-  view.limit=nextRecord ? view.limit+10 : action==='usage-rank'||action==='usage-clear' ? usagePageSize : view.limit;
-  renderUsageAnalysis(view,nextRecord?`.usage-record:nth-of-type(${nextRecord}) summary`:action==='usage-clear'?'[data-action="usage-filters"]':'');
+  view.limit=nextRecord ? view.limit+10 : action==='usage-rank'||action==='usage-sort' ? usagePageSize : view.limit;
+  renderUsageAnalysis(view,nextRecord?`.usage-record:nth-of-type(${nextRecord}) summary`:'');
 });
-document.addEventListener('change',event=>{
-  const key=event.target.dataset.usageFilter;
-  if (!key || !usageView?.root.contains(event.target)) return;
-  usageView.filters[key]=event.target.value;
-  usageView.filterNames[key]=event.target.selectedOptions[0].textContent;
-  usageView.limit=usagePageSize;
-  renderUsageAnalysis(usageView);
+document.addEventListener('click',event=>{
+  const view=usageView;
+  if (!view?.root.isConnected || !view.filterMenu || event.target.closest('.usage-filters,.usage-filter-options')) return;
+  // 只收起选项，保留即将点击的行或控件，避免重绘吞掉用户的点击。
+  view.root.querySelector('#usage-filter-options').hidden=true;
+  view.root.querySelector('[data-action="usage-filter"][aria-expanded="true"]')?.setAttribute('aria-expanded','false');
+  view.filterMenu='';
 });
+document.addEventListener('keydown',event=>{
+  const view=usageView;
+  if (event.key!=='Escape' || !view?.root.isConnected || !view.filterMenu) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const key=view.filterMenu;
+  view.filterMenu='';
+  renderUsageAnalysis(view,`[data-action="usage-filter"][data-value="${key}"]`);
+},true);

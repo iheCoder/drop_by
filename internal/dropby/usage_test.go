@@ -62,6 +62,11 @@ func TestUsageReportKeepsHistoryAndReconcilesPerRequest(t *testing.T) {
 	if weekly.Start != oldDay || weekly.End != week.AddDate(0, 0, 7).Format(usageDate) || len(weekly.Legacy) != 1 || len(weekly.Entries) != 2 {
 		t.Fatalf("周边界或历史汇总不符: %+v", weekly)
 	}
+	// 周图按完整预算周汇总，周柱同时包含旧账和逐笔账；预留金额单独保留。
+	if len(weekly.Trend) != 7 || weekly.Trend[5].Day != week.AddDate(0, 0, -7).Format(usageDate) ||
+		weekly.Trend[6] != (dailyUsage{Day: oldDay, Calls: 3, CostMicros: 470, ReservedMicros: 250}) {
+		t.Fatalf("每根周柱应对应一周: %+v", weekly.Trend)
+	}
 	if old := weekly.Legacy[0]; old.CostMicros != 120 || old.Calls != 1 || old.ReservedMicros != 0 {
 		t.Fatalf("历史仍应保留在原有日期: %+v", old)
 	}
@@ -77,6 +82,16 @@ func TestUsageReportKeepsHistoryAndReconcilesPerRequest(t *testing.T) {
 	if daily.End != week.AddDate(0, 0, 1).Format(usageDate) || len(daily.Entries) != 2 || daily.Entries[0].Status != "unknown" ||
 		daily.Entries[0].ReservedMicros != 250 || daily.Entries[0].CostMicros != 0 {
 		t.Fatalf("未知结果应保留占用，并和已结算区分: %+v", daily)
+	}
+	// 日图每根柱恰好对应一天，选择同组中的历史日期不会移动其他柱。
+	for i, bucket := range daily.Trend {
+		want := time.Now().AddDate(0, 0, i-6).Format(usageDate)
+		if bucket.Day != want {
+			t.Fatalf("每天应恰有一根日柱: %+v", daily.Trend)
+		}
+		if bucket.Day == oldDay && (bucket.CostMicros != 470 || bucket.Calls != 3) {
+			t.Fatalf("日柱应包含历史与逐笔费用: %+v", bucket)
+		}
 	}
 	total, err := s.Usage()
 	if err != nil || total.CostMicros != 720 || total.UnsettledMicros != 250 || total.Calls != 3 {
@@ -128,5 +143,8 @@ func TestUsageCallPreservesReservationDateAndRestartsUnknown(t *testing.T) {
 	after, err := s.readUsageReport(ctx, start, start.AddDate(0, 0, 7), time.Now())
 	if err != nil || len(after.Entries) != 1 || after.Entries[0].Status != "unknown" || after.Entries[0].ReservedMicros != 400000 || len(after.Legacy) != 0 {
 		t.Fatalf("拒绝的请求不能入账，重启后只有未结算的新周预留: %+v %v", after, err)
+	}
+	if len(after.Trend) != 7 || after.Trend[5].CostMicros != 150000 || after.Trend[6].CostMicros != 0 || after.Trend[6].ReservedMicros != 400000 {
+		t.Fatalf("跨周应分别汇入相邻两根周柱: %+v", after.Trend)
 	}
 }

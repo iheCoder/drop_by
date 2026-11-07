@@ -155,6 +155,7 @@ type usageReport struct {
 	End      string       `json:"end"` // 右边界不含当天，与预算周的计算一致。
 	Today    string       `json:"today"`
 	FirstDay string       `json:"first_day"`
+	Trend    []dailyUsage `json:"trend"` // 一柱对应一个自然日或一个预算周，包含旧账。
 	Legacy   []dailyUsage `json:"legacy"`
 	Entries  []usageEntry `json:"entries"`
 }
@@ -196,6 +197,9 @@ func (s *Store) readUsageReport(ctx context.Context, start, end, today time.Time
 	}
 	defer tx.Rollback()
 	if err = tx.QueryRowContext(ctx, `SELECT coalesce(min(day),?) FROM usage WHERE calls>0`, report.Today).Scan(&report.FirstDay); err != nil {
+		return report, err
+	}
+	if report.Trend, err = usageTrend(ctx, tx, start, end, today); err != nil {
 		return report, err
 	}
 
@@ -255,4 +259,46 @@ func (s *Store) readUsageReport(ctx context.Context, start, end, today time.Time
 		}
 	}
 	return report, rows.Err()
+}
+
+func usageTrend(ctx context.Context, tx *sql.Tx, selected, end, today time.Time) ([]dailyUsage, error) {
+	const size = 7
+	step := 1
+	latest := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, today.Location())
+	if !selected.AddDate(0, 0, 1).Equal(end) {
+		step = 7
+		latest, _ = budgetWeek(today)
+	}
+	// 同一组七个周期内切换时保持柱子位置。按日历日期分页，避开夏令时的 23/25 小时天。
+	civilDay := func(t time.Time) int64 {
+		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC).Unix() / 86400
+	}
+	pageSize := size * step
+	pagesBack := int(civilDay(latest)-civilDay(selected)) / pageSize
+	first := latest.AddDate(0, 0, -pagesBack*pageSize-(size-1)*step)
+	last := first.AddDate(0, 0, pageSize)
+	buckets := make([]dailyUsage, size)
+	for i := range buckets {
+		buckets[i].Day = first.AddDate(0, 0, i*step).Format(usageDate)
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT day,calls,cost_micros-unsettled_micros,unsettled_micros
+ FROM usage WHERE day>=? AND day<? ORDER BY day`, buckets[0].Day, last.Format(usageDate))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	index := 0
+	for rows.Next() {
+		var day dailyUsage
+		if err = rows.Scan(&day.Day, &day.Calls, &day.CostMicros, &day.ReservedMicros); err != nil {
+			return nil, err
+		}
+		for index+1 < len(buckets) && day.Day >= buckets[index+1].Day {
+			index++
+		}
+		buckets[index].Calls += day.Calls
+		buckets[index].CostMicros += day.CostMicros
+		buckets[index].ReservedMicros += day.ReservedMicros
+	}
+	return buckets, rows.Err()
 }
