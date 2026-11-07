@@ -217,7 +217,7 @@ async function loadConversation(id, preserve) {
   if (panelView === 'room') roomDetails(false);
   if (panelView.startsWith('profile:')) {
     const id = panelView.slice(8), current = member(id);
-    const signature = JSON.stringify([current, roomData.member_states?.find(s => s.member_id === id)]);
+    const signature = JSON.stringify([current, roomData.member_states?.find(s => s.member_id === id),state.personal_focus?.[id]]);
     if ($('panel-content').dataset.profileSignature !== signature) { const top = $('panel-content').scrollTop; fullProfile(id); $('panel-content').scrollTop = top; }
   }
   // 新版只提示，不重建用户正在试用的页面；点击后才载入新的版本。
@@ -361,13 +361,15 @@ function newGroup() { startGroup(); }
 
 function focusBlock(id) {
   const focus = roomData?.member_states?.find(s => s.member_id === id);
-  if (!focus?.body) return '';
-  return `<div class="focus-block"><h3 class="section-label">${icon('smile')}在这段聊天里</h3><div class="focus-body">${escapeHTML(focus.body)}</div>${focus.source_ids?.length ? `<div class="focus-sources">${focus.source_ids.map((source,i) => `<button data-action="${source.startsWith('tool_') ? 'evidence' : 'jump-message'}" data-id="${source}">${source.startsWith('tool_') ? '查看相关行动' : '回到相关交流'}${focus.source_ids.length > 1 ? ` ${i+1}` : ''} ↗</button>`).join('')}</div>` : ''}</div>`;
+  const personal=state.personal_focus?.[id];
+  const own=personal?.body ? `<div class="focus-block"><h3 class="section-label">${icon('activity')}最近在意</h3><div class="focus-body">${escapeHTML(personal.body)}</div></div>` : '';
+  if (!focus?.body) return own;
+  return own+`<div class="focus-block"><h3 class="section-label">${icon('smile')}在这段聊天里</h3><div class="focus-body">${escapeHTML(focus.body)}</div>${focus.source_ids?.length ? `<div class="focus-sources">${focus.source_ids.map((source,i) => `<button data-action="${source.startsWith('tool_') ? 'evidence' : 'jump-message'}" data-id="${source}">${source.startsWith('tool_') ? '查看相关行动' : '回到相关交流'}${focus.source_ids.length > 1 ? ` ${i+1}` : ''} ↗</button>`).join('')}</div>` : ''}</div>`;
 }
 function fullProfile(id) {
   const m = member(id); if (!m) return;
   showPanel('朋友资料', '', `<div class="profile-head">${avatar(m)}<h3>${escapeHTML(m.name)}</h3><p>AI 朋友 · ${escapeHTML(dateLabel(m.created_at))} 相识</p></div><div class="profile-actions"><button class="primary" data-action="direct" data-id="${m.id}">${icon('message-circle')}单独聊聊</button><button class="secondary" data-action="edit-profile" data-id="${m.id}">${icon('pencil')}编辑</button></div>${focusBlock(id)}${capabilities(m)}<h3 class="section-label">特质与偏好</h3><div class="profile-body">${escapeHTML(m.profile)}</div><p class="profile-caption">你可以随时编辑，也可以在聊天里说「以后……」，让 TA 记住你的偏好。</p><div class="panel-nav"><button data-action="preference" data-id="${m.id}">${icon('circle-help')}聊一个偏好${icon('chevron-right')}</button></div>`, `profile:${id}`);
-  $('panel-content').dataset.profileSignature = JSON.stringify([m, roomData?.member_states?.find(s => s.member_id === id)]);
+  $('panel-content').dataset.profileSignature = JSON.stringify([m, roomData?.member_states?.find(s => s.member_id === id),state.personal_focus?.[id]]);
 }
 function roomDetails(scroll = true) {
   if (!roomData) return;

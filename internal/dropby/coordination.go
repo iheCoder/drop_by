@@ -176,7 +176,7 @@ func queueCoordinationReview(tx *sql.Tx, w Work, status, result string) error {
 
 // 工作属于当前会话的共享执行记录，读取不能越过群聊/私聊边界。
 func (s *Store) ReadWork(room, id string) (Work, error) {
-	w, err := scanWork(s.db.QueryRow(`SELECT `+workColumns+` FROM work WHERE conversation_id=? AND id=?`, room, id))
+	w, err := scanWork(s.db.QueryRow(`SELECT `+workColumns+` FROM work WHERE coalesce(conversation_id,'')=? AND id=?`, room, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return w, fmt.Errorf("当前聊天没有这项工作")
 	}
@@ -186,7 +186,7 @@ func (s *Store) ReadWork(room, id string) (Work, error) {
 // 活跃工作不能因为创建得早就被最近 50 条已完成记录挤掉。调用者按需给出
 // 简短索引，详情仍用 ReadWork 读取，而不是把每项任务全文塞进所有上下文。
 func (s *Store) OpenWork(room string) ([]Work, error) {
-	rows, err := s.db.Query(`SELECT `+workColumns+` FROM work WHERE conversation_id=? AND status IN ('pending','running','waiting_budget','paused') AND kind IN ('research','revisit') ORDER BY due_at,created_at`, room)
+	rows, err := s.db.Query(`SELECT `+workColumns+` FROM work WHERE coalesce(conversation_id,'')=? AND status IN ('pending','running','waiting_budget','paused') AND kind IN ('research','revisit') ORDER BY due_at,created_at`, room)
 	if err != nil {
 		return nil, err
 	}

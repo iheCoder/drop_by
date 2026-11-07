@@ -83,7 +83,7 @@ func (s *Store) memoryEvidence(member, room string, ids, inherited []string) ([]
 		}
 		if errors.Is(err, sql.ErrNoRows) {
 			// 无真人触发的自主工作也有真实来由，但工作计划不能证明已经完成。
-			err = s.db.QueryRow(`SELECT conversation_id,member_id,instruction || char(10) || '实际状态：' || status || char(10) || result FROM work WHERE id=? AND member_id=?`, id, member).
+			err = s.db.QueryRow(`SELECT coalesce(conversation_id,''),member_id,instruction || char(10) || '实际状态：' || status || char(10) || result FROM work WHERE id=? AND member_id=?`, id, member).
 				Scan(&e.ConversationID, &e.AuthorID, &e.Body)
 			e.Kind = "work"
 		}
@@ -93,7 +93,19 @@ func (s *Store) memoryEvidence(member, room string, ids, inherited []string) ([]
 		if err != nil {
 			return nil, err
 		}
-		if e.ConversationID != room {
+		// 个人活动本来就可以查看本人所在的聊天，也会向那里发消息。
+		// 这些真实记录可成为本人经历，不要求先把同一消息复制回个人空间。
+		// 群内回忆仍沿用该群边界；没有加入的聊天和同伴个人行动不会因此开放。
+		personalSource := false
+		if room == "" && e.ConversationID != "" {
+			var joined int
+			if err := s.db.QueryRow(`SELECT count(*) FROM participants WHERE conversation_id=? AND member_id=?`, e.ConversationID, member).Scan(&joined); err != nil {
+				return nil, err
+			}
+			personalSource = joined > 0
+		}
+		// 本人的个人探索材料也可以用于其后在聊天里形成的经历。
+		if e.ConversationID != room && !personalSource && !(e.ConversationID == "" && e.AuthorID == member) {
 			if !contains(inherited, id) {
 				return nil, fmt.Errorf("不能用未携带的其他聊天记录形成经历：%s", id)
 			}

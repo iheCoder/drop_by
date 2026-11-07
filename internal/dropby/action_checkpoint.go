@@ -2,7 +2,6 @@ package dropby
 
 import (
 	"encoding/json"
-	"errors"
 )
 
 // 只保存正在执行的成员行动，不新增角色生命周期。它解决实际故障：工具已保存、
@@ -55,13 +54,4 @@ func (s *Store) pendingActions(work string) ([]string, error) {
 		members = append(members, member)
 	}
 	return members, rows.Err()
-}
-
-// 只有确实有其他房间的真人请求在排队时让出，不为每项工作另设工具配额。
-var errYield = errors.New("让出执行位")
-
-func (e *Engine) humanWaiting(room string) bool {
-	var n int
-	e.Store.db.QueryRow("SELECT count(*) FROM work WHERE conversation_id<>? AND kind='chat' AND status='pending'", room).Scan(&n)
-	return n > 0
 }

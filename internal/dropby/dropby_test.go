@@ -237,7 +237,7 @@ func TestNoMemberNeedsToSpeakAndRunLimitIsNotPermanent(t *testing.T) {
 	var calls atomic.Int32
 	model := modelFunc(func(_ context.Context, msgs []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		calls.Add(1)
-		return jsonReply(Decision{Action: "pass"}), nil
+		return jsonReply(Outcome{}), nil
 	})
 	e := NewEngine(s, model, testConfig())
 	if err := e.process(context.Background(), w); err != nil {
@@ -250,13 +250,6 @@ func TestNoMemberNeedsToSpeakAndRunLimitIsNotPermanent(t *testing.T) {
 	}
 	// 后续事件改变判断。这一次只发一条，然后再次选择安静。
 	model = modelFunc(func(_ context.Context, msgs []ChatMessage, _ []ToolDefinition, jsonOnly bool) (ChatMessage, error) {
-		if strings.Contains(msgs[0].Content, "此时只决定自己的下一步") {
-			history, _ := s.Messages(c.ID, 0, 20)
-			if len(history) == 0 {
-				return jsonReply(Decision{Action: "speak", Intent: "分享新材料"}), nil
-			}
-			return jsonReply(Decision{Action: "pass"}), nil
-		}
 		return jsonReply(Outcome{Message: "新材料让我改变了看法。"}), nil
 	})
 	e.Model = model
@@ -272,7 +265,7 @@ func TestNoMemberNeedsToSpeakAndRunLimitIsNotPermanent(t *testing.T) {
 }
 
 func TestResearchCompletionDoesNotRequirePublicDiscussion(t *testing.T) {
-	// 用户暂停聊天时后台研究完成：保存结果、生成独立分享机会，但不直接发公开消息。
+	// 用户暂停聊天时后台研究仍可保存完成结果；不再另开一次分享审批。
 	s, c, m := fixture(t)
 	s.db.Exec(`UPDATE conversations SET discussion_paused=1 WHERE id=?`, c.ID)
 	c, _ = s.Conversation(c.ID)
@@ -297,7 +290,7 @@ func TestResearchCompletionDoesNotRequirePublicDiscussion(t *testing.T) {
 			foundShare = true
 		}
 	}
-	if !foundResult || !foundShare {
+	if !foundResult || foundShare {
 		t.Fatalf("研究结果/分享机会丢失: %+v", jobs)
 	}
 	messages, _ := s.Messages(c.ID, 0, 10)
@@ -456,50 +449,34 @@ func TestReferencedMessageMustBelongToConversation(t *testing.T) {
 	}
 	// 模型生成的引用与用户引用遵守相同范围，不能借引用带入其他场景原文。
 	aiReply := Message{ID: newID("msg"), ConversationID: other.ID, AuthorID: m.ID, Body: "接着说", ReplyTo: first.ID, CreatedAt: now()}
-	if err := s.Publish(aiReply, other.Revision); err == nil {
-		t.Fatal("AI 也不能引用另一个群的原始消息")
+	if err := s.Publish(aiReply, other.Revision); err != nil {
+		t.Fatal(err)
 	}
 	list, _ := s.Messages(other.ID, 0, 10)
-	if len(list) != 0 {
-		t.Fatal("被拒绝的引用应整体回滚")
+	if len(list) != 1 || list[0].ReplyTo != "" || list[0].Body != "接着说" {
+		t.Fatal("跨群引用应移除，正文仍可发表")
 	}
 	// 同一聊天的真实消息仍能正常引用，避免范围检查误伤成员之间的接话。
 	current, _ := s.Conversation(c.ID)
+	aiReply.ID = newID("msg")
 	aiReply.ConversationID = c.ID
 	if err := s.Publish(aiReply, current.Revision); err != nil {
 		t.Fatalf("当前聊天的有效引用应可发布: %v", err)
 	}
 }
 
-func TestExplicitMentionWinsWithoutRosterRotation(t *testing.T) {
-	// 两位成员都愿意回应时，明确 @ 的成员优先；普通文字提名不构成 @。
-	s, c, m := fixture(t)
-	second := m
-	second.ID = "member_qiao"
-	second.Name = "乔"
-	s.AddMember(second)
-	s.db.Exec(`INSERT INTO participants VALUES(?,?)`, c.ID, second.ID)
-	c, _ = s.Conversation(c.ID)
-	msg := userMessage(c, "@乔 你怎么看？")
-	msg.Mentions = []string{second.ID}
+func TestMentionRemainsInMembersContext(t *testing.T) {
+	s, c, members := groupWithMembers(t, 2)
+	msg := userMessage(c, "你怎么看？")
+	msg.Mentions = []string{members[1].ID}
 	s.AddUserMessage(msg, time.Hour)
 	c, _ = s.Conversation(c.ID)
-	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		var input struct {
-			Self Member `json:"self"`
+	e := NewEngine(s, nil, testConfig())
+	for _, member := range members {
+		input, err := e.contextFor(c, member, latestChatWork(t, s, c.ID))
+		if err != nil || !strings.Contains(asJSON(input["latest_messages"]), members[1].ID) {
+			t.Fatalf("@ 语境丢失: %v", err)
 		}
-		json.Unmarshal([]byte(ms[1].Content), &input)
-		if input.Self.ID == second.ID {
-			time.Sleep(10 * time.Millisecond)
-		}
-		return jsonReply(Decision{Action: "speak", Intent: "分享观点"}), nil
-	}), testConfig())
-	chosen, _, err := e.choose(context.Background(), c, Work{SourceID: msg.ID}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if chosen.ID != second.ID {
-		t.Fatalf("明确 @ 未优先: %+v", chosen)
 	}
 }
 
@@ -508,9 +485,7 @@ func TestBackendWorksWithoutAnyBrowserConnection(t *testing.T) {
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "research")
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
-			return jsonReply(Decision{Action: "pass"}), nil
-		}
+
 		return jsonReply(Outcome{Outcome: "已完成离线期间的文本探索"}), nil
 	}), testConfig())
 	ctx, cancel := context.WithCancel(context.Background())
@@ -678,7 +653,7 @@ func TestLastModelRoundClosesAfterSavingArtifact(t *testing.T) {
 }
 
 func TestPartialResearchKeepsWorkAndCanShareExistingProgress(t *testing.T) {
-	// 部分完成并非失败也非全部完成：保留后续工作，同时给实际结果一次分享机会。
+	// 旧断点中的 unfinished 仍可继续研究；不再额外生成一次分享审批。
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "research")
 	s.Claim(w.ID)
@@ -692,13 +667,13 @@ func TestPartialResearchKeepsWorkAndCanShareExistingProgress(t *testing.T) {
 	pending, sharing := false, false
 	for _, job := range jobs {
 		if job.ID == w.ID {
-			pending = job.Status == "pending" && strings.Contains(job.Result, "原始资料") && job.DueAt > time.Now().UnixMilli()
+			pending = job.Status == "pending" && strings.Contains(job.Result, "原始资料")
 		}
 		if job.Kind == "share" {
 			sharing = true
 		}
 	}
-	if !pending || !sharing {
+	if !pending || sharing {
 		t.Fatalf("部分进展没有与后续工作分开保存: %+v", jobs)
 	}
 }

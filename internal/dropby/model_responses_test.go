@@ -78,7 +78,6 @@ func TestModelRolesStayWithRequest(t *testing.T) {
 	cfg := testConfig()
 	cfg.BaseURL = server.URL
 	cfg.Model = "gpt-6.1-sol"
-	cfg.DecisionModel = "gpt-6-luna"
 	cfg.ChatModel = "gpt-6.1-terra"
 	cfg.Reasoning = "low"
 	cfg.DeepReasoning = "high"
@@ -88,7 +87,7 @@ func TestModelRolesStayWithRequest(t *testing.T) {
 		role, expected string
 		deep           bool
 	}{
-		{"decision", "gpt-6-luna/none", false}, {"chat", "gpt-6.1-terra/none", false},
+		{"chat", "gpt-6.1-terra/none", false},
 		{"chat", "gpt-6.1-terra/none", true}, {"", "gpt-6.1-sol/high", true}, {"", "gpt-6.1-sol/low", false},
 	} {
 		wg.Add(1)

@@ -12,88 +12,56 @@ import (
 // 辅助引用写错时忽略无效项，保持本人发言意图和有效的本群引用；
 // 不为一个可选 ID 发起另一轮纠正，也不读取外群内容。
 func TestInvalidSelectionDoesNotBlockParticipation(t *testing.T) {
+	// 可选引用输错不应吞掉作者正文，正文仍走实际发布流程。
 	s, c, m := fixture(t)
-	msg := userMessage(c, "想聊雨声")
-	s.AddUserMessage(msg, time.Hour)
-	c, _ = s.Conversation(c.ID)
-	w := latestChatWork(t, s, c.ID)
-	calls := 0
+	w := addWork(t, s, c, m, "followup")
 	e := NewEngine(s, modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
-		calls++
-		return jsonReply(Decision{Action: "speak", Intent: "聊雨声", MessageIDs: []string{"msg_other_room", msg.ID}}), nil
+		return jsonReply(Outcome{Message: "我喜欢雨声。", ReplyTo: "not_in_this_room"}), nil
 	}), testConfig())
-	result := e.observeMember(context.Background(), c, w, m.ID, 0, nil)
-	if result.Err != nil || calls != 1 || result.Decision.Action != "speak" || len(result.Decision.MessageIDs) != 1 || result.Decision.MessageIDs[0] != msg.ID {
-		t.Fatalf("可选引用阻断了有效意图: %+v calls=%d", result, calls)
+	if err := e.process(context.Background(), w); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := s.Messages(c.ID, 0, 10)
+	if len(msgs) != 1 || msgs[0].Body != "我喜欢雨声。" || msgs[0].ReplyTo != "" {
+		t.Fatalf("可选引用阻断发言: %+v", msgs)
 	}
 }
 
 func TestLaterDecisionFailurePreservesPublishedConversation(t *testing.T) {
-	// 真调度与数据库：先成功发布一条回复，后续观察的全部成员发生服务错误。
-	// 这次交流正常退出；回复仍在，失败判断仍在，不能靠重跑整轮复制消息。
+	// 行动中先发消息、继续思考时断线；已发消息与故障分别保存。
 	s, c, m := fixture(t)
-	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		if strings.HasPrefix(ms[0].Content, "你只解释") {
-			return jsonReply(Control{}), nil
+	w := addWork(t, s, c, m, "followup")
+	calls := 0
+	e := NewEngine(s, modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
+		calls++
+		if calls == 1 {
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("send_message", map[string]string{"message": "听雨也不错。"})}}, nil
 		}
-		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
-			var input struct {
-				AlreadySpoke bool `json:"already_spoke"`
-			}
-			json.Unmarshal([]byte(ms[1].Content), &input)
-			if input.AlreadySpoke {
-				return ChatMessage{}, errors.New("模型本次请求失败")
-			}
-			return jsonReply(Decision{Action: "speak", Intent: "回应雨声"}), nil
-		}
-		return jsonReply(Outcome{Message: "听雨也不错。"}), nil
+		return ChatMessage{}, errors.New("模型本次请求失败")
 	}), testConfig())
-	if err := e.Submit(userMessage(c, "下雨天做什么？")); err != nil {
-		t.Fatal(err)
-	}
-	w := latestChatWork(t, s, c.ID)
 	e.dispatch(context.Background())
 	e.wg.Wait()
 	saved, _ := s.ReadWork(c.ID, w.ID)
 	messages, _ := s.Messages(c.ID, 0, 10)
 	records, _ := s.Participations(c.ID)
-	if saved.Status != "failed" || len(messages) != 2 || messages[1].AuthorID != m.ID {
-		t.Fatalf("应保留已发布交流并记录后续故障: %+v %+v", saved, messages)
-	}
-	if records[0].Action != "error" {
-		t.Fatal("局部错误记录丢失")
+	if saved.Status != "failed" || len(messages) != 1 || messages[0].AuthorID != m.ID || records[0].Action != "error" {
+		t.Fatalf("已经发出的消息或故障丢失: %+v %+v %+v", saved, messages, records)
 	}
 }
 
 func TestParticipationSharedErrorsStillStopWork(t *testing.T) {
-	// 即使同伴愿意说话，预算、取消和存储故障也不能被局部容错吞掉。
+	// 本人不能把预算、取消、上下文或记账故障装成自愿沉默；直接行动保留原错误。
 	for _, cause := range []error{ErrBudget, ErrStale, context.Canceled, ErrContextCapacity, &modelAccountingError{errors.New("记账存储失败")}} {
 		t.Run(cause.Error(), func(t *testing.T) {
-			s, c, people := groupWithMembers(t, 2)
-			w := addWork(t, s, c, people[0], "chat")
-			e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-				var input struct {
-					Self Member `json:"self"`
-				}
-				json.Unmarshal([]byte(ms[1].Content), &input)
-				if input.Self.ID == people[0].ID {
-					return ChatMessage{}, cause
-				}
-				return jsonReply(Decision{Action: "speak", Intent: "愿意继续"}), nil
+			s, c, m := fixture(t)
+			w := addWork(t, s, c, m, "followup")
+			e := NewEngine(s, modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
+				return ChatMessage{}, cause
 			}), testConfig())
-			_, _, err := e.observeMembers(context.Background(), c, w, 0)
-			if !errors.Is(err, cause) {
-				t.Fatalf("共享错误被吞掉: %v", err)
+			if _, err := e.act(context.Background(), c, m, w, ""); !errors.Is(err, cause) {
+				t.Fatalf("故障被吞掉: %v", err)
 			}
 		})
-	}
-	s, c, m := fixture(t)
-	w := addWork(t, s, c, m, "chat")
-	s.Close()
-	e := NewEngine(s, nil, testConfig())
-	_, _, err := e.observeMembers(context.Background(), c, w, 0)
-	if err == nil || isParticipationFailure(err) {
-		t.Fatalf("存储故障被局部化: %v", err)
 	}
 }
 

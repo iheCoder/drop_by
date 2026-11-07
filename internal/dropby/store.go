@@ -108,6 +108,10 @@ CREATE TABLE IF NOT EXISTS usage(day TEXT PRIMARY KEY, calls INTEGER NOT NULL DE
 		db.Close()
 		return nil, err
 	}
+	if err = s.initPersonalActivity(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// 进程退出不等于工作完成。只读网络行动可再次执行，已保存的工具记录会回到上下文。
 	_, err = db.Exec(`UPDATE work SET status='pending', result=CASE WHEN result='' THEN '上次运行因服务退出中断；继续前请检查已有工具结果和最新聊天。' ELSE result END WHERE status='running'`)
 	if err != nil {
@@ -156,8 +160,18 @@ func (s *Store) Member(id string) (Member, error) {
 	return m, e
 }
 func (s *Store) AddMember(m Member) error {
-	_, e := s.db.Exec(`INSERT INTO members(id,data) VALUES(?,?)`, m.ID, asJSON(m))
-	return e
+	tx, e := s.db.Begin()
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	if _, e = tx.Exec(`INSERT INTO members(id,data) VALUES(?,?)`, m.ID, asJSON(m)); e != nil {
+		return e
+	}
+	if _, e = tx.Exec(`INSERT INTO personal_activity(member_id) VALUES(?)`, m.ID); e != nil {
+		return e
+	}
+	return tx.Commit()
 }
 
 func (s *Store) CreateConversation(name, kind string, ids []string, interval time.Duration, portrait ...string) (Conversation, error) {
@@ -335,7 +349,7 @@ func (s *Store) AddUserMessage(m Message, interval time.Duration) error {
 	if _, e = tx.Exec(`UPDATE message_questions SET status=CASE WHEN message_id=? THEN 'answered' ELSE 'dismissed' END,response_id=? WHERE status='open' AND message_id IN (SELECT id FROM messages WHERE conversation_id=?)`, m.ReplyTo, m.ID, m.ConversationID); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(`UPDATE conversations SET revision=revision+1,idle_rounds=0,next_explore=? WHERE id=?`, time.Now().Add(interval).UnixMilli(), m.ConversationID); e != nil {
+	if _, e = tx.Exec(`UPDATE conversations SET revision=revision+1 WHERE id=?`, m.ConversationID); e != nil {
 		return e
 	}
 	// 极明确的停止在接收消息的事务中立即生效，不等待模型、预算或后台轮询。
@@ -372,6 +386,12 @@ func (s *Store) Guard(room string, revision int64, fn func(*sql.Tx) error) error
 	}
 	defer tx.Rollback()
 	var current int64
+	if room == "" {
+		if e = fn(tx); e != nil {
+			return e
+		}
+		return tx.Commit()
+	}
 	if e = tx.QueryRow(`SELECT revision FROM conversations WHERE id=?`, room).Scan(&current); e != nil {
 		return e
 	}
@@ -385,34 +405,7 @@ func (s *Store) Guard(room string, revision int64, fn func(*sql.Tx) error) error
 }
 func (s *Store) Publish(m Message, revision int64, actionID ...string) error {
 	return s.Guard(m.ConversationID, revision, func(tx *sql.Tx) error {
-		var paused bool
-		if e := tx.QueryRow(`SELECT discussion_paused FROM conversations WHERE id=?`, m.ConversationID).Scan(&paused); e != nil {
-			return e
-		}
-		if paused && m.AuthorID != "system" {
-			return ErrStale
-		}
-		// 成员离群后，旧任务即便读到了新的修订号也不能继续发言。
-		if m.AuthorID != "user" && m.AuthorID != "system" {
-			var present int
-			if err := tx.QueryRow(`SELECT count(*) FROM participants WHERE conversation_id=? AND member_id=?`, m.ConversationID, m.AuthorID).Scan(&present); err != nil {
-				return err
-			}
-			if present != 1 {
-				return ErrStale
-			}
-		}
-		// AI 之间接话也可引用原消息，但不能把另一场景的原文带进来。
-		if m.ReplyTo != "" {
-			var n int
-			if err := tx.QueryRow(`SELECT count(*) FROM messages WHERE id=? AND conversation_id=?`, m.ReplyTo, m.ConversationID).Scan(&n); err != nil {
-				return err
-			}
-			if n == 0 {
-				return fmt.Errorf("引用的原消息不在当前聊天中")
-			}
-		}
-		if err := insertMessage(tx, m); err != nil {
+		if err := publishMessage(tx, m); err != nil {
 			return err
 		}
 		if len(actionID) > 0 {
@@ -421,6 +414,44 @@ func (s *Store) Publish(m Message, revision int64, actionID ...string) error {
 		}
 		return nil
 	})
+}
+
+func publishMessage(tx *sql.Tx, m Message) error {
+	var paused bool
+	if e := tx.QueryRow(`SELECT discussion_paused FROM conversations WHERE id=?`, m.ConversationID).Scan(&paused); e != nil {
+		return e
+	}
+	if paused && m.AuthorID != "system" {
+		return ErrStale
+	}
+	// 成员离群后，旧任务即便读到了新的修订号也不能继续发言。
+	if m.AuthorID != "user" && m.AuthorID != "system" {
+		var present int
+		if err := tx.QueryRow(`SELECT count(*) FROM participants WHERE conversation_id=? AND member_id=?`, m.ConversationID, m.AuthorID).Scan(&present); err != nil {
+			return err
+		}
+		if present != 1 {
+			return ErrStale
+		}
+	}
+	// AI 之间接话也可引用原消息，但不能把另一场景的原文带进来。
+	if m.ReplyTo != "" {
+		var n int
+		if err := tx.QueryRow(`SELECT count(*) FROM messages WHERE id=? AND conversation_id=?`, m.ReplyTo, m.ConversationID).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			// 引用只是定位辅助。成员输错 ID 时保留正文，不把一次可选引用变成发言失败。
+			if m.AuthorID == "user" {
+				return fmt.Errorf("引用的原消息不在当前聊天中")
+			}
+			m.ReplyTo = ""
+		}
+	}
+	if err := insertMessage(tx, m); err != nil {
+		return err
+	}
+	return nil
 }
 func (s *Store) SystemMessage(room, id, body string) error {
 	tx, e := s.db.Begin()
@@ -445,11 +476,11 @@ func insertWork(tx *sql.Tx, w Work) error {
 	if w.RootID == "" {
 		w.RootID = w.ID
 	}
-	_, e := tx.Exec(`INSERT INTO work(id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,created_at,root_id,autonomous,assigned_by,parent_id,first_speakers) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, w.ID, w.ConversationID, w.MemberID, w.Kind, w.Instruction, w.Reason, w.SourceID, w.Status, w.DueAt, w.CreatedAt, w.RootID, w.Autonomous, w.AssignedBy, w.ParentID, asJSON(w.FirstSpeakers))
+	_, e := tx.Exec(`INSERT INTO work(id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,created_at,root_id,autonomous,assigned_by,parent_id,first_speakers) VALUES(?,nullif(?,''),?,?,?,?,?,?,?,?,?,?,?,?,?)`, w.ID, w.ConversationID, w.MemberID, w.Kind, w.Instruction, w.Reason, w.SourceID, w.Status, w.DueAt, w.CreatedAt, w.RootID, w.Autonomous, w.AssignedBy, w.ParentID, asJSON(w.FirstSpeakers))
 	return e
 }
 
-const workColumns = `id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,attempts,result,created_at,root_id,autonomous,assigned_by,parent_id,first_speakers`
+const workColumns = `id,coalesce(conversation_id,''),member_id,kind,instruction,reason,source_id,status,due_at,attempts,result,created_at,root_id,autonomous,assigned_by,parent_id,first_speakers`
 
 func scanWork(rows interface{ Scan(...any) error }) (Work, error) {
 	var w Work
@@ -459,7 +490,7 @@ func scanWork(rows interface{ Scan(...any) error }) (Work, error) {
 	return w, e
 }
 func (s *Store) Works(room string) ([]Work, error) {
-	rows, e := s.db.Query(`SELECT `+workColumns+` FROM work WHERE conversation_id=? ORDER BY created_at DESC LIMIT 50`, room)
+	rows, e := s.db.Query(`SELECT `+workColumns+` FROM work WHERE coalesce(conversation_id,'')=? ORDER BY created_at DESC LIMIT 50`, room)
 	if e != nil {
 		return nil, e
 	}
@@ -590,7 +621,9 @@ func (s *Store) RecordTool(r ToolRun) error {
 	return e
 }
 func (s *Store) Artifacts(room string) ([]Artifact, error) {
-	rows, e := s.db.Query(`SELECT a.id,a.conversation_id,a.member_id,a.title,a.content,a.version,a.source_id,a.created_at,a.format FROM artifacts a WHERE conversation_id=? AND version=(SELECT max(version) FROM artifacts b WHERE b.id=a.id) ORDER BY created_at DESC`, room)
+	rows, e := s.db.Query(`WITH visible AS (SELECT * FROM artifacts a WHERE `+visibleArtifactSQL+`)
+ SELECT a.id,coalesce(a.conversation_id,''),a.member_id,a.title,a.content,a.version,a.source_id,a.created_at,a.format FROM visible a
+ WHERE version=(SELECT max(version) FROM visible b WHERE b.id=a.id) ORDER BY created_at DESC`, room, "", room)
 	if e != nil {
 		return nil, e
 	}
@@ -606,7 +639,7 @@ func (s *Store) Artifacts(room string) ([]Artifact, error) {
 	return result, rows.Err()
 }
 func (s *Store) ArtifactVersions(id string) ([]Artifact, error) {
-	rows, e := s.db.Query(`SELECT id,conversation_id,member_id,title,content,version,source_id,created_at,format FROM artifacts WHERE id=? ORDER BY version DESC`, id)
+	rows, e := s.db.Query(`SELECT id,coalesce(conversation_id,''),member_id,title,content,version,source_id,created_at,format FROM artifacts WHERE id=? ORDER BY version DESC`, id)
 	if e != nil {
 		return nil, e
 	}

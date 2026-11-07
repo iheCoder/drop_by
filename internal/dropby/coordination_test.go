@@ -33,13 +33,15 @@ func TestDelegationToolCompletesAndReopensCoordinatorJudgment(t *testing.T) {
 		if err := json.Unmarshal([]byte(messages[1].Content), &input); err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(messages[0].Content, "此时只决定自己的下一步") {
-			if input.Self.ID != members[0].ID || autonomyRoot(ctx) != root.ID {
-				t.Fatalf("completion did not return to coordinator with original budget root: %s %s", input.Self.ID, autonomyRoot(ctx))
+
+		if input.Self.ID == members[0].ID {
+			if autonomyRoot(ctx) != root.ID {
+				return ChatMessage{}, fmt.Errorf("completion changed execution root")
 			}
 			reviewed = true
-			return jsonReply(Decision{Action: "pass", Reason: "出处暂不可用，现在先停下，不催同伴重做"}), nil
+			return jsonReply(Outcome{Outcome: "出处暂不可用，现在先停下，不催同伴重做"}), nil
 		}
+
 		if input.Self.ID != members[1].ID || input.Self.Profile != members[1].Profile {
 			t.Fatalf("specialist lost their own character: %+v", input.Self)
 		}

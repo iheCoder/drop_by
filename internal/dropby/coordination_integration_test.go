@@ -40,23 +40,24 @@ func TestCoordinatorAPIAndTwoStagePeerHandoff(t *testing.T) {
 		if err := json.Unmarshal([]byte(messages[1].Content), &input); err != nil {
 			return ChatMessage{}, err
 		}
-		if strings.Contains(messages[0].Content, "此时只决定自己的下一步") {
-			if input.Self.ID != members[0].ID || input.Trigger.Kind == "share" {
-				return jsonReply(Decision{Action: "pass", Reason: "这次没有需要补充的，按自己的节奏旁听"}), nil
-			}
-			if strings.HasPrefix(input.Trigger.ID, "coordination_") {
-				if autonomyRoot(ctx) != rootID {
-					return ChatMessage{}, fmt.Errorf("completion callback changed budget root: %q", autonomyRoot(ctx))
-				}
-				mu.Lock()
-				reviewWakeups++
-				mu.Unlock()
-				if strings.Contains(input.Trigger.Instruction, "已完成自包含 HTML 卡片") {
-					return jsonReply(Decision{Action: "pass", Reason: "事情已经做好了，让同伴自己决定分享即可"}), nil
-				}
-			}
-			return jsonReply(Decision{Action: "speak", Intent: "先核对实际进展，再做必要的一次分工", Reason: "这次确实有共同目标"}), nil
+
+		if (input.Self.ID != members[0].ID && input.Trigger.Kind != "research") || input.Trigger.Kind == "share" {
+			return jsonReply(Outcome{Outcome: "这次没有需要补充的，按自己的节奏旁听"}), nil
 		}
+		if strings.HasPrefix(input.Trigger.ID, "coordination_") {
+			if autonomyRoot(ctx) != rootID {
+				return ChatMessage{}, fmt.Errorf("completion callback changed budget root: %q", autonomyRoot(ctx))
+			}
+			mu.Lock()
+			if len(messages) == 2 {
+				reviewWakeups++
+			}
+			mu.Unlock()
+			if strings.Contains(input.Trigger.Instruction, "已完成自包含 HTML 卡片") {
+				return jsonReply(Outcome{Outcome: "事情已经做好了，让同伴自己决定分享即可"}), nil
+			}
+		}
+
 		mu.Lock()
 		steps[input.Trigger.ID]++
 		step := steps[input.Trigger.ID]

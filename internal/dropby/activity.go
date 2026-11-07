@@ -79,6 +79,8 @@ func (s *Store) workSummary(w Work) (ActivitySummary, error) {
 	d := ActivitySummary{Title: "后续安排", Status: workStatusText(w), SourceID: w.SourceID}
 	name := s.activityMember(w.MemberID)
 	switch w.Kind {
+	case "explore":
+		d.Title = name + "的个人活动"
 	case "research":
 		d.Title = name + "的探索"
 		if w.AssignedBy != "" {
@@ -117,7 +119,7 @@ var actionTitles = map[string]string{
 	"delegate_work": "安排朋友协作", "close_responsibility": "结束临时分工", "cancel_work": "取消后续安排",
 	"search": "搜索网页", "read_page": "阅读网页", "save_artifact": "保存成果", "remember": "整理经历",
 	"schedule_exploration": "安排探索", "schedule_followup": "留个后续", "ask_question": "提出问题",
-	"send_private": "发起私聊", "read_history": "回顾聊天", "read_artifact": "查看成果",
+	"send_message": "发送消息", "read_conversation": "看看聊天近况", "send_private": "发起私聊", "read_history": "回顾聊天", "read_artifact": "查看成果",
 	"read_work": "查看进展", "read_tool_result": "核对材料", "read_memory": "回顾经历", "search_memory": "寻找经历",
 }
 
@@ -153,6 +155,7 @@ func (s *Store) actionSummary(run ToolRun) (ActivitySummary, error) {
 		WorkID  string `json:"work_id"`
 		Status  string `json:"status"`
 		Error   string `json:"error"`
+		Message string `json:"message"`
 		Pending []Work `json:"pending_work"`
 	}
 	_ = json.Unmarshal([]byte(run.Result), &result)
@@ -281,12 +284,19 @@ func (s *Store) actionSummary(run ToolRun) (ActivitySummary, error) {
 		if run.Status == "succeeded" {
 			d.Status = "已发送"
 		}
+	case "send_message":
+		// 动态展示实际发送的正文，不能用触发这次行动的用户原话冒充结果。
+		// 恢复同一次发送时，工具返回的也是已保存的原消息。
+		if run.Status == "succeeded" {
+			d.Status = "已发送"
+			d.Detail = activityExcerpt(result.Message)
+		}
 	default:
 		if run.Status == "succeeded" {
 			d.Status = "已查看"
 		}
 	}
-	if strings.TrimSpace(d.Detail) == "" {
+	if strings.TrimSpace(d.Detail) == "" && run.Name != "send_message" {
 		d.Detail, err = s.activitySource(run.ConversationID, d.SourceID)
 		if err != nil {
 			return d, err

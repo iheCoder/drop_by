@@ -22,13 +22,12 @@ func TestConversationEndsByChoiceBeyondOldLimit(t *testing.T) {
 	w.Kind = "followup"
 	var spoken atomic.Int32
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
-			if spoken.Load() >= 12 {
-				return jsonReply(Decision{Action: "pass", Reason: "本轮观点已经表达完"}), nil
-			}
-			return jsonReply(Decision{Action: "speak", Intent: "继续回应对方的论点"}), nil
+
+		if spoken.Load() >= 12 {
+			return jsonReply(Outcome{Outcome: "本轮观点已经表达完"}), nil
 		}
-		return jsonReply(Outcome{Message: fmt.Sprintf("回应第 %d 个论点", spoken.Add(1))}), nil
+
+		return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("send_message", map[string]string{"message": fmt.Sprintf("回应第 %d 个论点", spoken.Add(1))})}}, nil
 	}), testConfig())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -64,9 +63,7 @@ func TestActionRecoveryDoesNotReplayQuestionOrReply(t *testing.T) {
 		t.Fatalf("现场未保存: %+v %v", cp, err)
 	}
 	resumed := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
-			return jsonReply(Decision{Action: "pass"}), nil
-		}
+
 		return jsonReply(Outcome{Message: "我先从岗位机会的变化谈起。"}), nil
 	}), testConfig())
 	if err := resumed.process(context.Background(), w); err != nil {

@@ -47,84 +47,93 @@ func latestChatWork(t *testing.T, s *Store, room string) Work {
 	return Work{}
 }
 
-func TestQueuedMemberReconsidersPeersAndSelectedOlderMessages(t *testing.T) {
-	// 两位成员最初都有话想说，第三位选择安静。第二位可以同时选中两条较早
-	// 的真人消息，但真正轮到自己时必须看见第一位刚说的话，并能转而接同伴。
-	// 这里验证执行上下文和引用关系，真人般的自然程度仍需真实模型验收。
+func TestConcurrentMembersSeePeersWithoutWaitingForSlowMember(t *testing.T) {
+	// B 已经在思考时 A 发来新消息；B 发布前能看到它。C 的慢请求不形成队列屏障。
 	s, c, members := groupWithMembers(t, 3)
-	older := userMessage(c, "周末想去走走，不过不想排队。")
-	newer := userMessage(c, "其实这周很累，不太想再做计划。")
-	// 明确 @ 第一位来建立待发顺序，不用睡眠时长猜并发观察的完成顺序。
-	newer.Mentions = []string{members[0].ID}
-	if err := s.AddUserMessage(older, time.Hour); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.AddUserMessage(newer, time.Hour); err != nil {
-		t.Fatal(err)
-	}
-	var mu sync.Mutex
-	decisionCalls := map[string]int{}
-	model := modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+	msg := userMessage(c, "这周很累，不太想再做计划。")
+	s.AddUserMessage(msg, time.Hour)
+	c, _ = s.Conversation(c.ID)
+	aMaySend := make(chan struct{})
+	bThinking := make(chan struct{})
+	slowRelease := make(chan struct{})
+	var bOnce sync.Once
+	e := NewEngine(s, modelFunc(func(ctx context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		if strings.HasPrefix(ms[0].Content, "你只解释") {
-			return jsonReply(Control{Discussion: "keep", Research: "keep"}), nil
+			return jsonReply(Control{}), nil
 		}
 		var input struct {
-			Self         Member    `json:"self"`
-			Messages     []Message `json:"latest_messages"`
-			Selected     []Message `json:"selected_messages"`
-			AlreadySpoke bool      `json:"already_spoke"`
-			Earlier      Decision  `json:"earlier_intention"`
+			Self     Member    `json:"self"`
+			Messages []Message `json:"latest_messages"`
 		}
-		if err := json.Unmarshal([]byte(ms[1].Content), &input); err != nil {
-			return ChatMessage{}, err
+		for _, entry := range ms {
+			if entry.Role == "user" {
+				raw := strings.TrimPrefix(entry.Content, "刚收到的新现场：")
+				_ = json.Unmarshal([]byte(raw), &input)
+			}
 		}
-		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
-			mu.Lock()
-			decisionCalls[input.Self.ID]++
-			mu.Unlock()
-			if input.AlreadySpoke {
-				return jsonReply(Decision{Action: "pass", Reason: "这次已表达完了"}), nil
-			}
-			if input.Self.ID == members[2].ID {
-				state := "这次更愿意听大家聊，留意怎样让周末轻松一点。"
-				return jsonReply(Decision{Action: "pass", Reason: "目前想先听听", State: &state, StateSourceIDs: []string{newer.ID}}), nil
-			}
-			if input.Self.ID == members[1].ID {
-				return jsonReply(Decision{Action: "speak", Intent: "把不排队和省心放在一起考虑", MessageIDs: []string{older.ID, newer.ID}}), nil
-			}
-			return jsonReply(Decision{Action: "speak", Intent: "先理解这周太累的感受", MessageIDs: []string{newer.ID}}), nil
+		if testMemberSpoke(s, c.ID, input.Self.ID) {
+			return jsonReply(Outcome{}), nil
 		}
-		if input.Self.ID == members[0].ID {
-			return jsonReply(Outcome{Message: "听起来你是想休息，而不是再完成一份周末作业。", ReplyTo: newer.ID}), nil
-		}
-		if input.Self.ID == members[1].ID {
-			if len(input.Selected) != 2 || input.Selected[0].ID != older.ID || input.Selected[1].ID != newer.ID || len(input.Earlier.MessageIDs) != 2 {
-				t.Error("原先选中的多条消息和参与意图未保留到实际行动")
+		switch input.Self.ID {
+		case members[0].ID:
+			select {
+			case <-bThinking:
+			case <-ctx.Done():
+				return ChatMessage{}, ctx.Err()
 			}
-			last := input.Messages[len(input.Messages)-1]
-			if last.AuthorID != members[0].ID {
-				t.Error("等待发言的成员看不到同伴刚刚的发言")
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("send_message", map[string]string{"message": "像又添了一份周末作业。"})}}, nil
+		case members[1].ID:
+			bOnce.Do(func() { close(bThinking) })
+			if !testMemberSpoke(s, c.ID, members[0].ID) {
+				select {
+				case <-aMaySend:
+				case <-ctx.Done():
+					return ChatMessage{}, ctx.Err()
+				}
 			}
-			return jsonReply(Outcome{Message: "你说的“周末作业”很准，那就留一个随时能回家的选项。", ReplyTo: last.ID}), nil
+			for _, message := range input.Messages {
+				if message.AuthorID == members[0].ID {
+					return jsonReply(Outcome{Message: "那就留一个随时能回家的选项。", ReplyTo: message.ID}), nil
+				}
+			}
+			return jsonReply(Outcome{Message: "尚未读到同伴的旧草稿"}), nil
+		default:
+			select {
+			case <-slowRelease:
+				return ChatMessage{}, errors.New("C 网络失败")
+			case <-ctx.Done():
+				return ChatMessage{}, ctx.Err()
+			}
 		}
-		t.Error("主动选择安静的人不应被要求生成台词")
-		return jsonReply(Outcome{}), nil
-	})
-	e := NewEngine(s, model, testConfig())
-	if err := e.process(context.Background(), latestChatWork(t, s, c.ID)); err != nil {
-		t.Fatal(err)
+	}), testConfig())
+	events, unsub := e.Hub.Subscribe()
+	defer unsub()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- e.process(ctx, latestChatWork(t, s, c.ID)) }()
+	for !testMemberSpoke(s, c.ID, members[0].ID) {
+		select {
+		case <-events:
+		case <-ctx.Done():
+			t.Fatal("A 被慢成员挡住")
+		}
+	}
+	close(aMaySend)
+	for !testMemberSpoke(s, c.ID, members[1].ID) {
+		select {
+		case <-events:
+		case <-ctx.Done():
+			t.Fatal("B 被慢成员挡住")
+		}
+	}
+	close(slowRelease)
+	if err := <-done; err == nil {
+		t.Fatal("C 故障没有记录")
 	}
 	messages, _ := s.Messages(c.ID, 0, 20)
-	if len(messages) != 4 || messages[3].ReplyTo != messages[2].ID {
-		t.Fatalf("未形成真实的同伴接话关系: %+v", messages)
-	}
-	// 每位初次判断只做一次，待发言意图没有因同伴先发言而被整批丢弃重算。
-	if decisionCalls[members[1].ID] != 2 { // 初次意图 + 新交流后的最后一次 pass。
-		t.Fatalf("候选意图被无谓重建: %d", decisionCalls[members[1].ID])
-	}
-	seen, state, err := s.observation(c.ID, members[2].ID)
-	if err != nil || seen != messages[3].Seq || state.Body == "" || len(state.SourceIDs) != 1 {
-		t.Fatalf("安静的成员没有留下真实阅读位置和持续关注: %d %+v %v", seen, state, err)
+	if len(messages) != 3 || messages[2].ReplyTo != messages[1].ID || strings.Contains(messages[2].Body, "旧草稿") {
+		t.Fatalf("新现场没进入本人行动: %+v", messages)
 	}
 }
 
@@ -135,6 +144,7 @@ func TestWithdrawalsDoNotConsumeOtherMembersMessageOpportunity(t *testing.T) {
 	s.AddUserMessage(userMessage(c, "各位最近在想什么？"), time.Hour)
 	cfg := testConfig()
 	acted := []string{}
+	var actedMu sync.Mutex
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		if strings.HasPrefix(ms[0].Content, "你只解释") {
 			return jsonReply(Control{}), nil
@@ -143,20 +153,21 @@ func TestWithdrawalsDoNotConsumeOtherMembersMessageOpportunity(t *testing.T) {
 			Self Member `json:"self"`
 		}
 		json.Unmarshal([]byte(ms[1].Content), &input)
-		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
-			if testHasPublished(s, c.ID) {
-				return jsonReply(Decision{Action: "pass", Reason: "本测试成员已完成这次回应"}), nil
-			}
-			for i, m := range members {
-				if m.ID == input.Self.ID {
-					time.Sleep(time.Duration(i*10) * time.Millisecond)
-				}
-			}
-			return jsonReply(Decision{Action: "speak", Intent: "可能想分享一件事"}), nil
+
+		if testHasPublished(s, c.ID) {
+			return jsonReply(Outcome{Outcome: "本测试成员已完成这次回应"}), nil
 		}
+		for i, m := range members {
+			if m.ID == input.Self.ID {
+				time.Sleep(time.Duration(i*10) * time.Millisecond)
+			}
+		}
+
+		actedMu.Lock()
 		acted = append(acted, input.Self.ID)
+		actedMu.Unlock()
 		if input.Self.ID != members[3].ID {
-			return jsonReply(Outcome{ParticipationReason: "想了想，先听其他人说。"}), nil
+			return jsonReply(Outcome{Outcome: "想了想，先听其他人说。"}), nil
 		}
 		return jsonReply(Outcome{Message: "我在琢磨，有没有一种地图能只画让人想停留的地方。"}), nil
 	}), cfg)
@@ -183,16 +194,18 @@ func TestFirstMemberMayResearchWithoutAnnouncingIt(t *testing.T) {
 			Self Member `json:"self"`
 		}
 		json.Unmarshal([]byte(ms[1].Content), &input)
-		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
-			if testHasPublished(s, c.ID) {
-				return jsonReply(Decision{Action: "pass", Reason: "本测试成员已完成这次回应"}), nil
-			}
-			if input.Self.ID == members[0].ID {
-				return jsonReply(Decision{Action: "explore", Intent: "查找纸飞机失速与重心的原始资料", Reason: "想核对一个力学疑问"}), nil
-			}
-			time.Sleep(10 * time.Millisecond)
-			return jsonReply(Decision{Action: "speak", Intent: "聊一个待核实的重心猜想"}), nil
+
+		if testHasPublished(s, c.ID) {
+			return jsonReply(Outcome{Outcome: "本测试成员已完成这次回应"}), nil
 		}
+		if input.Self.ID == members[0].ID {
+			if len(ms) == 2 {
+				return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("schedule_exploration", map[string]any{"instruction": "查找纸飞机失速与重心的原始资料", "delay_seconds": 60})}}, nil
+			}
+			return jsonReply(Outcome{}), nil
+		}
+		time.Sleep(10 * time.Millisecond)
+
 		if input.Self.ID == members[0].ID {
 			t.Error("安静研究被强制改成了公开发言")
 		}
@@ -233,7 +246,7 @@ func TestObservationAndStateRespectRevisionAndConversation(t *testing.T) {
 	if saved.Body != state {
 		t.Fatal("跨场景来源覆盖了当前群状态")
 	}
-	if _, err := s.selectedMessages(c.ID, []string{secret.ID}); err == nil {
+	if _, err := s.searchHistory(c.ID, "", secret.ID, 0, 0); err == nil {
 		t.Fatal("可以选择另一个场景的消息")
 	}
 	s.AddUserMessage(userMessage(c, "我改主意了，想去个热闹的地方。"), time.Hour)
@@ -276,7 +289,7 @@ func TestAllPassPersistsObservationAcrossRestartAndIsNotFailure(t *testing.T) {
 		if strings.HasPrefix(ms[0].Content, "你只解释") {
 			return jsonReply(Control{}), nil
 		}
-		return jsonReply(Decision{Action: "pass", Reason: "对方现在希望有一点空间", State: &state, StateSourceIDs: []string{msg.ID}}), nil
+		return jsonReply(Outcome{Outcome: "对方现在希望有一点空间", State: &state, StateSourceIDs: []string{msg.ID}}), nil
 	}), testConfig())
 	w := latestChatWork(t, s, c.ID)
 	if err = e.process(context.Background(), w); err != nil {
@@ -303,7 +316,7 @@ func TestAllPassPersistsObservationAcrossRestartAndIsNotFailure(t *testing.T) {
 	e = NewEngine(s, modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
 		return ChatMessage{}, modelErr
 	}), testConfig())
-	if _, _, err = e.choose(context.Background(), c, w, 0); !errors.Is(err, modelErr) {
+	if _, err = e.act(context.Background(), c, m, w, ""); !errors.Is(err, modelErr) {
 		t.Fatalf("判断失败被误当作自愿安静: %v", err)
 	}
 }
@@ -320,12 +333,11 @@ func TestQuestionToolIsARealContributionAndKeepsQuestionContext(t *testing.T) {
 		if strings.HasPrefix(ms[0].Content, "你只解释") {
 			return jsonReply(Control{}), nil
 		}
-		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
-			if testHasPublished(s, c.ID) {
-				return jsonReply(Decision{Action: "pass", Reason: "本测试成员已完成这次回应"}), nil
-			}
-			return jsonReply(Decision{Action: "speak", Intent: "问一个会影响相处的小问题"}), nil
+
+		if testHasPublished(s, c.ID) {
+			return jsonReply(Outcome{Outcome: "本测试成员已完成这次回应"}), nil
 		}
+
 		if len(ms) == 2 {
 			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("ask_question", map[string]any{"text": "你喜欢我怎样分享新的想法？", "options": []string{"直接说出来", "先听我说完"}})}}, nil
 		}
@@ -338,10 +350,11 @@ func TestQuestionToolIsARealContributionAndKeepsQuestionContext(t *testing.T) {
 	if len(messages) != 2 || messages[1].AuthorID != m.ID || messages[1].Question == nil {
 		t.Fatalf("真实问题没有成为唯一回复: %+v", messages)
 	}
-	selected, err := s.selectedMessages(c.ID, []string{messages[1].ID})
-	if err != nil || selected[0].Question == nil || selected[0].Question.Text != "你喜欢我怎样分享新的想法？" {
-		t.Fatalf("较早问题上下文丢失: %+v %v", selected, err)
+	selected, err := s.searchHistory(c.ID, "", messages[1].ID, 0, 0)
+	if err != nil || !strings.Contains(asJSON(selected), "你喜欢我怎样分享新的想法") {
+		t.Fatalf("较早问题不能回查: %v", err)
 	}
+
 	decisions, err := s.Participations(c.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -385,12 +398,11 @@ func TestProfileEditRetriesExistingChatButNewHumanReplacesIt(t *testing.T) {
 					}
 					return jsonReply(Control{}), nil
 				}
-				if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
-					if testHasPublished(s, c.ID) {
-						return jsonReply(Decision{Action: "pass", Reason: "本测试成员已完成这次回应"}), nil
-					}
-					return jsonReply(Decision{Action: "speak", Intent: "结合当下的个性接话"}), nil
+
+				if testHasPublished(s, c.ID) {
+					return jsonReply(Outcome{Outcome: "本测试成员已完成这次回应"}), nil
 				}
+
 				var input struct {
 					Self    Member `json:"self"`
 					Trigger Work   `json:"trigger"`
@@ -489,7 +501,7 @@ func TestRevisionChangesKeepOpportunityUntilUserStops(t *testing.T) {
 				if _, err := s.db.Exec(`UPDATE conversations SET revision=revision+1 WHERE id=?`, c.ID); err != nil {
 					return ChatMessage{}, err
 				}
-				return jsonReply(Decision{Action: "pass", Reason: "当前先听听"}), nil
+				return jsonReply(Outcome{Outcome: "当前先听听"}), nil
 			}), testConfig())
 			for attempt := 1; attempt <= 3; attempt++ {
 				e.dispatch(context.Background())
@@ -539,4 +551,10 @@ func TestBudgetResumeStillAppliesUnprocessedHumanPreference(t *testing.T) {
 	if err != nil || saved.Profile != "喜欢自然幽默地交流" {
 		t.Fatalf("预算恢复错误跳过了用户偏好: %+v %v", saved, err)
 	}
+}
+
+func testMemberSpoke(s *Store, room, member string) bool {
+	var n int
+	_ = s.db.QueryRow(`SELECT count(*) FROM messages WHERE conversation_id=? AND author_id=?`, room, member).Scan(&n)
+	return n > 0
 }

@@ -1,9 +1,7 @@
 package dropby
 
 import (
-	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -155,14 +153,18 @@ func contextExcerpt(body string, limit int) string {
 }
 
 func (s *Store) artifactIndex(room, query string, offset int, pageSize ...int) (any, error) {
+	return s.artifactIndexForMember(room, "", query, offset, pageSize...)
+}
+func (s *Store) artifactIndexForMember(room, member, query string, offset int, pageSize ...int) (any, error) {
 	limit := readDefault(pageSize, 0, 12)
 	if offset < 0 {
 		return nil, fmt.Errorf("读取位置无效")
 	}
 	// 这里只取元数据，较早的安静创作也能找到，不能要求模型先猜出成果 ID。
-	rows, err := s.db.Query(`SELECT a.id,a.member_id,a.title,a.version,a.format,a.created_at FROM artifacts a
-	 WHERE a.conversation_id=? AND a.version=(SELECT max(version) FROM artifacts b WHERE b.id=a.id)
-	 AND instr(lower(a.title),lower(?))>0 ORDER BY a.created_at DESC,a.id LIMIT ? OFFSET ?`, room, query, limit+1, offset)
+	rows, err := s.db.Query(`WITH visible AS (SELECT * FROM artifacts a WHERE `+visibleArtifactSQL+`)
+ SELECT a.id,a.member_id,a.title,a.version,a.format,a.created_at FROM visible a
+ WHERE a.version=(SELECT max(version) FROM visible b WHERE b.id=a.id)
+ AND instr(lower(a.title),lower(?))>0 ORDER BY a.created_at DESC,a.id LIMIT ? OFFSET ?`, room, member, room, query, limit+1, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -183,53 +185,9 @@ func (s *Store) artifactIndex(room, query string, offset int, pageSize ...int) (
 	return map[string]any{"artifacts": list, "next_offset": offset + len(list), "has_more": more}, rows.Err()
 }
 
-func recallTool(name string) bool {
-	switch name {
-	case "search_memory", "read_memory", "read_history", "read_artifact", "read_tool_result", "read_work", "remember":
-		return true
-	}
-	return false
-}
-
-// 决定是否发言之前也能找回经历；不能因为线索没进近期窗口就永远选择沉默。
-// 此阶段只开放本地回忆与笔记，不允许先发消息、委托工作或联网搜索。
-func (e *Engine) recallDecision(ctx context.Context, c Conversation, m Member, w Work, system string, input any, out any) error {
-	definitions := []ToolDefinition{}
-	for _, def := range e.Tools.Definitions(m, c, w) {
-		if recallTool(def.Function.Name) {
-			definitions = append(definitions, def)
-		}
-	}
-	messages := []ChatMessage{{Role: "system", Content: system}, {Role: "user", Content: asJSON(input)}}
-	for {
-		compactToolHistory(messages)
-		r, err := completeModel(ctx, e.Model, &messages, definitions, true)
-		if err != nil {
-			return memberDecisionError(err)
-		}
-		if len(r.ToolCalls) == 0 {
-			return memberDecisionError(parseJSON(r.Content, out))
-		}
-		messages = append(messages, r)
-		for _, call := range r.ToolCalls {
-			if !recallTool(call.Function.Name) {
-				return memberDecisionError(fmt.Errorf("参与判断阶段不能执行 %s", call.Function.Name))
-			}
-			result, err := e.Tools.Execute(ctx, c, m, w, call)
-			if errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || ctx.Err() != nil {
-				return err
-			}
-			if err != nil {
-				result = asJSON(map[string]string{"status": "failed", "error": err.Error()})
-			}
-			messages = append(messages, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: toolExcerpt(result, 6000)})
-		}
-	}
-}
-
 // 记忆说明保留来源、更新和范围语义，不再叠加一套表达方式要求。
 const memoryContextPrompt = `
-self.profile 是你的特质，current_state 是当前关注，memory 是你自己的经历与看法，work 是正在推进的事。需要旧原话时可用历史与记忆工具找回。
+self.profile 是你的特质，personal_focus 是自己的近期关注，current_state 是当前聊天中的关注，memory 是你自己的经历与看法，work 是正在推进的事。需要旧原话时可用历史与记忆工具找回。
 有值得留下的经历时可以 remember，不必每次聊天都整理笔记。更新已有理解用原 id 和 revision；当前交流中的纠正立即适用，不必等笔记保存完成。scope=member 可跨聊天携带，conversation 留在本群。
 若旧话题不再相关，可用 context_start_id 选择当前话题起点；旧记录仍可检索。`
 

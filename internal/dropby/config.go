@@ -12,7 +12,7 @@ import (
 )
 
 type Config struct {
-	DecisionModel, ChatModel                                       string // 已有参与/发言节点直接选模型，不增加分类请求。
+	ChatModel                                                      string // 普通交流的行动模型；不另设参与分类节点。
 	DeepMaxOutputTokens, ContextTokenBudget                        int
 	Reasoning, DeepReasoning                                       string
 	Address, DataDir, Model, BaseURL, APIKey, SearchURL, SearchKey string
@@ -29,17 +29,16 @@ func LoadConfig() (Config, error) {
 	c := Config{
 		Address: env("DROPBY_ADDR", "127.0.0.1:8090"), DataDir: env("DROPBY_DATA_DIR", "data"),
 		Model: env("DROPBY_MODEL", "gpt-6.1-sol"), BaseURL: env("DROPBY_BASE_URL", "https://api.openai.com/v1"),
-		// 三项职责各自配置，主模型设置不再隐式覆盖参与和聊天分工。
-		DecisionModel: env("DROPBY_DECISION_MODEL", "gpt-6-luna"),
-		ChatModel:     env("DROPBY_CHAT_MODEL", "gpt-6.1-terra"),
-		APIKey:        env("DROPBY_API_KEY", os.Getenv("OPENAI_API_KEY")),
-		SearchURL:     env("DROPBY_SEARCH_URL", "https://api.deepseek.com/v1/tools"), SearchKey: os.Getenv("DEEPSEEK_API_KEY"),
+		// 聊天与个人探索使用相应行动模型，没有单独的参与分类模型。
+		ChatModel: env("DROPBY_CHAT_MODEL", "gpt-6.1-terra"),
+		APIKey:    env("DROPBY_API_KEY", os.Getenv("OPENAI_API_KEY")),
+		SearchURL: env("DROPBY_SEARCH_URL", "https://api.deepseek.com/v1/tools"), SearchKey: os.Getenv("DEEPSEEK_API_KEY"),
 		ContextTokenBudget: 100_000,
 		ExploreInterval:    30 * time.Minute, MaxOutputTokens: 8000, DeepMaxOutputTokens: 25000, Reasoning: env("DROPBY_REASONING", "low"), DeepReasoning: env("DROPBY_DEEP_REASONING", "high"),
 		WeeklyBudgetMicros: 20_000_000,
 		ToolCostMicros:     750,
 	}
-	for _, model := range []string{c.Model, c.DecisionModel, c.ChatModel} {
+	for _, model := range []string{c.Model, c.ChatModel} {
 		if _, err := priceForModel(model); err != nil {
 			return c, err
 		}

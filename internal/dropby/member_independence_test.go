@@ -49,7 +49,7 @@ func TestWebFailureReturnsToMember(t *testing.T) {
 func TestMemberFailureDoesNotStopPeersAndResumesOnce(t *testing.T) {
 	s, c, members := groupWithMembers(t, 2)
 	msg := userMessage(c, "各自说说你们的看法")
-	msg.Mentions = []string{members[0].ID} // 稳定复现失败者先执行，未规定真实产品的顺序。
+	msg.Mentions = []string{members[0].ID} // 明确提及失败者也不应阻断同伴；不规定谁先执行。
 	if err := s.AddUserMessage(msg, time.Hour); err != nil {
 		t.Fatal(err)
 	}
@@ -60,18 +60,16 @@ func TestMemberFailureDoesNotStopPeersAndResumesOnce(t *testing.T) {
 	fault := errors.New("成员请求失败")
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		var input struct {
-			Self         Member `json:"self"`
-			AlreadySpoke bool   `json:"already_spoke"`
+			Self Member `json:"self"`
 		}
 		if err := json.Unmarshal([]byte(ms[1].Content), &input); err != nil {
 			return ChatMessage{}, err
 		}
-		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
-			if input.AlreadySpoke {
-				return jsonReply(Decision{Action: "pass"}), nil
-			}
-			return jsonReply(Decision{Action: "speak", Intent: "说自己的想法"}), nil
+
+		if testMemberSpoke(s, c.ID, input.Self.ID) {
+			return jsonReply(Outcome{}), nil
 		}
+
 		if input.Self.ID == members[0].ID && fail {
 			return ChatMessage{}, fault
 		}

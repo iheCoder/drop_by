@@ -39,18 +39,15 @@ func TestRunningCoordinationReviewMovesToNewCoordinator(t *testing.T) {
 			Self Member `json:"self"`
 		}
 		json.Unmarshal([]byte(messages[1].Content), &input)
-		if !strings.Contains(messages[0].Content, "此时只决定自己的下一步") {
-			return ChatMessage{}, errors.New("old coordinator's stale decision reached an action")
-		}
 		if input.Self.ID == members[0].ID {
 			oldCalls.Add(1)
 			close(started)
 			<-release
-			return jsonReply(Decision{Action: "speak", Intent: "安排下一位", Reason: "这是更换职责之前的想法"}), nil
+			return jsonReply(Outcome{Message: "这是更换职责之前的想法"}), nil
 		}
 		if input.Self.ID == members[2].ID {
 			newCalls.Add(1)
-			return jsonReply(Decision{Action: "pass", Reason: "已有成果够用了，先不安排下一步"}), nil
+			return jsonReply(Outcome{Outcome: "已有成果够用了，先不安排下一步"}), nil
 		}
 		return ChatMessage{}, errors.New("completion review woke a non-coordinator")
 	}), testConfig())
@@ -114,15 +111,14 @@ func TestCoordinatorChangeDuringControlKeepsUnprocessedPreference(t *testing.T) 
 			Self Member `json:"self"`
 		}
 		json.Unmarshal([]byte(messages[1].Content), &input)
-		if strings.Contains(messages[0].Content, "此时只决定自己的下一步") {
-			if testHasPublished(s, c.ID) {
-				return jsonReply(Decision{Action: "pass", Reason: "本测试成员已完成这次回应"}), nil
-			}
-			if input.Self.ID == members[0].ID {
-				return jsonReply(Decision{Action: "speak", Intent: "按新偏好接今天的雨", Reason: "这句话在对自己说"}), nil
-			}
-			return jsonReply(Decision{Action: "pass", Reason: "先听同伴回应"}), nil
+
+		if testHasPublished(s, c.ID) {
+			return jsonReply(Outcome{Outcome: "本测试成员已完成这次回应"}), nil
 		}
+		if input.Self.ID != members[0].ID {
+			return jsonReply(Outcome{}), nil
+		}
+
 		return jsonReply(Outcome{Message: "记住了，我会" + input.Self.Profile + "。这场雨像给城市按了慢放。"}), nil
 	}), cfg)
 	e.dispatch(context.Background())
@@ -176,7 +172,7 @@ func TestProfileEditBeforeBudgetFailureKeepsLaterPreference(t *testing.T) {
 			}
 			return jsonReply(Control{PreferenceUpdates: []PreferenceUpdate{{MemberID: m.ID, Profile: "严肃地表达", SourceID: msg.ID}}}), nil
 		}
-		return jsonReply(Decision{Action: "pass", Reason: "这次先安静听"}), nil
+		return jsonReply(Outcome{Outcome: "这次先安静听"}), nil
 	}), testConfig())
 	e.dispatch(context.Background())
 	select {

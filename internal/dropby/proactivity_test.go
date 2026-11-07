@@ -53,52 +53,32 @@ func TestAutonomousUsageSharesTotalBudgetAndSettles(t *testing.T) {
 	}
 }
 
-func TestIdleBackoffResetsOnlyForHumanAndPrioritizesDueWork(t *testing.T) {
+func TestPersonalClockDoesNotBackoffOrMultiplyByRooms(t *testing.T) {
+	// 同一个人加入两群仍只有一份闲时机会；沉默不会把下一次机会指数推迟。
 	s, c, m := fixture(t)
-	for round := 1; round <= 2; round++ {
-		if _, err := s.db.Exec(`UPDATE conversations SET next_explore=0 WHERE id=?`, c.ID); err != nil {
-			t.Fatal(err)
-		}
+	s.CreateConversation("另一个群", "group", []string{m.ID}, time.Hour)
+	for range 3 {
+		s.db.Exec(`UPDATE personal_activity SET next_at=0`)
 		before := time.Now()
 		if err := s.ScheduleExploration(time.Minute); err != nil {
 			t.Fatal(err)
 		}
 		var due int64
-		var rounds int
-		if err := s.db.QueryRow(`SELECT next_explore,idle_rounds FROM conversations WHERE id=?`, c.ID).Scan(&due, &rounds); err != nil {
-			t.Fatal(err)
+		var n int
+		s.db.QueryRow(`SELECT next_at FROM personal_activity WHERE member_id=?`, m.ID).Scan(&due)
+		s.db.QueryRow(`SELECT count(*) FROM work WHERE kind='explore' AND status='pending'`).Scan(&n)
+		if n != 1 || time.UnixMilli(due).Sub(before) > time.Minute+time.Second {
+			t.Fatalf("个人时钟退避或按房间重复: n=%d due=%d", n, due)
 		}
-		want := time.Minute * time.Duration(1<<round)
-		if rounds != round || time.UnixMilli(due).Sub(before) < want-time.Second {
-			t.Fatalf("idle backoff round=%d due=%d", rounds, due)
-		}
-		if _, err := s.db.Exec(`UPDATE work SET status='done' WHERE kind='explore'`); err != nil {
-			t.Fatal(err)
-		}
-		// BOT 新消息不能让闲时调度重新变得频繁。
-		if err := s.Publish(Message{ID: newID("msg"), ConversationID: c.ID, AuthorID: m.ID, Body: "一个小想法", CreatedAt: now()}, c.Revision); err != nil {
-			t.Fatal(err)
-		}
+		s.db.Exec(`UPDATE work SET status='done' WHERE kind='explore'`)
 	}
-	if err := s.AddUserMessage(userMessage(c, "我回来了"), time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	var rounds int
-	s.db.QueryRow(`SELECT idle_rounds FROM conversations WHERE id=?`, c.ID).Scan(&rounds)
-	if rounds != 0 {
-		t.Fatal("human did not reset idle cadence")
-	}
-	// 待执行的具体工作优先，低价值闲时检查不抢在前面。
-	if _, err := s.db.Exec(`UPDATE conversations SET next_explore=0 WHERE id=?`, c.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.ScheduleExploration(time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	var pending int
-	s.db.QueryRow(`SELECT count(*) FROM work WHERE kind='explore' AND status='pending'`).Scan(&pending)
-	if pending != 0 {
-		t.Fatal("idle work queued ahead of foreground")
+	var prior int64
+	s.db.QueryRow(`SELECT next_at FROM personal_activity WHERE member_id=?`, m.ID).Scan(&prior)
+	s.AddUserMessage(userMessage(c, "我回来了"), time.Hour)
+	var current int64
+	s.db.QueryRow(`SELECT next_at FROM personal_activity WHERE member_id=?`, m.ID).Scan(&current)
+	if prior != current {
+		t.Fatal("真人消息重置了成员自己的活动时钟")
 	}
 }
 
@@ -157,7 +137,7 @@ func TestFollowupOnlyWakesOwnerAndCanStaySilent(t *testing.T) {
 		if autonomyRoot(ctx) != w.ID {
 			t.Errorf("missing autonomous cost context")
 		}
-		return jsonReply(Decision{Action: "pass", Reason: "现在已经没有继续的必要"}), nil
+		return jsonReply(Outcome{Outcome: "现在已经没有继续的必要"}), nil
 	}), testConfig())
 	if err := e.process(context.Background(), w); err != nil {
 		t.Fatal(err)
@@ -175,10 +155,10 @@ func TestQuietMemberCanScheduleReconsiderationWithoutPosting(t *testing.T) {
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "explore")
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		if !strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
-			t.Fatal("quiet scheduling invoked public generation")
+		if len(ms) == 2 {
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("schedule_followup", map[string]any{"instruction": "晚点再想卡片的结尾", "delay_seconds": 3600})}}, nil
 		}
-		return jsonReply(Decision{Action: "revisit", Intent: "晚点再想卡片的结尾", Reason: "还在意刚才的创作", DelaySeconds: 3600}), nil
+		return jsonReply(Outcome{}), nil
 	}), testConfig())
 	if err := e.process(context.Background(), w); err != nil {
 		t.Fatal(err)
@@ -194,58 +174,59 @@ func TestQuietMemberCanScheduleReconsiderationWithoutPosting(t *testing.T) {
 	}
 }
 
-func TestBusyAutonomyLeavesAWorkerForNewHumanMessage(t *testing.T) {
-	// 两个房间都有到期自主机会，第一个模型请求一直阻塞。
-	// 第二个自主机会必须等待，第三个房间的新真人输入仍应进入前台执行位。
-	s, first, m := fixture(t)
-	second, err := s.CreateConversation("第二个房间", "group", []string{m.ID}, time.Hour)
+func TestIndependentBackgroundWorkDoesNotOccupyHumanResponse(t *testing.T) {
+	// 三位不同成员的研究都卡在外部请求时，第四位仍可完成真人回应。
+	// 检查实际消息，不把“进入控制判断”误当作用户已经得到回复。
+	s, _, members := groupWithMembers(t, 4)
+	for _, m := range members[:3] {
+		c, err := s.CreateConversation(m.Name, "direct", []string{m.ID}, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		addWork(t, s, c, m, "research")
+	}
+	foreground, err := s.CreateConversation("真人房间", "direct", []string{members[3].ID}, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	foreground, err := s.CreateConversation("真人房间", "group", []string{m.ID}, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	addWork(t, s, first, m, "explore")
-	addWork(t, s, second, m, "explore")
-	started := make(chan struct{})
-	responded := make(chan struct{})
-	var once sync.Once
-	var frontOnce sync.Once
-	var autoCalls atomic.Int32
+	s.db.Exec(`UPDATE personal_activity SET next_at=?`, time.Now().Add(time.Hour).UnixMilli())
+	started := make(chan struct{}, 3)
 	e := NewEngine(s, modelFunc(func(ctx context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		if autonomyRoot(ctx) != "" {
-			autoCalls.Add(1)
-			once.Do(func() { close(started) })
+			started <- struct{}{}
 			<-ctx.Done()
 			return ChatMessage{}, ctx.Err()
 		}
 		if strings.HasPrefix(ms[0].Content, "你只解释") {
-			frontOnce.Do(func() { close(responded) })
-			return jsonReply(Control{Discussion: "keep", Research: "keep"}), nil
+			return jsonReply(Control{}), nil
 		}
-		return jsonReply(Decision{Action: "pass", Reason: "本次没有要补充的"}), nil
+		if len(ms) == 2 {
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("send_message", map[string]string{"message": "我在，接着聊。"})}}, nil
+		}
+		return jsonReply(Outcome{}), nil
 	}), testConfig())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { e.Run(ctx); close(done) }()
 	defer func() { cancel(); <-done }()
-	select {
-	case <-started:
-	case <-time.After(3 * time.Second):
-		t.Fatal("autonomous work did not start")
+	for range 3 {
+		select {
+		case <-started:
+		case <-time.After(3 * time.Second):
+			t.Fatal("不同成员被全局执行位挡住")
+		}
 	}
-	if err := e.Submit(userMessage(foreground, "现在聊一聊")); err != nil {
+	if err = e.Submit(userMessage(foreground, "现在聊一聊")); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-responded:
-	case <-time.After(3 * time.Second):
-		t.Fatal("foreground blocked behind background work")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if testMemberSpoke(s, foreground.ID, members[3].ID) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if autoCalls.Load() != 1 {
-		t.Fatalf("both worker slots occupied by autonomy: %d", autoCalls.Load())
-	}
+	t.Fatal("只有控制判断成功，实际回复仍被其他人的工作挡住")
 }
 
 func TestRunningFollowupSurvivesInterruptionByHuman(t *testing.T) {
@@ -255,7 +236,7 @@ func TestRunningFollowupSurvivesInterruptionByHuman(t *testing.T) {
 	started := make(chan struct{})
 	var calls atomic.Int32
 	e := NewEngine(s, modelFunc(func(ctx context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		if autonomyRoot(ctx) != "" && calls.Add(1) == 1 {
+		if autonomyRoot(ctx) == w.ID && calls.Add(1) == 1 {
 			close(started)
 			<-ctx.Done()
 			return ChatMessage{}, ctx.Err()
@@ -263,7 +244,7 @@ func TestRunningFollowupSurvivesInterruptionByHuman(t *testing.T) {
 		if strings.HasPrefix(ms[0].Content, "你只解释") {
 			return jsonReply(Control{Discussion: "keep", Research: "keep"}), nil
 		}
-		return jsonReply(Decision{Action: "pass", Reason: "读完新消息后暂时不继续"}), nil
+		return jsonReply(Outcome{Outcome: "读完新消息后暂时不继续"}), nil
 	}), testConfig())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -291,7 +272,8 @@ func TestRunningFollowupSurvivesInterruptionByHuman(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("followup did not reconsider after interruption")
+	jobs, _ := s.Works(c.ID)
+	t.Fatalf("followup did not reconsider after interruption: calls=%d jobs=%+v", calls.Load(), jobs)
 }
 
 func TestDelegatedFollowupDoesNotDuplicateFinishedResearch(t *testing.T) {
@@ -331,16 +313,15 @@ func TestSharingFinishedWorkDoesNotCreateGenericResearch(t *testing.T) {
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "share")
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
-			var input struct {
-				Messages []Message `json:"latest_messages"`
-			}
-			json.Unmarshal([]byte(ms[1].Content), &input)
-			if len(input.Messages) > 0 {
-				return jsonReply(Decision{Action: "pass", Reason: "已告知"}), nil
-			}
-			return jsonReply(Decision{Action: "speak", Intent: "告知已保存", Reason: "成果可查看"}), nil
+
+		var input struct {
+			Messages []Message `json:"latest_messages"`
 		}
+		json.Unmarshal([]byte(ms[1].Content), &input)
+		if len(input.Messages) > 0 {
+			return jsonReply(Outcome{Outcome: "已告知"}), nil
+		}
+
 		return jsonReply(Outcome{Message: "卡片已保存，稍后再复看。", Unfinished: true}), nil
 	}), testConfig())
 	if err := e.process(context.Background(), w); err != nil {

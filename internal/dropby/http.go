@@ -136,7 +136,9 @@ func (a *API) state(w http.ResponseWriter, r *http.Request) {
 	active := []string{}
 	activities := []Activity{}
 	for id := range a.engine.running {
-		active = append(active, id)
+		if !strings.HasPrefix(id, "member:") {
+			active = append(active, id)
+		}
 	}
 	for _, activity := range a.engine.activities {
 		activities = append(activities, activity)
@@ -147,7 +149,12 @@ func (a *API) state(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	respond(w, 200, map[string]any{"profile": profile, "budget_blocked": a.engine.Store.budgetBlocked(a.engine.Config, usage), "members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "decision_model": a.engine.Config.DecisionModel, "chat_model": a.engine.Config.ChatModel, "weekly_budget_micros": a.engine.Config.weeklyBudgetAt(time.Now()), "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
+	focus, err := a.engine.Store.personalFocuses()
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	respond(w, 200, map[string]any{"profile": profile, "personal_focus": focus, "budget_blocked": a.engine.Store.budgetBlocked(a.engine.Config, usage), "members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "chat_model": a.engine.Config.ChatModel, "weekly_budget_micros": a.engine.Config.weeklyBudgetAt(time.Now()), "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes())})
 }
 func (a *API) questions(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -403,6 +410,20 @@ func (a *API) conversation(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
+	personalJobs, err := a.engine.Store.personalWorks(c.MemberIDs)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	jobs = append(jobs, personalJobs...)
+	for _, id := range c.MemberIDs {
+		personalRuns, err := a.engine.Store.personalToolRuns(id)
+		if err != nil {
+			a.fail(w, err)
+			return
+		}
+		runs = append(runs, personalRuns...)
+	}
 	// 展示文案从真实记录派生；执行指令和工具成功不能直接当作用户进度。
 	// 完整结果仍按 ID 打开，避免 SSE 每次刷新重传网页或作品正文。
 	for i := range jobs {
@@ -551,7 +572,7 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 func (a *API) resumeWork(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var room, status, kind string
-	if err := a.engine.Store.db.QueryRow("SELECT conversation_id,status,kind FROM work WHERE id=?", id).Scan(&room, &status, &kind); err != nil {
+	if err := a.engine.Store.db.QueryRow("SELECT coalesce(conversation_id,''),status,kind FROM work WHERE id=?", id).Scan(&room, &status, &kind); err != nil {
 		respond(w, 404, map[string]string{"error": "找不到这项工作"})
 		return
 	}
@@ -559,7 +580,11 @@ func (a *API) resumeWork(w http.ResponseWriter, r *http.Request) {
 		respond(w, 409, map[string]string{"error": "这项工作当前不需要恢复"})
 		return
 	}
-	c, err := a.engine.Store.Conversation(room)
+	var c Conversation
+	var err error
+	if room != "" {
+		c, err = a.engine.Store.Conversation(room)
+	}
 	if err != nil {
 		a.fail(w, err)
 		return

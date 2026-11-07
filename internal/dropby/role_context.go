@@ -3,6 +3,7 @@ package dropby
 // roleWork 是角色需要的事项视图。预算预留、重试次数和调度器报错只留给运行
 // 详情，不能随 trigger/read_work 混入角色的日常台词。已完成的业务结果保留。
 func roleWork(w Work) Work {
+	w.FirstSpeakers = nil
 	w.Attempts = 0
 	w.BudgetRequired = 0
 	if w.Status != "done" || (w.Kind != "research" && w.Kind != "share") {

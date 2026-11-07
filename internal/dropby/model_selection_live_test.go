@@ -104,7 +104,6 @@ func TestLiveModelSelection(t *testing.T) {
 					defer s.Close()
 					local := cfg
 					local.Model = name
-					local.DecisionModel = ""
 					local.ChatModel = ""
 					local.Reasoning = "none"
 					if name == "gpt-6.1-sol" {
@@ -178,11 +177,11 @@ func TestLiveModelSelection(t *testing.T) {
 					checks := map[string]bool{}
 					switch {
 					case strings.HasPrefix(scenario, "decision_"):
-						result := e.observeMember(ctx, c, w, member.ID, 0, nil)
-						value = result.Decision
-						runErr = result.Err
+						result, err := e.act(ctx, c, member, w, prompt)
+						value = result
+						runErr = err
 						if scenario == "decision_quiet" {
-							checks["respects_stop"] = result.Decision.Action == "pass"
+							checks["respects_stop"] = result.Message == ""
 						}
 					case strings.HasPrefix(scenario, "chat_") || scenario == "research_html":
 						value, runErr = e.act(ctx, c, member, w, prompt)

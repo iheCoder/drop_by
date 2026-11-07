@@ -57,13 +57,12 @@ func TestRoleModelsSettleTheirOwnPrices(t *testing.T) {
 		role, model string
 		want        int64
 	}{
-		{"decision", "gpt-6-luna", 119}, {"chat", "gpt-6.1-terra", 1170}, {"", "gpt-6.1-sol", 2340},
+		{"chat", "gpt-6.1-terra", 1170}, {"", "gpt-6.1-sol", 2340},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
 			s, _, _ := fixture(t)
 			cfg := testConfig()
 			cfg.Model = "gpt-6.1-sol"
-			cfg.DecisionModel = "gpt-6-luna"
 			cfg.ChatModel = "gpt-6.1-terra"
 			cfg.Reasoning = "low"
 			day, err := s.Reserve(cfg, 100)

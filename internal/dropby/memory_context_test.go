@@ -112,16 +112,16 @@ func TestObservationWaitsForSameMembersMemoryUpdate(t *testing.T) {
 	s, c, m := fixture(t)
 	e := NewEngine(s, modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
 		t.Error("等待同一成员的经历更新时不应提前请求模型")
-		return jsonReply(Decision{Action: "pass"}), nil
+		return jsonReply(Outcome{}), nil
 	}), testConfig())
 	gate := make(chan struct{}, 1)
 	gate <- struct{}{}
 	e.memberGates.Store(m.ID, gate)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	r := e.observeMember(ctx, c, Work{}, m.ID, 0, nil)
-	if r.Err != context.Canceled {
-		t.Fatalf("等待取消未返回：%v", r.Err)
+	_, err := e.act(ctx, c, m, Work{}, "")
+	if err != context.Canceled {
+		t.Fatalf("等待取消未返回：%v", err)
 	}
 	<-gate
 }
@@ -170,29 +170,32 @@ func TestLongTermMemoryDiscoveryAndHistoryPagination(t *testing.T) {
 }
 
 func TestMemberCanRecallBeforeChoosingSilence(t *testing.T) {
-	// 检索属于参与判断的一部分；能先找到旧经历，再自主 pass，而不是必须先
-	// 宣布“我要说话”才获准查记忆。此阶段没有联网、发消息或派活权限。
+	// 成员直接查找旧经历后结束本次行动。工具齐全，不需要预先承诺发言，
+	// 也没有只准查记忆的判断阶段。
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "explore")
 	s.db.Exec(`INSERT INTO memories VALUES(?,?,?,?,?,?)`, "old_note", m.ID, c.ID, "书签上的鲸鱼是旧约定", "", now())
 	calls := 0
 	e := NewEngine(s, modelFunc(func(_ context.Context, messages []ChatMessage, defs []ToolDefinition, _ bool) (ChatMessage, error) {
 		calls++
+		hasSend := false
 		for _, d := range defs {
-			if !recallTool(d.Function.Name) {
-				t.Errorf("参与判断不应拿到 %s", d.Function.Name)
-			}
+			hasSend = hasSend || d.Function.Name == "send_message"
 		}
+		if !hasSend {
+			t.Error("沉默前的行动不应剥夺消息工具")
+		}
+
 		if calls == 1 {
 			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("search_memory", map[string]string{"query": "鲸鱼"})}}, nil
 		}
 		if !strings.Contains(messages[len(messages)-1].Content, "旧约定") {
 			t.Error("检索结果没有回到判断上下文")
 		}
-		return jsonReply(Decision{Action: "pass", Reason: "旧约定没有需要打扰的新进展"}), nil
+		return jsonReply(Outcome{Outcome: "旧约定没有需要打扰的新进展"}), nil
 	}), testConfig())
-	result := e.observeMember(context.Background(), c, w, m.ID, 0, nil)
-	if result.Err != nil || result.Decision.Action != "pass" || calls != 2 {
+	result, err := e.act(context.Background(), c, m, w, "")
+	if err != nil || result.Message != "" || calls != 2 {
 		t.Fatalf("检索后沉默失败：%+v calls=%d", result, calls)
 	}
 	messages, _ := s.Messages(c.ID, 0, 20)

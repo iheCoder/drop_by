@@ -71,44 +71,41 @@ UPDATE work SET autonomous=1 WHERE source_id='' AND kind!='chat';`)
 	return err
 }
 
-// 闲时检查逐渐放缓。一次新真人交流会重置间隔；BOT 自己的消息不会刷新配额。
-// 到期的具体后续另走工作队列，不受这一闲时退避影响，也不会在休眠后补发每次错过的机会。
+// 每个成员只有一份个人时钟。没有发言不代表失去兴趣，不能把沉默累计
+// 成六小时退避；具体预约与正在运行的行动仍按自己的时间继续。
 func (s *Store) ScheduleExploration(interval time.Duration) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	rows, err := tx.Query(`SELECT c.id,c.idle_rounds FROM conversations c WHERE c.next_explore<=? AND c.research_paused=0
-AND NOT EXISTS(SELECT 1 FROM work w WHERE w.conversation_id=c.id AND (w.status IN ('running','waiting_budget') OR (w.status='pending' AND (w.kind IN ('chat','explore') OR w.due_at<=?))))`, time.Now().UnixMilli(), time.Now().UnixMilli())
+	rows, err := tx.Query(`SELECT a.member_id FROM personal_activity a WHERE a.next_at<=?
+ AND EXISTS(SELECT 1 FROM participants p JOIN conversations c ON c.id=p.conversation_id WHERE p.member_id=a.member_id AND c.research_paused=0)
+ AND NOT EXISTS(SELECT 1 FROM work w WHERE w.member_id=a.member_id AND w.conversation_id IS NULL AND
+ (w.status IN ('running','waiting_budget') OR (w.status='pending' AND w.due_at<=?)))`, time.Now().UnixMilli(), time.Now().UnixMilli())
 	if err != nil {
 		return err
 	}
-	type idleRoom struct {
-		id     string
-		rounds int
-	}
-	var rooms []idleRoom
+	var members []string
 	for rows.Next() {
-		var r idleRoom
-		if err := rows.Scan(&r.id, &r.rounds); err != nil {
+		var id string
+		if err = rows.Scan(&id); err != nil {
 			rows.Close()
 			return err
 		}
-		rooms = append(rooms, r)
+		members = append(members, id)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
 		return err
 	}
-	for _, r := range rooms {
-		w := Work{ID: newID("work"), ConversationID: r.id, Kind: "explore", Autonomous: true, Instruction: "这是一次闲时观察机会。结合自己的特质、当前关注、共同经历和实际进展决定下一步。", Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
-		if err := insertWork(tx, w); err != nil {
+	for _, id := range members {
+		w := Work{ID: newID("work"), MemberID: id, Kind: "explore", Autonomous: true, Instruction: "这是你自己的活动时间。", Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
+		if err = insertWork(tx, w); err != nil {
 			return err
 		}
-		delay := min(interval*time.Duration(1<<min(r.rounds+1, 5)), 6*time.Hour)
-		if _, err := tx.Exec(`UPDATE conversations SET idle_rounds=idle_rounds+1,next_explore=? WHERE id=?`, time.Now().Add(delay).UnixMilli(), r.id); err != nil {
+		if _, err = tx.Exec(`UPDATE personal_activity SET next_at=? WHERE member_id=?`, time.Now().Add(interval).UnixMilli(), id); err != nil {
 			return err
 		}
 	}
@@ -120,7 +117,7 @@ func (s *Store) ScheduleFollowup(c Conversation, m Member, source Work, instruct
 	if c.ResearchPaused {
 		return nil, fmt.Errorf("自主后续已暂停")
 	}
-	if strings.TrimSpace(instruction) == "" || strings.TrimSpace(reason) == "" {
+	if strings.TrimSpace(instruction) == "" {
 		return nil, fmt.Errorf("后续需要具体关注和实际来由")
 	}
 	w := Work{ID: newID("work"), ParentID: source.ID, RootID: rootOf(source), ConversationID: c.ID, MemberID: m.ID, Kind: "revisit", Autonomous: true, Instruction: instruction, Reason: reason, SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
@@ -136,7 +133,7 @@ func (s *Store) CancelOwnWork(c Conversation, m Member, id string) (any, error) 
 	err := s.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 		// 先确认归属与类型。已完成/已停止的本人工作可以再次确认结束，
 		// 但不能把同伴工作、其他聊天或未知 ID 当成一次成功的取消。
-		if err := tx.QueryRow(`SELECT status FROM work WHERE id=? AND conversation_id=? AND member_id=? AND kind IN ('research','revisit')`, id, c.ID, m.ID).Scan(&status); err != nil {
+		if err := tx.QueryRow(`SELECT status FROM work WHERE id=? AND coalesce(conversation_id,'')=? AND member_id=? AND kind IN ('research','revisit')`, id, c.ID, m.ID).Scan(&status); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("只能取消自己在当前聊天中的研究或后续")
 			}

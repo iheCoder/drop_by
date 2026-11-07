@@ -193,8 +193,6 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	role, _ := ctx.Value(modelRoleKey{}).(string)
 	selected := ""
 	switch role {
-	case "decision":
-		selected = m.Config.DecisionModel
 	case "chat":
 		selected = m.Config.ChatModel
 	}

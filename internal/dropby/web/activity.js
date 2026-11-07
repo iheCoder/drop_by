@@ -2,7 +2,7 @@
 
 // 动态是已有记录的阅读入口，沿用浮动详情面，不把每次模型判断排成任务看板。
 const openWorkStatuses = ['pending','running','waiting_budget','paused'];
-const backgroundWork = w => ['research','revisit'].includes(w.kind) && !w.id.startsWith('coordination_');
+const backgroundWork = w => (['research','revisit'].includes(w.kind) || !w.conversation_id) && !w.id.startsWith('coordination_');
 const sourceLink = id => id ? `<button class="quiet activity-source" data-action="jump-message" data-id="${escapeHTML(id)}">${icon('message-circle')}回到相关交流</button>` : '';
 function technicalRecord(value, key='technical') {
   return `<details class="technical-record" data-detail="${escapeHTML(key)}"><summary>技术详情</summary><pre>${escapeHTML(JSON.stringify(value,null,2))}</pre></details>`;
@@ -34,7 +34,7 @@ function renderActivity() {
   // 或具体后台工作需要处理时，才占用输入框上方的一行提示。
   const latest=jobs[0];
   const noReply=latest && latest.kind==='chat' && latest.status==='failed' && unreadWorkNotice(latest) && !messages.some(m=>m.author_id!=='user' && m.author_id!=='system' && m.created_at>=latest.created_at);
-  const unfinished=jobs.find(w=>backgroundWork(w) && ['failed','paused'].includes(w.status) && unreadWorkNotice(w));
+  const unfinished=jobs.find(w=>backgroundWork(w) && w.conversation_id && ['failed','paused'].includes(w.status) && unreadWorkNotice(w));
   const notice=noReply ? '这次回应未生成 · 查看详情' : unfinished ? `${authorName(unfinished.member_id)}的${unfinished.kind==='revisit'?'后续':'工作'}${unfinished.status==='paused'?'已暂停':'未完成'} · 查看详情` : '';
   $('work-notice').hidden=!notice;
   $('work-notice').textContent=notice;
@@ -47,14 +47,18 @@ function participationText(p) {
     const spoke=w && messages.some(m=>m.author_id===p.member_id && m.created_at>=w.created_at && m.created_at<=p.created_at);
     return spoke ? '后续回应未生成' : '这次回应未生成';
   }
-  if (p.action==='pass') return '这次没有补充';
+  if (p.action==='act') return '最近有了自己的行动';
+  if (p.action==='pass' || p.action==='quiet') return '这次没有补充';
   if (p.action==='revisit') return '想稍后再看看';
   if (p.action==='explore') return '想继续探索';
   return p.selected ? '最近参与了交流' : '有个想法，还没说出来';
 }
 function actionRow(run) {
   const d=run.display || {};
-  return `<button class="activity-entry" data-action="evidence" data-id="${escapeHTML(run.id)}"><span class="activity-entry-copy"><strong>${escapeHTML(authorName(run.member_id))} · ${escapeHTML(d.title || '查看行动')}</strong>${d.detail ? `<span class="activity-entry-description">${escapeHTML(d.detail.split('\n')[0])}</span>`:''}<small>${escapeHTML(d.status || '查看记录')} · ${timeLabel(run.created_at)}</small></span>${icon('chevron-right')}</button>`;
+  // 消息摘要与聊天列表使用同一份 Markdown 渲染结果，避免把链接语法露成正文。
+  const preview=document.createElement('div'); preview.innerHTML=richText(d.detail || '');
+  const description=preview.textContent.trim().split('\n')[0];
+  return `<button class="activity-entry" data-action="evidence" data-id="${escapeHTML(run.id)}"><span class="activity-entry-copy"><strong>${escapeHTML(authorName(run.member_id))} · ${escapeHTML(d.title || '查看行动')}</strong>${description ? `<span class="activity-entry-description">${escapeHTML(description)}</span>`:''}<small>${escapeHTML(d.status || '查看记录')} · ${timeLabel(run.created_at)}</small></span>${icon('chevron-right')}</button>`;
 }
 function workEntry(w) {
   const d=w.display || {};
@@ -65,14 +69,14 @@ function showActivity(scroll=true) {
   const content=$('panel-content'), expanded=[...content.querySelectorAll('details[open][data-detail]')].map(d=>d.dataset.detail), top=content.scrollTop;
   const decisions=new Map();
   for(const p of roomData.participation || []) if(!decisions.has(p.member_id))decisions.set(p.member_id,p);
-  const live=(state.activities || []).filter(a=>a.conversation_id===selected);
+  const live=(state.activities || []).filter(a=>a.conversation_id===selected || (!a.conversation_id && roomData.conversation.member_ids.includes(a.member_id)));
   const people=roomData.conversation.member_ids.map(id=>{
-    const p=decisions.get(id), focus=roomData.member_states?.find(s=>s.member_id===id)?.body, action=live.find(a=>a.member_id===id);
+    const p=decisions.get(id), focus=roomData.member_states?.find(s=>s.member_id===id)?.body || state.personal_focus?.[id]?.body, action=live.find(a=>a.member_id===id);
     const status=participationText(p), source=roomData.work.find(w=>w.id===p?.work_id)?.source_id;
     return `<div class="activity-person">${avatar(member(id),true)}<div><strong>${escapeHTML(authorName(id))}</strong><p>${escapeHTML(action?.label || (p?.action==='error' ? status : focus || status))}</p>${p?.action==='error' ? `<details class="participation-note" data-detail="person-${escapeHTML(id)}"><summary>查看这次回应</summary><p>这次没能生成新的回应，已经发出的消息仍然保留。</p><div class="activity-links">${sourceLink(source)}<button class="quiet" data-action="continue-member" data-id="${escapeHTML(id)}" data-source="${escapeHTML(source || '')}">再聊一句 ${icon('arrow-up')}</button></div>${technicalRecord({reason:p.reason,at:p.created_at},`reason-${id}`)}</details>`:''}</div></div>`;
   }).join('');
-  const jobs=(roomData.work || []).filter(backgroundWork), current=jobs.filter(w=>openWorkStatuses.includes(w.status)||w.status==='failed');
-  const actions=roomData.tool_runs || [];
+  const jobs=(roomData.work || []).filter(backgroundWork).sort((a,b)=>b.created_at.localeCompare(a.created_at)), current=jobs.filter(w=>openWorkStatuses.includes(w.status)||w.status==='failed');
+  const actions=[...(roomData.tool_runs || [])].sort((a,b)=>b.created_at.localeCompare(a.created_at));
   // 读记录、整理经历保留在第二层；用户先看到真正的安排、产出和收尾。
   const meaningful=actions.filter(a=>!['read_work','read_history','read_memory','read_tool_result','read_artifact','search_memory','remember'].includes(a.name));
   const other=actions.filter(a=>!meaningful.includes(a));

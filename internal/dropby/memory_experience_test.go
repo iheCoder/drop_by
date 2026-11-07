@@ -184,10 +184,10 @@ func TestCorrectionBeforeSilenceAndNoStaleToolReplay(t *testing.T) {
 		if !strings.Contains(input[len(input)-1].Content, `"revision":2`) {
 			t.Error("修正结果没有回到参与判断")
 		}
-		return jsonReply(Decision{Action: "pass", Reason: "已经修正理解，此刻无需重复答复"}), nil
+		return jsonReply(Outcome{Outcome: "已经修正理解，此刻无需重复答复"}), nil
 	}), testConfig())
-	result := e.observeMember(context.Background(), c, w, m.ID, 0, nil)
-	if result.Err != nil || result.Decision.Action != "pass" {
+	result, err := e.act(context.Background(), c, m, w, "")
+	if err != nil || result.Message != "" {
 		t.Fatalf("安静时纠正没有完成：%+v", result)
 	}
 	input, err := e.contextFor(c, m, w)

@@ -39,12 +39,12 @@ func (s *Store) attachMessageArtifacts(messages []Message) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	rows, err := s.db.Query(`SELECT DISTINCT m.id,a.id,a.conversation_id,a.member_id,a.title,a.version,a.source_id,a.created_at,a.format
+	rows, err := s.db.Query(`SELECT DISTINCT m.id,a.id,coalesce(a.conversation_id,''),a.member_id,a.title,a.version,a.source_id,a.created_at,a.format
 	FROM json_each(?) selected JOIN messages m ON m.id=selected.value
 	JOIN json_each(m.evidence) evidence
-	JOIN tool_runs t ON t.id=evidence.value AND t.conversation_id=m.conversation_id AND t.status='succeeded' AND t.name='save_artifact'
+	JOIN tool_runs t ON t.id=evidence.value AND (t.conversation_id=m.conversation_id OR (t.conversation_id='' AND t.member_id=m.author_id)) AND t.status='succeeded' AND t.name='save_artifact'
 	JOIN artifacts a ON a.id=json_extract(CASE WHEN json_valid(t.result) THEN t.result ELSE '{}' END,'$.artifact_id')
-	AND a.version=json_extract(CASE WHEN json_valid(t.result) THEN t.result ELSE '{}' END,'$.version') AND a.conversation_id=m.conversation_id
+	AND a.version=json_extract(CASE WHEN json_valid(t.result) THEN t.result ELSE '{}' END,'$.version') AND (a.conversation_id=m.conversation_id OR (a.conversation_id IS NULL AND a.member_id=m.author_id))
 	ORDER BY m.seq,a.created_at,a.id,a.version`, asJSON(ids))
 	if err != nil {
 		return err
@@ -71,11 +71,11 @@ func (t *Toolbox) saveArtifact(ctx context.Context, c Conversation, m Member, w 
 	// 编辑时省略格式就沿用原作，避免一次文字修改把可预览的 HTML 变成源码笔记。
 	// 事务内仍重新校验所属会话及版本，以防迟到的生成覆盖另一个聊天的成果。
 	if a.Format == "" && a.ID != "" {
-		var room string
-		if err := t.Store.db.QueryRow(`SELECT conversation_id,format FROM artifacts WHERE id=? ORDER BY version DESC LIMIT 1`, a.ID).Scan(&room, &a.Format); err != nil {
+		var room, owner string
+		if err := t.Store.db.QueryRow(`SELECT coalesce(conversation_id,''),member_id,format FROM artifacts WHERE id=? ORDER BY version DESC LIMIT 1`, a.ID).Scan(&room, &owner, &a.Format); err != nil {
 			return nil, fmt.Errorf("找不到要修改的成果")
 		}
-		if room != c.ID {
+		if room != c.ID || (room == "" && owner != m.ID) {
 			return nil, fmt.Errorf("只能修改当前聊天的成果")
 		}
 	}
@@ -93,16 +93,16 @@ func (t *Toolbox) saveArtifact(ctx context.Context, c Conversation, m Member, w 
 	a.SourceID, a.CreatedAt = w.SourceID, now()
 	err := t.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 		if !newArtifact {
-			var room string
-			if err := tx.QueryRow(`SELECT conversation_id,max(version) FROM artifacts WHERE id=? GROUP BY id`, a.ID).Scan(&room, &a.Version); err != nil {
+			var room, owner string
+			if err := tx.QueryRow(`SELECT coalesce(conversation_id,''),member_id,max(version) FROM artifacts WHERE id=? GROUP BY id`, a.ID).Scan(&room, &owner, &a.Version); err != nil {
 				return fmt.Errorf("找不到要修改的成果")
 			}
-			if room != c.ID {
+			if room != c.ID || (room == "" && owner != m.ID) {
 				return fmt.Errorf("只能修改当前聊天的成果")
 			}
 			a.Version++
 		}
-		_, err := tx.Exec(`INSERT INTO artifacts(id,version,conversation_id,member_id,title,content,source_id,created_at,format) VALUES(?,?,?,?,?,?,?,?,?)`, a.ID, a.Version, c.ID, m.ID, a.Title, a.Content, a.SourceID, a.CreatedAt, a.Format)
+		_, err := tx.Exec(`INSERT INTO artifacts(id,version,conversation_id,member_id,title,content,source_id,created_at,format) VALUES(?,?,nullif(?,''),?,?,?,?,?,?)`, a.ID, a.Version, c.ID, m.ID, a.Title, a.Content, a.SourceID, a.CreatedAt, a.Format)
 		return err
 	})
 	// 源码已经在工具参数和成果里保存。返回可验证的版本与入口即可，不把长 HTML
@@ -131,7 +131,7 @@ func (a *API) artifactVersion(w http.ResponseWriter, r *http.Request) (Artifact,
 		}
 	}
 	var result Artifact
-	err := a.engine.Store.db.QueryRow(`SELECT id,conversation_id,member_id,title,content,version,source_id,created_at,format FROM artifacts WHERE id=? AND (?=0 OR version=?) ORDER BY version DESC LIMIT 1`, r.PathValue("id"), version, version).
+	err := a.engine.Store.db.QueryRow(`SELECT id,coalesce(conversation_id,''),member_id,title,content,version,source_id,created_at,format FROM artifacts WHERE id=? AND (?=0 OR version=?) ORDER BY version DESC LIMIT 1`, r.PathValue("id"), version, version).
 		Scan(&result.ID, &result.ConversationID, &result.MemberID, &result.Title, &result.Content, &result.Version, &result.SourceID, &result.CreatedAt, &result.Format)
 	if err == sql.ErrNoRows {
 		respond(w, http.StatusNotFound, map[string]string{"error": "成果或版本不存在"})
@@ -172,4 +172,19 @@ func (a *API) artifactDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-v%d%s"`, result.ID, result.Version, extension))
 	w.Header().Set("Content-Type", contentType)
 	io.WriteString(w, result.Content)
+}
+
+// 个人作品先属于作者。发到群里的某一版成为共同材料，作者后来安静修改的版本
+// 仍属于作者；不能因为公开过第一版就让同伴读到所有未发布草稿。
+const visibleArtifactSQL = `(a.conversation_id=? OR (a.conversation_id IS NULL AND a.member_id=?) OR EXISTS(
+ SELECT 1 FROM messages message JOIN json_each(message.evidence) evidence
+ JOIN tool_runs run ON run.id=evidence.value AND run.name='save_artifact' AND run.status='succeeded'
+ WHERE message.conversation_id=? AND message.author_id=a.member_id
+ AND json_extract(CASE WHEN json_valid(run.result) THEN run.result ELSE '{}' END,'$.artifact_id')=a.id
+ AND json_extract(CASE WHEN json_valid(run.result) THEN run.result ELSE '{}' END,'$.version')=a.version))`
+
+func (s *Store) artifactVisible(room, member string, a Artifact) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT count(*) FROM artifacts a WHERE a.id=? AND a.version=? AND `+visibleArtifactSQL, a.ID, a.Version, room, member, room).Scan(&count)
+	return count > 0, err
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,26 +145,15 @@ func TestTemporarySubcoordinationEndsWithoutChangingPersonality(t *testing.T) {
 }
 
 func TestExplicitFirstSpeakerScopeDoesNotMuteOtherTopics(t *testing.T) {
+	// 顺序要求作为用户原话保留，不翻译成全体成员的轮流发言规则。
 	s, c, m := groupWithMembers(t, 2)
-	c, w := responsibilityStep(t, s, c, "A 先说，其他人先别说", Control{FirstSpeakers: []string{m[0].ID}})
-	e := NewEngine(s, modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
-		return jsonReply(Decision{Action: "speak", Intent: "回应当下"}), nil
-	}), testConfig())
-	first, _, err := e.observeMembers(context.Background(), c, w, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(first) != 1 || first[0].Member.ID != m[0].ID {
-		t.Fatal("明确的先发言要求没有生效")
-	}
-	later, _, err := e.observeMembers(context.Background(), c, w, 1)
-	if err != nil || len(later) != 2 {
-		t.Fatal("先说完后其他人仍被全局禁言")
-	}
-	c, other := responsibilityStep(t, s, c, "换个话题", Control{})
-	peers, _, err := e.observeMembers(context.Background(), c, other, 0)
-	if err != nil || len(peers) != 2 {
-		t.Fatal("先发言约定泄漏到其他话题")
+	c, w := responsibilityStep(t, s, c, "A 先说，其他人先别说", Control{})
+	e := NewEngine(s, nil, testConfig())
+	for _, member := range m {
+		input, err := e.contextFor(c, member, w)
+		if err != nil || !strings.Contains(asJSON(input["trigger_message"]), "A 先说") || strings.Contains(asJSON(input["trigger"]), "first_speakers") {
+			t.Fatalf("原指示丢失或变成统一排序规则: %v", err)
+		}
 	}
 }
 

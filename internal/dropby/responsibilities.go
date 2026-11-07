@@ -267,6 +267,10 @@ func stopWorkFamily(tx *sql.Tx, room, id string) error {
 }
 
 func (s *Store) checkMembership(c Conversation, member string) error {
+	if c.ID == "" && c.Kind == "personal" {
+		_, err := s.Member(member)
+		return err
+	}
 	var present int
 	err := s.db.QueryRow(`SELECT count(*) FROM conversations c JOIN participants p ON p.conversation_id=c.id WHERE c.id=? AND c.revision=? AND p.member_id=?`, c.ID, c.Revision, member).Scan(&present)
 	if err != nil {
@@ -285,7 +289,6 @@ responsibility_changes 只记录最新真人明确授予、交接或撤销的组
 每项为 {"id":"修改/撤销现有职责时填写","member_id":"当前群成员ID","scope_id":"长期职责为空；这次新事项写this；旧事项写已有工作ID","body":"用自然语言说明负责什么","revoke":false}。
 临时组织不能覆盖长期职责；长期交接用已有职责 id 改 member_id。已有设置的协调者作为 legacy_<群ID> 约定提供。
 related_work_id 在本消息明确继续/交接某件已有事项时填写其实际工作ID，否则为空。日常闲聊不需要组织。
-first_speakers 只有真人明确说其他人先别说时才填写被允许先开口的成员ID；单纯 @ 某人组织不填写，其他人仍可判断是否必要插话。
 结束或取消整个事项时，将其根工作ID放进 stop_ids；只撤销负责人不能顺带取消事项。`
 
 // 交接或撤销只重定向尚未处理的结果回报。逐件按它自己的父链解析，

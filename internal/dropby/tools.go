@@ -32,6 +32,7 @@ func textField(desc string) any { return map[string]string{"type": "string", "de
 
 func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition {
 	defs := []ToolDefinition{
+		definition("send_message", "发送消息后可继续行动。可发到自己所在的聊天；个人活动省略目的地时发给真人私聊。", map[string]any{"conversation_id": textField("目的聊天 ID，普通聊天省略则发在当前聊天"), "message": textField("自己的消息"), "reply_to": textField("可选的目的聊天消息 ID"), "evidence": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "可选成果 tool_run ID"}, "notify": map[string]any{"type": "boolean", "description": "额外系统通知，默认 false"}}, "message"),
 		definition("read_tool_result", "分段查看当前聊天已保存的完整工具结果，供旧正文折叠后核对。", map[string]any{"id": textField("真实 tool_run ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}, "id"),
 		definition("read_memory", "读取个人记忆及来源；默认最新版本，revision 可指定历史版本。", map[string]any{"id": textField("已有记忆 ID"), "revision": map[string]any{"type": "integer", "minimum": 0, "description": "通常省略；回查历史版本时才填写"}}, "id"),
 		definition("remember", "保存个人经历或想法。更新用原 id 和 revision；body 为空时删除。", map[string]any{
@@ -45,13 +46,13 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 		definition("search_memory", "查找自己的当前聊天及可携带经历。多个词以空格分隔，任一匹配；空串浏览，before 用返回游标翻页。旧经历不必常驻上下文，需要时 read_memory 读全文。", map[string]any{"query": textField("想找回的词；可换词检索，不是向量语义搜索"), "before": map[string]any{"type": "integer", "minimum": 0}}, "query"),
 		definition("read_work", "查看当前聊天的实际工作状态与结果。提供 id 读完整工作；省略 id 列出未完工作，可按 member_id 筛选、offset 翻页。不能访问其他群或私聊。", map[string]any{"id": textField("实际工作ID"), "member_id": textField("可选，浏览某位成员的未完工作"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
 		// 本地成果创作是基本能力，旧成员不必重新配置工具才能生成网页。
-		definition("save_artifact", "保存可查看的 Markdown 或 HTML 成果，如小卡片、文章、网页草稿。HTML 使用完整自包含文档和内联样式，不依赖 CDN 或外部资源。修改时提供原 id，新版本保留历史。保存不代表部署网站或实际执行程序。", map[string]any{"id": textField("修改已有成果的 ID，新建时省略"), "title": textField("具体标题"), "format": map[string]any{"type": "string", "enum": []string{"markdown", "html"}, "description": "新建默认 markdown；修改省略时沿用原格式"}, "content": textField("完整内容；HTML 使用完整源代码")}, "title", "content"),
+		definition("save_artifact", "保存可查看的 Markdown 或 HTML 成果，如小卡片、文章、网页草稿。HTML 使用完整自包含文档和内联样式，不依赖 CDN 或外部资源。修改时提供原 id，新版本保留历史。", map[string]any{"id": textField("修改已有成果的 ID，新建时省略"), "title": textField("具体标题"), "format": map[string]any{"type": "string", "enum": []string{"markdown", "html"}, "description": "新建默认 markdown；修改省略时沿用原格式"}, "content": textField("完整内容；HTML 使用完整源代码")}, "title", "content"),
 		definition("read_artifact", "发现当前聊天的成果，或读取指定成果及历史版本。不知道 ID 时用 query 按标题查找，空串浏览，可用 offset 翻页；知道 ID 后读取正文。", map[string]any{"id": textField("已有成果 ID，可省略"), "query": textField("要找的标题字词，省略则浏览"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
 		definition("cancel_work", "取消自己在当前聊天里已经安排、但现在不再需要的后续或研究；不能取消同伴的工作，自己的已结束工作会返回实际终态。先从已有工作中取真实 ID；用户改意或事情已解决时及时取消。", map[string]any{"id": textField("自己的待执行工作 ID")}, "id"),
 	}
 	if !c.ResearchPaused {
-		defs = append(defs, definition("schedule_followup", "预约稍后检查某件事，例如邀请后是否有人回应、约定是否有进展。到期会读取最新消息和工作，再自行决定行动；服务需运行。", map[string]any{"instruction": textField("到时要核对的具体事情或相关消息，以及自己的打算"), "reason": textField("来自哪段交流、兴趣或真实进展"), "delay_seconds": map[string]any{"type": "integer", "minimum": 1}, "due_at": textField("可选绝对时间，RFC3339且含时区，例如2026-11-08T09:00:00+08:00；与delay_seconds只选一个。一次定时，不是周期任务，服务需运行。")}, "instruction", "reason"))
-		defs = append(defs, definition("schedule_exploration", "安排后台研究或制作。", map[string]any{"instruction": textField("可用现有工具执行的具体方向，不是泛泛关注"), "reason": textField("来自什么兴趣、经历或新材料"), "delay_seconds": map[string]any{"type": "integer", "minimum": 0}}, "instruction", "reason"))
+		defs = append(defs, definition("schedule_followup", "预约稍后检查某件事，例如邀请后是否有人回应、约定是否有进展。到期会读取最新消息和工作，再自行决定行动；服务需运行。", map[string]any{"instruction": textField("到时要核对的具体事情或相关消息，以及自己的打算"), "reason": textField("来自哪段交流、兴趣或真实进展"), "delay_seconds": map[string]any{"type": "integer", "minimum": 1}, "due_at": textField("可选绝对时间，RFC3339且含时区，例如2026-11-08T09:00:00+08:00；与delay_seconds只选一个。一次定时，不是周期任务，服务需运行。")}, "instruction"))
+		defs = append(defs, definition("schedule_exploration", "安排后台研究或制作。", map[string]any{"instruction": textField("可用现有工具执行的具体方向，不是泛泛关注"), "reason": textField("来自什么兴趣、经历或新材料"), "delay_seconds": map[string]any{"type": "integer", "minimum": 0}}, "instruction"))
 	}
 	// 本轮已看到的本人临时职责允许重复确认结束；Store 仍核对本人和事项。
 	// 真正委托权限每次查当前记录，结束职责后不能继续安排同伴。
@@ -63,9 +64,9 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 		break
 	}
 	if t.Store.CanDelegate(c, m, w) {
-		defs = append(defs, definition("delegate_work", "依据当前真实约定，委托同群成员完成一项具体工作。coordinate=true 可请对方组织这个子事项，不扩大原授权。写明预期结果、边界及选择理由；完成或遇到问题后会获得复看机会。", map[string]any{"member_id": textField("本群另一成员ID"), "instruction": textField("具体任务、预期结果和边界"), "reason": textField("为什么需要这件事、为什么选择这位成员"), "coordinate": map[string]any{"type": "boolean", "description": "是否委托对方组织这项子工作；默认自己完成具体产出"}}, "member_id", "instruction", "reason"))
+		defs = append(defs, definition("delegate_work", "依据当前真实约定，委托同群成员完成一项具体工作。coordinate=true 可请对方组织这个子事项，不扩大原授权。写明预期结果、边界及选择理由；完成或遇到问题后会获得复看机会。", map[string]any{"member_id": textField("本群另一成员ID"), "instruction": textField("具体任务、预期结果和边界"), "reason": textField("为什么需要这件事、为什么选择这位成员"), "coordinate": map[string]any{"type": "boolean", "description": "是否委托对方组织这项子工作；默认自己完成具体产出"}}, "member_id", "instruction"))
 	}
-	if !c.DiscussionPaused {
+	if !c.DiscussionPaused && c.ID != "" {
 		defs = append(defs, definition("ask_question", "在聊天里发布一个可自由回答的选择题。用户也可以直接聊别的；调用成功即已发布。", map[string]any{"text": textField("一个简短自然的问题"), "options": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "minItems": 2, "description": "可选答案"}}, "text", "options"))
 		defs = append(defs, definition("send_private", "向真人发送私聊消息。", map[string]any{"message": textField("自然的私聊内容"), "notify": map[string]string{"type": "boolean"}}, "message", "notify"))
 	}
@@ -82,15 +83,22 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 
 		}
 	}
+	if c.Kind == "personal" {
+		defs = append(defs, definition("read_conversation", "查看自己所在聊天的当前现场。用于选择交流对象或接续关系；历史可继续用 read_history。", map[string]any{"conversation_id": textField("conversations 中的聊天 ID")}, "conversation_id"))
+	}
 	for i := range defs {
 		props := defs[i].Function.Parameters.(map[string]any)["properties"].(map[string]any)
 		name := defs[i].Function.Name
+		if c.Kind == "personal" && (name == "read_history" || name == "read_work" || name == "read_artifact" || name == "read_tool_result" || name == "read_memory" || name == "search_memory" || name == "remember") {
+			props["conversation_id"] = textField("可选，自己所在的聊天 ID；省略访问个人记录")
+		}
+
 		switch name {
 		case "search", "read_page":
 			props["refresh"] = map[string]any{"type": "boolean", "description": "重新获取，跳过已有缓存；默认 false"}
 		}
 		switch name {
-		case "read_tool_result", "read_history", "search_memory", "read_work", "read_artifact":
+		case "read_tool_result", "read_history", "read_conversation", "search_memory", "read_work", "read_artifact":
 			props["limit"] = map[string]any{"type": "integer", "minimum": 1, "description": "列表条数；省略使用默认值"}
 		}
 		switch name {
@@ -150,7 +158,7 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	readErr := t.Store.db.QueryRow("SELECT status,result FROM tool_runs WHERE id=?", runID).Scan(&oldStatus, &oldResult)
 	if readErr == nil {
 		if oldStatus == "running" {
-			if !readOnlyTool(call.Function.Name) {
+			if !readOnlyTool(call.Function.Name) && call.Function.Name != "send_message" {
 				return "", errUncertainTool
 			}
 			resumingRead = true
@@ -168,7 +176,7 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 		}
 	}
 	if t.Activity != nil {
-		labels := map[string]string{"search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_private": "正在准备私聊", "read_history": "正在翻阅聊天记录", "read_artifact": "正在查看成果", "read_tool_result": "正在核对已有材料", "read_memory": "正在回顾经历", "search_memory": "正在找回相关经历", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
+		labels := map[string]string{"search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_message": "正在发送消息", "read_conversation": "正在看聊天近况", "send_private": "正在准备私聊", "read_history": "正在翻阅聊天记录", "read_artifact": "正在查看成果", "read_tool_result": "正在核对已有材料", "read_memory": "正在回顾经历", "search_memory": "正在找回相关经历", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
 		t.Activity(c.ID, m.ID, labels[call.Function.Name])
 	}
 	var result any
@@ -208,32 +216,35 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 
 func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work, call ToolCall) (any, error) {
 	var args struct {
-		ID           string   `json:"id"`
-		Scope        string   `json:"scope"`
-		Body         string   `json:"body"`
-		Query        string   `json:"query"`
-		URL          string   `json:"url"`
-		Title        string   `json:"title"`
-		Content      string   `json:"content"`
-		Format       string   `json:"format"`
-		Instruction  string   `json:"instruction"`
-		Reason       string   `json:"reason"`
-		DelaySeconds int      `json:"delay_seconds"`
-		Message      string   `json:"message"`
-		Notify       bool     `json:"notify"`
-		Offset       int      `json:"offset"`
-		Text         string   `json:"text"`
-		Options      []string `json:"options"`
-		Before       int64    `json:"before"`
-		BeforeSeq    int64    `json:"before_seq"`
-		MemberID     string   `json:"member_id"`
-		DueAt        string   `json:"due_at"`
-		Coordinate   bool     `json:"coordinate"`
-		Limit        int      `json:"limit"`
-		Length       int      `json:"length"`
-		Version      int      `json:"version"`
-		Refresh      bool     `json:"refresh"`
-		Revision     *int     `json:"revision"`
+		ConversationID string   `json:"conversation_id"`
+		ReplyTo        string   `json:"reply_to"`
+		Evidence       []string `json:"evidence"`
+		ID             string   `json:"id"`
+		Scope          string   `json:"scope"`
+		Body           string   `json:"body"`
+		Query          string   `json:"query"`
+		URL            string   `json:"url"`
+		Title          string   `json:"title"`
+		Content        string   `json:"content"`
+		Format         string   `json:"format"`
+		Instruction    string   `json:"instruction"`
+		Reason         string   `json:"reason"`
+		DelaySeconds   int      `json:"delay_seconds"`
+		Message        string   `json:"message"`
+		Notify         bool     `json:"notify"`
+		Offset         int      `json:"offset"`
+		Text           string   `json:"text"`
+		Options        []string `json:"options"`
+		Before         int64    `json:"before"`
+		BeforeSeq      int64    `json:"before_seq"`
+		MemberID       string   `json:"member_id"`
+		DueAt          string   `json:"due_at"`
+		Coordinate     bool     `json:"coordinate"`
+		Limit          int      `json:"limit"`
+		Length         int      `json:"length"`
+		Version        int      `json:"version"`
+		Refresh        bool     `json:"refresh"`
+		Revision       *int     `json:"revision"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
 		return nil, fmt.Errorf("工具参数格式不正确")
@@ -244,14 +255,42 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 	if args.Length == 0 {
 		args.Length = 5000
 	}
-	current, err := t.Store.Conversation(c.ID)
-	if err != nil {
-		return nil, err
+	if c.ID != "" {
+		current, err := t.Store.Conversation(c.ID)
+		if err != nil {
+			return nil, err
+		}
+		if current.Revision != c.Revision {
+			return nil, ErrStale
+		}
 	}
-	if current.Revision != c.Revision {
-		return nil, ErrStale
+	var err error
+	if c.Kind == "personal" && args.ConversationID != "" && call.Function.Name != "send_message" && call.Function.Name != "read_conversation" {
+		c, err = t.Store.accessibleConversation(m.ID, args.ConversationID)
+		if err != nil {
+			return nil, err
+		}
 	}
+
 	switch call.Function.Name {
+	case "send_message":
+		return t.sendMessage(ctx, c, m, w, call, args.ConversationID, args.Message, args.ReplyTo, args.Evidence, args.Notify)
+	case "read_conversation":
+		room, err := t.Store.accessibleConversation(m.ID, args.ConversationID)
+		if err != nil {
+			return nil, err
+		}
+		room.Avatar = ""
+		limit := args.Limit
+		if limit == 0 {
+			limit = 16
+		}
+		messages, err := t.Store.Messages(room.ID, 0, limit)
+		if err != nil {
+			return nil, err
+		}
+		memories, err := t.Store.relationshipMemories(m.ID, room.ID, append([]string{"user"}, room.MemberIDs...))
+		return map[string]any{"conversation": room, "messages": messages, "relationships": memories}, err
 	case "schedule_followup":
 		due, err := followupTime(time.Now(), args.DelaySeconds, args.DueAt)
 		if err != nil {
@@ -270,7 +309,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		}
 		var run ToolRun
 		var originalArguments string
-		if err := t.Store.db.QueryRow(`SELECT member_id,name,result,arguments,created_at FROM tool_runs WHERE id=? AND conversation_id=?`, args.ID, c.ID).Scan(&run.MemberID, &run.Name, &run.Result, &originalArguments, &run.CreatedAt); err != nil {
+		if err := t.Store.db.QueryRow(`SELECT member_id,name,result,arguments,created_at FROM tool_runs WHERE id=? AND (conversation_id=? OR (conversation_id='' AND member_id=?)) AND (conversation_id<>'' OR member_id=?)`, args.ID, c.ID, m.ID, m.ID).Scan(&run.MemberID, &run.Name, &run.Result, &originalArguments, &run.CreatedAt); err != nil {
 			return nil, fmt.Errorf("当前聊天没有这条可读取的行动记录")
 		}
 		if !toolResultVisibleTo(run, m.ID) {
@@ -336,6 +375,9 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 	case "read_work":
 		if args.ID != "" {
 			w, err := t.Store.ReadWork(c.ID, args.ID)
+			if err == nil && c.ID == "" && w.MemberID != m.ID {
+				return nil, fmt.Errorf("这不是你的个人行动")
+			}
 			return roleWork(w), err
 		}
 		jobs, err := t.Store.OpenWork(c.ID)
@@ -344,7 +386,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		}
 		filtered := jobs[:0]
 		for _, job := range jobs {
-			if args.MemberID == "" || args.MemberID == job.MemberID {
+			if (c.ID != "" || job.MemberID == m.ID) && (args.MemberID == "" || args.MemberID == job.MemberID) {
 				filtered = append(filtered, job)
 			}
 		}
@@ -370,16 +412,21 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		return t.saveArtifact(ctx, c, m, w, Artifact{ID: args.ID, Title: args.Title, Content: args.Content, Format: args.Format})
 	case "read_artifact":
 		if args.ID == "" {
-			return t.Store.artifactIndex(c.ID, args.Query, args.Offset, args.Limit)
+			return t.Store.artifactIndexForMember(c.ID, m.ID, args.Query, args.Offset, args.Limit)
 		}
 		list, err := t.Store.ArtifactVersions(args.ID)
 		if err != nil {
 			return nil, err
 		}
-		if len(list) == 0 || list[0].ConversationID != c.ID {
-			return nil, fmt.Errorf("当前聊天中没有这个成果")
-		}
+
 		for _, artifact := range list {
+			visible, err := t.Store.artifactVisible(c.ID, m.ID, artifact)
+			if err != nil {
+				return nil, err
+			}
+			if !visible {
+				continue
+			}
 			if args.Version == 0 || artifact.Version == args.Version {
 				chars := []rune(artifact.Content)
 				if args.Offset < 0 || args.Offset > len(chars) {
@@ -438,8 +485,8 @@ func (t *Toolbox) Schedule(ctx context.Context, c Conversation, m Member, source
 	if c.ResearchPaused {
 		return nil, fmt.Errorf("研究已停止")
 	}
-	if strings.TrimSpace(instruction) == "" || strings.TrimSpace(reason) == "" {
-		return nil, fmt.Errorf("后台探索需要具体方向和实际来由")
+	if strings.TrimSpace(instruction) == "" {
+		return nil, fmt.Errorf("后台行动需要具体内容")
 	}
 	w := Work{ID: newID("work"), ParentID: source.ID, ConversationID: c.ID, MemberID: m.ID, RootID: rootOf(source), Autonomous: source.Autonomous, Kind: "research", Instruction: instruction, Reason: reason, SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
 	err := t.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
@@ -513,7 +560,7 @@ func decode(s string, out any) { _ = json.Unmarshal([]byte(s), out) }
 // 这些现有工具只读取数据；结果未落盘的读取可以重做。写入/发送不走这条路径。
 func readOnlyTool(name string) bool {
 	switch name {
-	case "search", "read_page", "read_history", "read_memory", "search_memory", "read_work", "read_artifact", "read_tool_result":
+	case "search", "read_page", "read_conversation", "read_history", "read_memory", "search_memory", "read_work", "read_artifact", "read_tool_result":
 		return true
 	}
 	return false

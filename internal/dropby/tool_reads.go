@@ -22,7 +22,7 @@ func (t *Toolbox) toolIndex(room, member, query string, offset, limit int) (any,
 	if limit == 0 {
 		limit = 12
 	}
-	rows, err := t.Store.db.Query(`SELECT id,member_id,name,arguments,result,created_at,status FROM tool_runs WHERE conversation_id=? AND (instr(arguments,?)>0 OR instr(result,?)>0) ORDER BY rowid DESC`, room, query, query)
+	rows, err := t.Store.db.Query(`SELECT id,member_id,name,arguments,result,created_at,status FROM tool_runs WHERE (conversation_id=? OR (conversation_id='' AND member_id=?)) AND (conversation_id<>'' OR member_id=?) AND (instr(arguments,?)>0 OR instr(result,?)>0) ORDER BY rowid DESC`, room, member, member, query, query)
 	if err != nil {
 		return nil, err
 	}
