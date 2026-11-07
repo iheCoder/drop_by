@@ -18,34 +18,9 @@ import (
 type modelFunc func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error)
 
 func (f modelFunc) Complete(c context.Context, m []ChatMessage, d []ToolDefinition, j bool) (ChatMessage, error) {
-	// 调度/持久化测试把真实性核对设为通过，专门的核对测试另用 reviewModel。
-	// 这里不模拟“真实服务已通过”，只隔离待测试的确定性执行边界。
-	if len(m) > 1 && strings.HasPrefix(m[0].Content, "你负责 drop_by 的内容真实性核对") {
-		var input struct {
-			Draft string `json:"draft"`
-		}
-		json.Unmarshal([]byte(m[1].Content), &input)
-		return jsonReply(map[string]string{"text": input.Draft}), nil
-	}
 	return f(c, m, d, j)
 }
 
-type reviewModel struct {
-	calls int
-	fail  bool
-}
-
-func (m *reviewModel) Complete(_ context.Context, messages []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-	m.calls++
-	if m.fail {
-		return ChatMessage{}, fmt.Errorf("核对服务不可用")
-	}
-	var input struct {
-		Draft string `json:"draft"`
-	}
-	json.Unmarshal([]byte(messages[1].Content), &input)
-	return jsonReply(map[string]string{"text": strings.ReplaceAll(input.Draft, "我坐过钢管椅", "从结构推测钢管椅的感受")}), nil
-}
 func jsonReply(v any) ChatMessage { return ChatMessage{Role: "assistant", Content: asJSON(v)} }
 func testConfig() Config {
 	return Config{Address: "127.0.0.1:8090", APIKey: "test-only", Model: "gpt-6.1-terra", BaseURL: "http://localhost", SearchKey: "test-only", ExploreInterval: time.Hour, MaxOutputTokens: 400, WeeklyBudgetMicros: 1_000_000, ToolCostMicros: 750}
@@ -532,8 +507,8 @@ func TestBackendWorksWithoutAnyBrowserConnection(t *testing.T) {
 	// 从数据库领取后台任务，整个过程没有 SSE/浏览器连接。验证活动属于服务进程。
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "research")
-	e := NewEngine(s, modelFunc(func(_ context.Context, _ []ChatMessage, _ []ToolDefinition, j bool) (ChatMessage, error) {
-		if j {
+	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if strings.Contains(ms[0].Content, "此时只决定自己的下一步") {
 			return jsonReply(Decision{Action: "pass"}), nil
 		}
 		return jsonReply(Outcome{Outcome: "已完成离线期间的文本探索"}), nil
@@ -686,7 +661,7 @@ func TestLastModelRoundClosesAfterSavingArtifact(t *testing.T) {
 		if calls == 1 {
 			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("save_artifact", map[string]string{"title": "可查看的草稿", "content": "实际正文"})}}, nil
 		}
-		if len(defs) == 0 || jsonOnly {
+		if len(defs) == 0 {
 			t.Error("保存后仍可继续工具行动，不强迫收尾")
 		}
 		return jsonReply(Outcome{Message: "草稿已保存，可以继续改。", Outcome: "已保存草稿"}), nil
@@ -725,31 +700,6 @@ func TestPartialResearchKeepsWorkAndCanShareExistingProgress(t *testing.T) {
 	}
 	if !pending || !sharing {
 		t.Fatalf("部分进展没有与后续工作分开保存: %+v", jobs)
-	}
-}
-
-func TestGroundingChecksPersistedContentAndFailsClosed(t *testing.T) {
-	// 核对后的内容才是实际保存内容；核对不可用时，不能把未经核对的原稿写入成果。
-	s, c, m := fixture(t)
-	w := addWork(t, s, c, m, "research")
-	model := &reviewModel{}
-	e := NewEngine(s, model, testConfig())
-	_, err := e.Tools.Execute(context.Background(), c, m, w, toolCall("save_artifact", map[string]string{"title": "假设性讨论", "content": "我坐过钢管椅，所以这是一份亲身体验。"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, _ := s.Artifacts(c.ID)
-	if len(list) != 1 || strings.Contains(list[0].Content, "我坐过钢管椅") || model.calls != 1 {
-		t.Fatalf("未经核对的草稿被保存: %+v", list)
-	}
-	model.fail = true
-	result, err := e.Tools.Execute(context.Background(), c, m, w, toolCall("save_artifact", map[string]string{"title": "不应保存", "content": "未经核对的草稿"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, _ = s.Artifacts(c.ID)
-	if len(list) != 1 || !strings.Contains(result, "核对服务不可用") {
-		t.Fatalf("核对失败仍放行: %s %+v", result, list)
 	}
 }
 

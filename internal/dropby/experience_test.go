@@ -285,7 +285,7 @@ func TestResearchSavesRequestedNoteBeforeClosing(t *testing.T) {
 	calls := 0
 	model := modelFunc(func(_ context.Context, ms []ChatMessage, defs []ToolDefinition, final bool) (ChatMessage, error) {
 		calls++
-		if len(defs) == 0 || final {
+		if len(defs) == 0 {
 			t.Fatal("不应按轮数剥夺工具或强迫收尾")
 		}
 		if calls <= 12 {

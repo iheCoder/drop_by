@@ -1,7 +1,6 @@
 package dropby
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 )
@@ -39,13 +38,23 @@ func (s *Store) finishAction(work, member string) error {
 	_, err := s.db.Exec("DELETE FROM action_checkpoints WHERE work_id=? AND member_id=?", work, member)
 	return err
 }
-func (s *Store) pendingAction(work string) (string, error) {
-	var member string
-	err := s.db.QueryRow("SELECT member_id FROM action_checkpoints WHERE work_id=? ORDER BY rowid LIMIT 1", work).Scan(&member)
-	if err == sql.ErrNoRows {
-		err = nil
+
+// 多位成员可以分别保留未完现场；恢复时逐个接上，已发布者没有现场可重放。
+func (s *Store) pendingActions(work string) ([]string, error) {
+	rows, err := s.db.Query("SELECT member_id FROM action_checkpoints WHERE work_id=? ORDER BY rowid", work)
+	if err != nil {
+		return nil, err
 	}
-	return member, err
+	defer rows.Close()
+	var members []string
+	for rows.Next() {
+		var member string
+		if err := rows.Scan(&member); err != nil {
+			return nil, err
+		}
+		members = append(members, member)
+	}
+	return members, rows.Err()
 }
 
 // 只有确实有其他房间的真人请求在排队时让出，不为每项工作另设工具配额。

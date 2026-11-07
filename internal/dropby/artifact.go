@@ -85,20 +85,6 @@ func (t *Toolbox) saveArtifact(ctx context.Context, c Conversation, m Member, w 
 	if a.Format != "markdown" && a.Format != "html" {
 		return nil, fmt.Errorf("成果格式只支持 markdown 或 html")
 	}
-	if t.Review != nil {
-		target := "文本成果"
-		if a.Format == "html" {
-			target = "HTML 成果；保持完整 HTML、样式及脚本结构，只纠正无依据的事实与行动表述，不改写为 Markdown，也不添加代码围栏"
-		}
-		var err error
-		a.Content, err = t.Review(ctx, c, m, w, target, a.Content)
-		if err != nil {
-			return nil, err
-		}
-		if !validContent() {
-			return nil, fmt.Errorf("核对后的成果为空或超过大小限制")
-		}
-	}
 	newArtifact := a.ID == ""
 	if newArtifact {
 		a.ID = newID("artifact")

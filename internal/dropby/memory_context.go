@@ -3,6 +3,7 @@ package dropby
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -202,7 +203,7 @@ func (e *Engine) recallDecision(ctx context.Context, c Conversation, m Member, w
 	messages := []ChatMessage{{Role: "system", Content: system}, {Role: "user", Content: asJSON(input)}}
 	for {
 		compactToolHistory(messages)
-		r, err := completeModel(ctx, e.Model, &messages, definitions, false)
+		r, err := completeModel(ctx, e.Model, &messages, definitions, true)
 		if err != nil {
 			return memberDecisionError(err)
 		}
@@ -215,8 +216,11 @@ func (e *Engine) recallDecision(ctx context.Context, c Conversation, m Member, w
 				return memberDecisionError(fmt.Errorf("参与判断阶段不能执行 %s", call.Function.Name))
 			}
 			result, err := e.Tools.Execute(ctx, c, m, w, call)
-			if err != nil {
+			if errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || ctx.Err() != nil {
 				return err
+			}
+			if err != nil {
+				result = asJSON(map[string]string{"status": "failed", "error": err.Error()})
 			}
 			messages = append(messages, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: toolExcerpt(result, 6000)})
 		}
@@ -225,10 +229,9 @@ func (e *Engine) recallDecision(ctx context.Context, c Conversation, m Member, w
 
 // 记忆说明保留来源、更新和范围语义，不再叠加一套表达方式要求。
 const memoryContextPrompt = `
-self.profile 是稳定特质，current_state 是当前关注，conversation.guidance 是用户方向，work 是实际工作。memory 是相关个人经历线索，不是完整历史或全员共识；需要旧原话和成果时可用 search_memory/read_history/read_work 找回。
-结束前用 remember 保存新形成且会影响后续行动的共同经历、对人的理解和长期偏好，保留来源、相关人、场景和例外。自己的看法不等于事实，转述不等于亲历；临时时间地点不自动成为长期偏好。对稳定性格的改动以用户编辑为准。
-明确纠正已有理解时，结束本次判断前找到旧笔记，用原 id 和已读 revision 更新，最终 pass 也要完成纠正。已有同一理解就更新，不另建相反或重复笔记。跨场景可携带的非敏感个人经历用 scope=member，私密或本群限定内容留 conversation；当前持续关注用 state。
-若旧话题已无帮助，可返回 context_start_id=新话题起点消息ID；保留仍有效的约定与未解决事项，历史始终可检索。`
+self.profile 是你的特质，current_state 是当前关注，memory 是你自己的经历与看法，work 是正在推进的事。需要旧原话时可用历史与记忆工具找回。
+有值得留下的经历时可以 remember，不必每次聊天都整理笔记。更新已有理解用原 id 和 revision；当前交流中的纠正立即适用，不必等笔记保存完成。scope=member 可跨聊天携带，conversation 留在本群。
+若旧话题不再相关，可用 context_start_id 选择当前话题起点；旧记录仍可检索。`
 
 func observationLabel(c Conversation, w Work) string {
 	switch w.Kind {

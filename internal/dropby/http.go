@@ -208,7 +208,7 @@ func (a *API) createMember(w http.ResponseWriter, r *http.Request) {
 	}
 	// 创建身份不需要等待模型、回答问卷或消耗预算。未知偏好保持未知，
 	// 用户在聊天或自愿补充偏好时再逐步认识；默认提供产品现有的安全工具。
-	m := Member{ID: newID("member"), Name: in.Name, Direction: in.Direction, Color: in.Color, Avatar: in.Avatar, AvatarIcon: in.AvatarIcon, CreatedAt: now(), Questions: in.Questions, Answers: in.Answers, Tools: []string{"search", "read_page", "save_artifact"}, Profile: "性格和兴趣尚未设定，可在实际交流中逐步形成；不虚构过往经历。"}
+	m := Member{ID: newID("member"), Name: in.Name, Direction: in.Direction, Color: in.Color, Avatar: in.Avatar, AvatarIcon: in.AvatarIcon, CreatedAt: now(), Questions: in.Questions, Answers: in.Answers, Tools: []string{"search", "read_page", "save_artifact"}, Profile: "性格和兴趣尚未设定，可在交流中逐步形成。"}
 	if in.Direction != "" {
 		m.Profile = "用户希望的起点：" + in.Direction + "\n具体判断可随真实经历变化。"
 	}

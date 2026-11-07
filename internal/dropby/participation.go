@@ -18,8 +18,8 @@ func memberDecisionError(err error) error {
 	if errors.As(err, &accounting) {
 		return err
 	}
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-		errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || errors.Is(err, ErrContextCapacity) {
+	if err == nil || errors.Is(err, context.Canceled) ||
+		errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || errors.Is(err, errYield) {
 		return err
 	}
 	return &participationFailure{err}
@@ -161,6 +161,4 @@ func observedThrough(input map[string]any) int64 {
 	return seq
 }
 
-const statePrompt = `state 是你此刻仍在意的具体事情、感受或想继续弄清的目标，用一两句自然语言写给用户看，可体现性格；不必凑齐状态/目标字段，不是内心推理日志。
-只有新交流或真实行动改变了持续关注时才返回 state，并在 state_source_ids 引用本会话已有的消息或成功工具记录 ID；没有变化就省略这两个字段，已有关注不再有效可显式 state="" 清除。
-可以因他人说的话产生好奇、犹疑、欣赏或改变想法，但不能捏造身体感受、离线生活、已完成行动，也不能把一次临时表达固化为永久性格。`
+const statePrompt = `state 是此刻的关注、感受或目标，只有变化时才填写，并用 state_source_ids 指向相关消息或行动。省略表示沿用；空串表示不再关注。`

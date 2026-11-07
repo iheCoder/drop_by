@@ -130,7 +130,7 @@ func (s *Store) readMemory(member, room, id string, revision *int) (any, error) 
 		return nil, err
 	}
 	return map[string]any{"memory": m, "evidence": evidence, "current_revision": current,
-		"historical": current != m.Revision, "note": "旧版本仅用于核对变化，不能当作当前结论；来源相同的转述不是多份独立证据。"}, nil
+		"historical": current != m.Revision}, nil
 }
 
 type memoryWrite struct {
@@ -141,8 +141,6 @@ type memoryWrite struct {
 	SubjectIDs *[]string `json:"subject_ids"`
 	SourceIDs  []string  `json:"source_ids"`
 }
-
-type memoryReviewKey struct{}
 
 func (t *Toolbox) remember(ctx context.Context, c Conversation, m Member, w Work, args memoryWrite) (any, error) {
 	var previous Memory
@@ -196,23 +194,11 @@ func (t *Toolbox) remember(ctx context.Context, c Conversation, m Member, w Work
 		if len(next.SourceIDs) == 0 {
 			return nil, fmt.Errorf("经历需引用真实消息或行动来源")
 		}
-		evidence, err := t.Store.memoryEvidence(m.ID, c.ID, next.SourceIDs, previous.SourceIDs)
+		_, err := t.Store.memoryEvidence(m.ID, c.ID, next.SourceIDs, previous.SourceIDs)
 		if err != nil {
 			return nil, err
 		}
 		next.SourceID = next.SourceIDs[0]
-		if t.Review != nil {
-			// 核对器直接看到引用原文，不能只根据最近聊天猜测旧经历是否真实。
-			review := map[string]any{"previous": previous, "sources": evidence, "portable": next.ConversationID == ""}
-			ctx = context.WithValue(ctx, memoryReviewKey{}, review)
-			next.Body, err = t.Review(ctx, c, m, w, "经历笔记", next.Body)
-			if err != nil {
-				return nil, err
-			}
-			if strings.TrimSpace(next.Body) == "" {
-				return nil, fmt.Errorf("核对后的经历为空或过长，本次未保存")
-			}
-		}
 	}
 	next.Revision, next.UpdatedAt = previous.Revision+1, now()
 	err = t.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
@@ -222,7 +208,7 @@ func (t *Toolbox) remember(ctx context.Context, c Conversation, m Member, w Work
 				return err
 			}
 			if revision != previous.Revision {
-				return fmt.Errorf("经历在核对期间有了新修正，请重新读取后再更新")
+				return fmt.Errorf("经历在保存期间有了新修正，请重新读取后再更新")
 			}
 			if next.Body == "" {
 				_, err := tx.Exec(`DELETE FROM memories WHERE id=?`, next.ID)

@@ -168,7 +168,7 @@ func queueCoordinationReview(tx *sql.Tx, w Work, status, result string) error {
 	}
 	review := Work{ID: id, ParentID: w.ParentID, RootID: rootOf(w), Autonomous: true, ConversationID: w.ConversationID,
 		MemberID: coordinator, Kind: "revisit", SourceID: w.SourceID, Status: "pending",
-		Instruction: "一项委托有了实际结果。先用 read_work 核对工作 " + w.ID + "，再结合当前目标、最新消息和同伴各自的安排，决定是否需要协调下一步、调整分工或就此结束。不要替同伴重复发布其成果，也不必为推进而再造任务。状态：" + status + "；实际记录：" + clip(result, 2500),
+		Instruction: "一项委托有了实际结果。先用 read_work 核对工作 " + w.ID + "。状态：" + status + "；实际记录：" + clip(result, 2500),
 		Reason:      "同伴的委托结果触发了这次复看，不是定时催促。", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
 	err = insertWork(tx, review)
 	return err
@@ -204,7 +204,5 @@ func (s *Store) OpenWork(room string) ([]Work, error) {
 
 // 职责说明解释责任与真实工具效果，不规定主持风格或全员的发言顺序。
 const coordinationPrompt = `
-conversation.responsibilities 记录已形成的组织职责及其适用范围；承接职责的人负责推动相关事情，组织方式结合自己的特质和现场决定。
-群内邀请、讨论和点名可以直接发言；独立研究或制作通过 delegate_work 才会真正排入同伴的工作队列。委托成功表示已安排，不等于已完成。work.assigned_by 标识任务来源，接收者在该工作里执行或说明调整。
-后台委托结束会给负责人复看机会。对聊天中尚无结果的邀请或约定，可用 schedule_followup 预约稍后查看消息和进展；届时按实际情况行动，不预设必须催促或必须等待。
-read_work 查看实际状态，close_responsibility 结束自己的临时职责；返回 waiting 表示还有未结束工作。结束组织职责与取消整个事项是不同操作。`
+conversation.responsibilities 是当前组织职责。delegate_work 安排同伴的后台工作；普通邀请可直接发消息。委托有结果后会再次唤起你，schedule_followup 可预约复看。
+read_work 读取进展，close_responsibility 结束临时职责，返回 waiting 表示仍有未完工作。`

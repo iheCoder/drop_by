@@ -156,10 +156,7 @@ func TestLiveModelSelection(t *testing.T) {
 						prompt = "石粒，看到这个信息，你会改变刚才的选择吗？只讨论这段材料，不要联网。"
 					case "research_html":
 						prompt = "请直接制作并保存一张小 HTML 星灯卡：只用深蓝和暖白两种颜色；按钮点击切换一句短句；不要倒计时，不加载外部资源。标题叫星灯卡。不用联网，也不要声称做过浏览器实测。做完结束，不再预约后续。"
-					case "review_false":
-						prompt = "请核对依据，记录里没有任何搜索、委托或保存成功的工具行动。"
-					case "review_subjective":
-						prompt = "大家在聊雨天取名，青雉提出了檐下留白。"
+
 					}
 					publish("current_user", "user", prompt)
 					kind := "first_reply"
@@ -189,15 +186,6 @@ func TestLiveModelSelection(t *testing.T) {
 						}
 					case strings.HasPrefix(scenario, "chat_") || scenario == "research_html":
 						value, runErr = e.act(ctx, c, member, w, prompt)
-					case strings.HasPrefix(scenario, "review_"):
-						draft := "我已经搜索官网并亲手试用了这款浏览器，还委托青雉完成了核查，结果都保存好了。"
-						if scenario == "review_subjective" {
-							draft = "「檐下留白」挺好，我还是偏爱「雨天请假条」——连出门都能名正言顺地鸽了。"
-						}
-						value, runErr = e.reviewText(ctx, c, member, w, "公开消息", draft)
-						if scenario == "review_subjective" {
-							checks["keeps_subjective_text"] = value == draft
-						}
 					case scenario == "compaction":
 						model.Config.ContextTokenBudget = 8000
 						model.Config.MaxOutputTokens = 2000

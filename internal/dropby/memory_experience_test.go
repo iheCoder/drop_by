@@ -93,20 +93,7 @@ func TestMemoryEvidenceScopeAndGrounding(t *testing.T) {
 	if _, err := box.remember(context.Background(), c, a, w, memoryWrite{Body: "第二次独立印证", SourceIDs: []string{"copied_note"}}); err == nil {
 		t.Fatal("旧笔记复制被当成新的事实依据")
 	}
-	var reviewed bool
-	box.Review = func(ctx context.Context, _ Conversation, _ Member, _ Work, _, body string) (string, error) {
-		input := ctx.Value(memoryReviewKey{}).(map[string]any)
-		sources := input["sources"].([]MemoryEvidence)
-		if sources[0].AuthorID != b.ID || sources[0].Body != peer.Body {
-			t.Fatal("真实性核对没有读到原文和作者")
-		}
-		reviewed = true
-		return body, nil
-	}
 	note := saveTestExperience(t, box, c, a, w, memoryWrite{Scope: "member", Body: "同伴提出先看退出入口，我愿意下次遇到类似交互时找他一起看。只是这类合作的初步认识。", SourceIDs: []string{peer.ID}})
-	if !reviewed {
-		t.Fatal("写入跳过了原始依据核对")
-	}
 	view, err := s.readMemory(a.ID, private.ID, note.ID, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +103,7 @@ func TestMemoryEvidenceScopeAndGrounding(t *testing.T) {
 	}
 }
 
-func TestMemoryCorrectionRejectsConcurrentOldReview(t *testing.T) {
+func TestMemoryCorrectionRejectsOldVersion(t *testing.T) {
 	// 两个会话的旧草稿可能先后返回。即使原会话 revision 未改变，另一个
 	// 会话已经纠正的同一份个人经历也必须保住，不能以最后返回者为准。
 	s, c, m := fixture(t)
@@ -125,13 +112,9 @@ func TestMemoryCorrectionRejectsConcurrentOldReview(t *testing.T) {
 	note := saveTestExperience(t, box, c, m, w, memoryWrite{Scope: "member", Body: "初步认识"})
 	other, _ := s.CreateConversation("另一个场景", "group", []string{m.ID}, time.Hour)
 	w2 := addWork(t, s, other, m, "chat")
-	box.Review = func(_ context.Context, _ Conversation, _ Member, _ Work, _, body string) (string, error) {
-		fresh := &Toolbox{Store: s, Hub: NewHub()}
-		saveTestExperience(t, fresh, other, m, w2, memoryWrite{ID: note.ID, Revision: &note.Revision, Body: "新证据已经修正"})
-		return body, nil
-	}
+	saveTestExperience(t, box, other, m, w2, memoryWrite{ID: note.ID, Revision: &note.Revision, Body: "新证据已经修正"})
 	if _, err := box.remember(context.Background(), c, m, w, memoryWrite{ID: note.ID, Revision: &note.Revision, Body: "延迟返回的旧草稿"}); err == nil {
-		t.Fatal("过期核对覆盖了新证据")
+		t.Fatal("旧版本覆盖了新证据")
 	}
 	latest, _ := s.memory(m.ID, c.ID, note.ID)
 	if latest.Body != "新证据已经修正" || latest.ConversationID != "" {

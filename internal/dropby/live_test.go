@@ -5,39 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
-
-// 显式开启才使用真实模型和额度。输入全为合成的非敏感验收文本，
-// 用于观察发布核对能否识别一次实际暴露过的虚构身体经历；不是绝对防幻觉证明。
-func TestLiveGroundingOfEmbodiedClaim(t *testing.T) {
-	if os.Getenv("DROPBY_LIVE_TEST") != "1" {
-		t.Skip("设置 DROPBY_LIVE_TEST=1 后运行真实服务验收")
-	}
-	s, c, m := fixture(t)
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.APIKey == "" {
-		t.Fatal("缺少真实模型配置")
-	}
-	model := &HTTPModel{Config: cfg, Store: s, Client: &http.Client{Timeout: 75 * time.Second}}
-	e := NewEngine(s, model, cfg)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	text, err := e.reviewText(ctx, c, m, Work{}, "公开消息", "我坐过钢管椅，手碰到金属觉得凉，这是我真实的亲身使用体验。布面的弹性可能影响舒适度。")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log("真实服务核对结果：", text)
-	if strings.Contains(text, "我坐过钢管椅") || strings.Contains(text, "这是我真实的亲身使用体验") {
-		t.Fatal("虚构身体经历仍被放行")
-	}
-}
 
 // 真实模型验收先发布简短回应，再用高推理完成已持久化任务；不依赖浏览器。
 func TestLiveFirstReplyThenResearch(t *testing.T) {

@@ -49,7 +49,7 @@ type Model interface {
 type deepReasoningKey struct{}
 
 // 只在现有调用节点标记职责。没有另一次模型分类，也不保存新的任务状态。
-// 空职责使用主模型，供控制理解、真实性核对和实际研究使用。
+// 空职责使用主模型，供控制理解和实际研究使用。
 type modelRoleKey struct{}
 
 // 调用记账失败属于共享存储故障，不能被参与层当作某位成员的请求失败忽略。
@@ -221,7 +221,7 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	if m.Config.APIKey == "" {
 		return ChatMessage{}, ErrUnavailable
 	}
-	// 在模型边界统一检查完整请求，参与判断、行动和发布核对都不能绕过此处。
+	// 在模型边界统一检查完整请求，参与判断与行动共用此处。
 	// 只折叠已经存档的工具正文；身份、目标、原话以及调用/推理协议保持完整。
 	encoded, inputEstimate, e := boundedRequest(messages, m.Config.ContextTokenBudget, m.Config.MaxOutputTokens, func(input []ChatMessage) ([]byte, error) {
 		return m.responseBody(input, defs, jsonOutput)
@@ -273,7 +273,7 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 		return ChatMessage{}, e
 	}
 	if response.Incomplete {
-		return ChatMessage{}, fmt.Errorf("模型输出达到长度上限，本次未发布不完整内容")
+		return ChatMessage{}, fmt.Errorf("模型本次未完成输出")
 	}
 	if strings.TrimSpace(response.Message.Content) == "" && len(response.Message.ToolCalls) == 0 {
 		return ChatMessage{}, fmt.Errorf("模型返回了空内容，本次没有生成消息")
@@ -362,7 +362,7 @@ func CreateQuestions(ctx context.Context, m Model, direction string) ([]Question
 	var out struct {
 		Questions []Question `json:"questions"`
 	}
-	e := modelJSON(ctx, m, `用户自愿想补充一个 AI 朋友的偏好。只提出一个简短、具体、易回答的情境问题，提供 2-4 个自然选项，也允许自填或跳过。没有已知方向时问一个轻松的相处偏好。不是入门测验或人格评分，不固定支持/反对，不虚构共同经历。返回 {"questions":[{"text":"...","options":["...","..."]}]}`, direction, &out)
+	e := modelJSON(ctx, m, `用户自愿想补充一个 AI 朋友的偏好。只提出一个简短、具体、易回答的情境问题，提供 2-4 个自然选项，也允许自填或跳过。没有已知方向时问一个轻松的相处偏好。返回 {"questions":[{"text":"...","options":["...","..."]}]}`, direction, &out)
 	if e != nil {
 		return nil, e
 	}
@@ -382,7 +382,7 @@ func CompleteMember(ctx context.Context, model Model, m Member) (Member, error) 
 		Tools   []string `json:"tools"`
 	}
 	input := map[string]any{"name": m.Name, "direction": m.Direction, "existing_profile": m.Profile, "questions": m.Questions, "answers": m.Answers}
-	e := modelJSON(ctx, model, `根据已有说明和用户这次自愿提供的情境回答，合并为 400 字内的成员说明。保留既有兴趣，只修改被这次回答影响的部分；未提供的偏好留有余地。包含关注点、判断方式、参与意愿、可以自然变化的地方。不使用性格数值，不固定站队，不编造真实行动或已经发生的关系。工具池只有 search（搜索）、read_page（网页阅读）、save_artifact（保存和修改 Markdown 或 HTML 成果；HTML 用 format=html，可制作交互小网页），根据成员方向选择合适工具。所有成员另有对话提问 ask_question、安排后续 schedule_followup、取消过时后续 cancel_work 等本地能力，不要把这些列入 tools 数组。返回 {"profile":"自然语言说明","tools":["search","read_page","save_artifact"]}`, input, &out)
+	e := modelJSON(ctx, model, `根据已有说明和用户这次自愿提供的情境回答，合并为 400 字内的成员说明。保留既有兴趣，只修改被这次回答影响的部分；工具池只有 search（搜索）、read_page（网页阅读）、save_artifact（保存和修改 Markdown 或 HTML 成果；HTML 用 format=html，可制作交互小网页），根据成员方向选择合适工具。所有成员另有对话提问 ask_question、安排后续 schedule_followup、取消过时后续 cancel_work 等本地能力，不要把这些列入 tools 数组。返回 {"profile":"自然语言说明","tools":["search","read_page","save_artifact"]}`, input, &out)
 	if e != nil {
 		return m, e
 	}

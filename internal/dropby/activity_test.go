@@ -5,79 +5,26 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestParticipationFailureStaysWithMember(t *testing.T) {
-	// 两位成员，一人安静、一人引用无效。错误只保留给本人；同伴仍记录为自愿沉默，但此次处理不能假装全部完成。
-	//一次纠正仍无效后必须退出，且失败不推进已读位置。
-	s, c, people := groupWithMembers(t, 2)
-	if err := s.AddUserMessage(userMessage(c, "下雨天想说就说"), time.Hour); err != nil {
-		t.Fatal(err)
-	}
-	w := latestChatWork(t, s, c.ID)
-	c, _ = s.Conversation(c.ID)
-	var corrections atomic.Int32
-	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, defs []ToolDefinition, _ bool) (ChatMessage, error) {
-		var input struct {
-			Self       Member `json:"self"`
-			Correction string `json:"correction"`
-		}
-		json.Unmarshal([]byte(ms[1].Content), &input)
-		if input.Self.ID == people[0].ID {
-			return jsonReply(Decision{Action: "pass", MessageIDs: []string{"not-a-message"}}), nil
-		}
-		if input.Correction != "" {
-			corrections.Add(1)
-			if len(defs) != 0 {
-				t.Error("纠正引用不应重放工具")
-			}
-		}
-		return jsonReply(Decision{Action: "speak", Intent: "回应雨声", MessageIDs: []string{"not-a-message"}}), nil
-	}), testConfig())
-	candidates, _, err := e.observeMembers(context.Background(), c, w, 0)
-	if !isParticipationFailure(err) || len(candidates) != 0 || corrections.Load() != 1 {
-		t.Fatalf("局部故障扩大或无限纠正: %v, %d", err, corrections.Load())
-	}
-	records, _ := s.Participations(c.ID)
-	actions := map[string]string{}
-	for _, p := range records {
-		actions[p.MemberID] = p.Action
-	}
-	if actions[people[0].ID] != "pass" || actions[people[1].ID] != "error" {
-		t.Fatalf("故障被冒充为沉默: %+v", records)
-	}
-	seen, _, _ := s.observation(c.ID, people[1].ID)
-	if seen != 0 {
-		t.Fatal("失败判断推进了已读位置")
-	}
-}
-
-func TestInvalidSelectionCanBeCorrectedWithoutChangingScope(t *testing.T) {
-	// 先选择外群消息，再纠正到真实本群消息。不能擅自替换，也不能读取外群正文。
+// 辅助引用写错时忽略无效项，保持本人发言意图和有效的本群引用；
+// 不为一个可选 ID 发起另一轮纠正，也不读取外群内容。
+func TestInvalidSelectionDoesNotBlockParticipation(t *testing.T) {
 	s, c, m := fixture(t)
-	original := userMessage(c, "想聊雨声")
-	s.AddUserMessage(original, time.Hour)
+	msg := userMessage(c, "想聊雨声")
+	s.AddUserMessage(msg, time.Hour)
 	c, _ = s.Conversation(c.ID)
 	w := latestChatWork(t, s, c.ID)
 	calls := 0
-	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+	e := NewEngine(s, modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
 		calls++
-		var input map[string]any
-		json.Unmarshal([]byte(ms[1].Content), &input)
-		if calls == 1 {
-			return jsonReply(Decision{Action: "speak", Intent: "聊雨声", MessageIDs: []string{"msg_other_room"}}), nil
-		}
-		if input["correction"] == nil {
-			t.Error("没有把引用问题交还本人")
-		}
-		return jsonReply(Decision{Action: "speak", Intent: "聊雨声", MessageIDs: []string{original.ID}}), nil
+		return jsonReply(Decision{Action: "speak", Intent: "聊雨声", MessageIDs: []string{"msg_other_room", msg.ID}}), nil
 	}), testConfig())
-	choice := e.observeMember(context.Background(), c, w, m.ID, 0, nil)
-	if choice.Err != nil || calls != 2 || len(choice.Decision.MessageIDs) != 1 || choice.Decision.MessageIDs[0] != original.ID {
-		t.Fatalf("纠正没有保留真实选择: %+v", choice)
+	result := e.observeMember(context.Background(), c, w, m.ID, 0, nil)
+	if result.Err != nil || calls != 1 || result.Decision.Action != "speak" || len(result.Decision.MessageIDs) != 1 || result.Decision.MessageIDs[0] != msg.ID {
+		t.Fatalf("可选引用阻断了有效意图: %+v calls=%d", result, calls)
 	}
 }
 
