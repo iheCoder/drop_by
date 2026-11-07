@@ -75,7 +75,7 @@ func TestNativeCompactionPreservesCoreProtocolAndContinuesFromReturnedWindow(t *
 			if !strings.Contains(body, "saved_call") || !strings.Contains(body, "saved_artifact") || !strings.Contains(body, "已保存的完整作品") {
 				t.Error("压缩输入必须包含完整调用和已保存结果")
 			}
-			json.NewEncoder(w).Encode(map[string]any{"output": returned, "usage": map[string]int{"input_tokens": 9000, "output_tokens": 40}})
+			json.NewEncoder(w).Encode(map[string]any{"output": returned, "usage": map[string]any{"input_tokens": 9000, "output_tokens": 40, "input_tokens_details": map[string]int{"cached_tokens": 3000, "cache_write_tokens": 2000}}})
 		case "/responses":
 			generations++
 			if !strings.Contains(body, "身份与当前目标必须保留") || !strings.Contains(body, "opaque-compact-state") || strings.Contains(body, "已保存的完整作品") {
@@ -112,7 +112,8 @@ func TestNativeCompactionPreservesCoreProtocolAndContinuesFromReturnedWindow(t *
 		t.Fatalf("压缩应只发生一次: compact=%d generate=%d count=%d", compactCalls, generations, countCalls)
 	}
 	usage, _ := s.Usage()
-	if usage.Calls != 3 || usage.InputTokens != 10200 {
+	// 压缩为 $0.0137，两次生成各 $0.0014；缓存输入不能再按普通输入收费。
+	if usage.Calls != 3 || usage.InputTokens != 10200 || usage.CostMicros != 16500 {
 		t.Fatalf("压缩和生成都应结算，计数不当作生成: %+v", usage)
 	}
 }

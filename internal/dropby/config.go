@@ -20,7 +20,6 @@ type Config struct {
 	MaxTurns, MaxToolRounds, MaxOutputTokens, WeeklyCalls          int
 	WeeklyBudgetMicros                                             int64
 	AutonomousBudgetMicros                                         int64
-	InputPrice, OutputPrice                                        float64 // 美元 / 百万 token；用于请求前保守预留。
 	ToolCostMicros                                                 int64
 }
 
@@ -37,7 +36,12 @@ func LoadConfig() (Config, error) {
 		ContextTokenBudget: 100_000,
 		ExploreInterval:    30 * time.Minute, MaxTurns: 5, MaxToolRounds: 8, MaxOutputTokens: 8000, DeepMaxOutputTokens: 25000, Reasoning: env("DROPBY_REASONING", "low"), DeepReasoning: env("DROPBY_DEEP_REASONING", "high"),
 		WeeklyCalls: 4200, WeeklyBudgetMicros: 20_000_000, AutonomousBudgetMicros: 7_000_000,
-		InputPrice: 4, OutputPrice: 20, ToolCostMicros: 750,
+		ToolCostMicros: 750,
+	}
+	for _, model := range []string{c.Model, c.DecisionModel, c.ChatModel} {
+		if _, err := priceForModel(model); err != nil {
+			return c, err
+		}
 	}
 	// 日额度不能直接改名解释成周额度，否则原来的 3 美元会变成整周只有 3 美元。
 	// 允许部署环境暂留旧变量，但必须显式提供对应的新值，才能确定迁移意图。
@@ -63,15 +67,7 @@ func LoadConfig() (Config, error) {
 			*p = n
 		}
 	}
-	for key, p := range map[string]*float64{"DROPBY_INPUT_PRICE": &c.InputPrice, "DROPBY_OUTPUT_PRICE": &c.OutputPrice} {
-		if v := os.Getenv(key); v != "" {
-			n, e := strconv.ParseFloat(v, 64)
-			if e != nil || n <= 0 || math.IsNaN(n) || math.IsInf(n, 0) {
-				return c, fmt.Errorf("%s 必须为正数", key)
-			}
-			*p = n
-		}
-	}
+
 	if v := os.Getenv("DROPBY_WEEKLY_BUDGET_USD"); v != "" {
 		n, e := strconv.ParseFloat(v, 64)
 		if e != nil || n <= 0 || n > 1000 || math.IsNaN(n) {

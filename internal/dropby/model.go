@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -186,9 +185,9 @@ func (s *Store) weeklyUsageAt(at time.Time) (Usage, error) {
 
 // 模型边界只保留当前 Responses 的结果，不再转换成旧 choices 协议。
 type modelResult struct {
-	Message                   ChatMessage
-	InputTokens, OutputTokens int
-	Incomplete                bool
+	Message    ChatMessage
+	Usage      responseUsage
+	Incomplete bool
 }
 
 func (m *HTTPModel) Complete(ctx context.Context, messages []ChatMessage, defs []ToolDefinition, jsonOutput bool) (ChatMessage, error) {
@@ -222,6 +221,11 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	if m.Config.Model == "gpt-6.1-sol" && m.Config.Reasoning == "none" {
 		m.Config.Reasoning = "low"
 	}
+	// 角色模型已经选定，再查该型号费率；不允许悄悄退回统一旧价。
+	price, priceErr := priceForModel(m.Config.Model)
+	if priceErr != nil {
+		return ChatMessage{}, priceErr
+	}
 	if m.Config.APIKey == "" {
 		return ChatMessage{}, ErrUnavailable
 	}
@@ -249,7 +253,7 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	if len(encoded) > 8<<20 {
 		return ChatMessage{}, fmt.Errorf("本次行动的内部请求过大，已保存工具记录")
 	}
-	reserve := int64(math.Ceil(float64(inputEstimate)*m.Config.InputPrice + float64(m.Config.MaxOutputTokens)*m.Config.OutputPrice))
+	reserve := price.reserveMicros(inputEstimate, m.Config.MaxOutputTokens)
 	day, e := m.Store.ReserveContext(ctx, m.Config, reserve)
 	if e != nil {
 		return ChatMessage{}, &modelAccountingError{e}
@@ -259,9 +263,12 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	if e != nil {
 		return ChatMessage{}, e
 	}
-	if response.InputTokens+response.OutputTokens > 0 {
-		actual := int64(math.Ceil(float64(response.InputTokens)*m.Config.InputPrice + float64(response.OutputTokens)*m.Config.OutputPrice))
-		if e = m.Store.SettleContext(ctx, day, reserve, actual, response.InputTokens, response.OutputTokens); e != nil {
+	if response.Usage.InputTokens+response.Usage.OutputTokens > 0 {
+		actual, costErr := response.Usage.costMicros(price)
+		if costErr != nil {
+			return ChatMessage{}, costErr
+		}
+		if e = m.Store.SettleContext(ctx, day, reserve, actual, response.Usage.InputTokens, response.Usage.OutputTokens); e != nil {
 			return ChatMessage{}, &modelAccountingError{e}
 		}
 	}
@@ -271,7 +278,7 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	if strings.TrimSpace(response.Message.Content) == "" && len(response.Message.ToolCalls) == 0 {
 		return ChatMessage{}, fmt.Errorf("模型返回了空内容，本次没有生成消息")
 	}
-	response.Message.OutputTokens = response.OutputTokens
+	response.Message.OutputTokens = response.Usage.OutputTokens
 	return response.Message, nil
 }
 
@@ -419,17 +426,13 @@ func (m *HTTPModel) responses(ctx context.Context, raw []byte) (modelResult, err
 	var out struct {
 		Status string            `json:"status"`
 		Output []json.RawMessage `json:"output"`
-		Usage  struct {
-			Input  int `json:"input_tokens"`
-			Output int `json:"output_tokens"`
-		} `json:"usage"`
+		Usage  responseUsage     `json:"usage"`
 	}
 	if err = requestJSON(ctx, m.Client, m.Config.BaseURL+"/responses", m.Config.APIKey, raw, &out); err != nil {
 		return modelResult{}, err
 	}
 	result := modelResult{}
-	result.InputTokens = out.Usage.Input
-	result.OutputTokens = out.Usage.Output
+	result.Usage = out.Usage
 	msg := ChatMessage{Role: "assistant", ResponseItems: out.Output}
 	finalText, unphasedText := "", ""
 	hasFinal := false

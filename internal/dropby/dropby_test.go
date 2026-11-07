@@ -48,7 +48,7 @@ func (m *reviewModel) Complete(_ context.Context, messages []ChatMessage, _ []To
 }
 func jsonReply(v any) ChatMessage { return ChatMessage{Role: "assistant", Content: asJSON(v)} }
 func testConfig() Config {
-	return Config{Address: "127.0.0.1:8090", APIKey: "test-only", Model: "test", BaseURL: "http://localhost", SearchKey: "test-only", ExploreInterval: time.Hour, MaxTurns: 3, MaxToolRounds: 4, MaxOutputTokens: 400, WeeklyCalls: 100, WeeklyBudgetMicros: 1_000_000, InputPrice: 1, OutputPrice: 3, ToolCostMicros: 750}
+	return Config{Address: "127.0.0.1:8090", APIKey: "test-only", Model: "gpt-6.1-terra", BaseURL: "http://localhost", SearchKey: "test-only", ExploreInterval: time.Hour, MaxTurns: 3, MaxToolRounds: 4, MaxOutputTokens: 400, WeeklyCalls: 100, WeeklyBudgetMicros: 1_000_000, ToolCostMicros: 750}
 }
 func fixture(t *testing.T) (*Store, Conversation, Member) {
 	t.Helper()
@@ -430,7 +430,7 @@ func TestModelJSONErrorsAndUsageSettlement(t *testing.T) {
 				t.Fatalf("错误状态不符: %v", err)
 			}
 			u, _ := s.Usage()
-			if u.CostMicros != 25 || u.InputTokens != 10 || u.OutputTokens != 5 {
+			if u.CostMicros != 35 || u.InputTokens != 10 || u.OutputTokens != 5 {
 				t.Fatalf("成功调用应按 usage 结算: %+v", u)
 			}
 		})

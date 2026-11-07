@@ -24,7 +24,7 @@
 - **Go 标准库 HTTP、原生前端和 SSE**没有因使用传统组件而失效。此处没有引入旧版 OpenAI SDK、Assistants API 或已废弃 Completions API。前端 SSE 传送的是持久化内容变更通知，不是模型的逐 token 流。
 - **本地会话管理**仍保存在 SQLite。Responses 使用 `store=false` 并回传加密推理项目；这控制响应状态保存方式，不等于对供应商全部日志政策作出零保留承诺。依据：[推理上下文说明](https://developers.openai.com/api/docs/guides/reasoning)。
 
-Sol 当前费率与推理参数依据 [模型文档](https://developers.openai.com/api/docs/models/gpt-5.6-sol)。应用按配置费率保守估算，没有读取赠送余额、到期日、缓存折扣或正式账单；未来费率变化仍需更新配置。
+模型费用现按 Luna、Terra、Sol 各自的 Standard 费率及响应中的缓存明细估算，详见[模型费用估算](model-pricing.md)。应用没有读取赠送余额、到期日或正式账单；供应商报价变化时需要更新费率表。
 
 ## 检查记录与局限
 
