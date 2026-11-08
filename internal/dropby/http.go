@@ -140,7 +140,7 @@ func (a *API) state(w http.ResponseWriter, r *http.Request) {
 	active := []string{}
 	activities := []Activity{}
 	for id := range a.engine.running {
-		if !strings.HasPrefix(id, "member:") && !strings.HasPrefix(id, "reflection:") {
+		if !strings.HasPrefix(id, "member:") {
 			active = append(active, id)
 		}
 	}

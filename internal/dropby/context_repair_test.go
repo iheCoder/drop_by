@@ -28,7 +28,7 @@ func TestRefreshScenePreservesDeliveredMessages(t *testing.T) {
 	}
 	// 已 steering 的真人补充不能因为前面夹着 BOT 而重复交付。
 	batch := []Message{{ID: "bot"}, {ID: "human"}}
-	filtered := withoutSteered(batch, []ChatMessage{{Role: "user", Content: "真人追加的消息：" + asJSON(batch[1:])}})
+	filtered := withoutDelivered(batch, []ChatMessage{{Role: "user", Content: "真人追加的消息：" + asJSON(batch[1:])}})
 	if len(filtered) != 1 || filtered[0].ID != "bot" {
 		t.Fatal(filtered)
 	}

@@ -30,7 +30,7 @@ func TestDelegationToolCompletesAndReopensCoordinatorJudgment(t *testing.T) {
 		var input struct {
 			Self Member `json:"self"`
 		}
-		if err := json.Unmarshal([]byte(messages[1].Content), &input); err != nil {
+		if err := json.Unmarshal([]byte(latestSceneContent(t, messages)), &input); err != nil {
 			t.Fatal(err)
 		}
 
@@ -42,7 +42,7 @@ func TestDelegationToolCompletesAndReopensCoordinatorJudgment(t *testing.T) {
 			return jsonReply(Outcome{Outcome: "出处暂不可用，现在先停下，不催同伴重做"}), nil
 		}
 
-		if input.Self.ID != members[1].ID || input.Self.Profile != members[1].Profile {
+		if input.Self.ID != members[1].ID || !strings.Contains(messages[0].Content, members[1].Profile) {
 			t.Fatalf("specialist lost their own character: %+v", input.Self)
 		}
 		return jsonReply(Outcome{Outcome: "核对所需的原文目前没有提供，不能假装查实；先向协调者说明阻碍。"}), nil

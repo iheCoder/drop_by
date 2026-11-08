@@ -38,7 +38,7 @@ func TestRunningCoordinationReviewMovesToNewCoordinator(t *testing.T) {
 		var input struct {
 			Self Member `json:"self"`
 		}
-		json.Unmarshal([]byte(messages[1].Content), &input)
+		json.Unmarshal([]byte(latestSceneContent(t, messages)), &input)
 		if input.Self.ID == members[0].ID {
 			oldCalls.Add(1)
 			close(started)
@@ -95,7 +95,7 @@ func TestCoordinatorChangeDuringControlKeepsUnprocessedPreference(t *testing.T) 
 		var input struct {
 			Self Member `json:"self"`
 		}
-		json.Unmarshal([]byte(messages[1].Content), &input)
+		json.Unmarshal([]byte(latestSceneContent(t, messages)), &input)
 		if input.Self.ID == members[0].ID && calls.Load() < 2 {
 			if calls.Add(1) == 1 {
 				close(started)
@@ -110,7 +110,7 @@ func TestCoordinatorChangeDuringControlKeepsUnprocessedPreference(t *testing.T) 
 			return jsonReply(Outcome{}), nil
 		}
 
-		return jsonReply(Outcome{Message: "记住了，我会" + input.Self.Profile + "。这场雨像给城市按了慢放。"}), nil
+		return jsonReply(Outcome{Message: strings.SplitN(messages[0].Content, "\n\n", 2)[0] + "。这场雨像给城市按了慢放。"}), nil
 	}), cfg)
 	e.dispatch(context.Background())
 	select {

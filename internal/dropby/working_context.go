@@ -25,7 +25,7 @@ func (s *Store) loadWorkingContext(room, member string) (workingContext, error) 
 		return result, err
 	}
 	err = json.Unmarshal([]byte(raw), &result.Messages)
-	result.Messages = completedHistory(result.Messages)
+	result.Messages = completedHistory(restoreSceneOrder(result.Messages))
 	return result, err
 }
 
@@ -70,15 +70,6 @@ func (s *Store) organizeContext(c Conversation, m Member, raw string) (organized
 	return result, nil
 }
 
-const workingContextPrompt = `
-你可以在不同聊天中回忆、引用和分享自己知道的内容，是否分享由你结合自身特质、关系、语境和用户明确要求决定；当前场景不是遗忘其他经历或禁止分享的边界。
-你在持续参与这段交流。读过新消息后，根据自己的关注决定回应什么、继续做什么，或暂时不说话。
-工作上下文会延续到下次行动。话题转变、问题告一段落、资料已经读懂，或旧内容妨碍当前思考时，可以调用 organize_context 整理；无需每轮整理，也不必因为一句插话就放下原话题。可以先回应，再整理。
-整理时留下接下来有帮助的便笺和必要原文引用：保持说话者、不同意见、更正和未完打算各自的含义，不把分歧合并成共识，也不把一次表达写成永久特质。原消息、工具结果和成果仍可查回。
-已经读到的内容足以回应时可以先回应；后来到达的普通消息接着处理，不必推翻已经形成的表达。最新现场中的用户控制与人物资料优先于旧窗口。需要经历、资料或工作进展时，可主动使用记忆、历史、工具结果、成果和工作读取工具。
-本轮发言、安静或结束只是本次行动的决定；有新输入时结合新内容自行判断。要延续的理解或打算留在工作窗口与整理便笺中，outcome 只记本次运行结果。
-`
-
 // 每次只携带一份最新现场。旧现场中的实际交付原话留下，状态、索引和
 // 历史自动召回不再注入；不触碰普通聊天、模型便笺及不透明协议项目。
 func refreshScene(history []ChatMessage) []ChatMessage {
@@ -98,25 +89,13 @@ func refreshScene(history []ChatMessage) []ChatMessage {
 	return result
 }
 
-// steering 可能先读到排在 BOT 消息后面的真人补充。连续游标不越过 BOT，
-// 但下一次普通交付不应再把已应用的同一条真人消息作为新输入。
-func withoutSteered(messages []Message, history []ChatMessage) []Message {
-	applied := map[string]bool{}
-	for _, item := range history {
-		const prefix = "真人追加的消息："
-		if item.Role != "user" || !strings.HasPrefix(item.Content, prefix) {
-			continue
-		}
-		var batch []Message
-		if json.Unmarshal([]byte(strings.TrimPrefix(item.Content, prefix)), &batch) == nil {
-			for _, m := range batch {
-				applied[m.ID] = true
-			}
-		}
-	}
+// 按消息身份核对已交付内容，既包括 steering，也包括已确认的本人发送。
+// 相似文字、不同成员的相同意见仍是不同消息，不做语义去重。
+func withoutDelivered(messages []Message, history []ChatMessage) []Message {
+	known := contextMessages(history)
 	result := make([]Message, 0, len(messages))
 	for _, m := range messages {
-		if !applied[m.ID] {
+		if body, ok := known[m.ID]; !ok || body != m.Body {
 			result = append(result, m)
 		}
 	}
@@ -127,30 +106,20 @@ func withoutSteered(messages []Message, history []ChatMessage) []Message {
 type preparedContextKey struct{}
 type savePreparedContext func([]ChatMessage) error
 
-// 当前现场固定放在系统指令后，历史保持自身顺序；不会打断历史工具配对。
+// 新现场追加在已完成的工具批次之后，原话与回应保持实际交错顺序。
+// 待消费的 assistant 响应由恢复路径先处理，不能在未配对的调用中插入现场。
 func withScene(history []ChatMessage, scene ChatMessage) []ChatMessage {
-	history = refreshScene(history)
-	at := 0
-	for at < len(history) && (history[at].Role == "system" || history[at].Role == "developer") {
-		at++
-	}
-	result := append([]ChatMessage{}, history[:at]...)
-	result = append(result, scene)
-	result = append(result, history[at:]...)
-	if len(result) > 0 && result[len(result)-1].Role == "assistant" {
-		result = append(result, ChatMessage{Role: "user", Content: "本次行动的最新现场已更新，请继续自行决定如何参与。"})
-	}
-	return result
+	return append(refreshScene(history), scene)
 }
 
 // 行动的原始来由属于一次性交付的经历，不是每次更新现场都要重申的指令。
 // 已在本批新消息里的触发原话不重复附带；旧任务仍可首次交付其真实来由。
-func (e *Engine) actionInput(c Conversation, w Work, delivered []Message) (ChatMessage, error) {
+func (e *Engine) actionInput(c Conversation, w Work, delivered []Message, history []ChatMessage, seenBefore int64) (ChatMessage, error) {
 	trigger := roleWork(w)
 	input := map[string]any{}
-	known := map[string]bool{}
+	known := contextMessages(history)
 	for _, message := range delivered {
-		known[message.ID] = true
+		known[message.ID] = message.Body
 		if trigger.Instruction == message.Body {
 			trigger.Instruction = ""
 		}
@@ -162,13 +131,16 @@ func (e *Engine) actionInput(c Conversation, w Work, delivered []Message) (ChatM
 			return ChatMessage{}, err
 		}
 		if err == nil {
-			if !known[source.ID] {
+			// 跟聊沿用旧触发 ID 不代表重新收到原话。成员已整理掉的旧来由
+			// 也不再强行带回；新到期的研究/预约仍可交付一次其任务来源。
+			alreadyFollowed := w.Kind == "followup" && source.Seq <= seenBefore
+			if body, ok := known[source.ID]; !alreadyFollowed && (!ok || body != source.Body) {
 				input["trigger_message"] = source
 			}
 			if trigger.Instruction == source.Body {
 				trigger.Instruction = ""
 			}
-			if source.ReplyTo != "" && !known[source.ReplyTo] {
+			if _, ok := known[source.ReplyTo]; source.ReplyTo != "" && !ok && !alreadyFollowed {
 				var quoted Message
 				err := e.Store.db.QueryRow(`SELECT conversation_id,seq,id,author_id,body,reply_to,created_at FROM messages WHERE id=? AND conversation_id=?`, source.ReplyTo, c.ID).Scan(&quoted.ConversationID, &quoted.Seq, &quoted.ID, &quoted.AuthorID, &quoted.Body, &quoted.ReplyTo, &quoted.CreatedAt)
 				if err != nil && err != sql.ErrNoRows {
@@ -185,13 +157,205 @@ func (e *Engine) actionInput(c Conversation, w Work, delivered []Message) (ChatM
 }
 
 // 已完成的 outcome 属于运行记录；不把“本轮安静”等决定续接为下一轮状态。
-// 仅用于已完成窗口，绝不用于待消费的断点；原话、工具链和便笺仍按原样保留。
+// 仅用于已完成窗口，绝不用于待消费的断点。旧行动来由也不再充当新指令；
+// 若它单独携带了原话，则把原话留下。真实任务记录仍可通过 read_work 回查。
 func completedHistory(history []ChatMessage) []ChatMessage {
 	result := make([]ChatMessage, 0, len(history))
+	known := contextMessages(history)
 	for _, item := range history {
 		var outcome map[string]json.RawMessage
 		if item.Role == "assistant" && len(item.ToolCalls) == 0 && json.Unmarshal([]byte(item.Content), &outcome) == nil && outcome["outcome"] != nil {
 			continue
+		}
+		if item.Role == "user" && len(item.ResponseItems) == 0 && strings.HasPrefix(item.Content, "本次行动的来由：") {
+			var cause struct {
+				Trigger Message `json:"trigger_message"`
+				Quoted  Message `json:"quoted_message"`
+			}
+			if json.Unmarshal([]byte(strings.TrimPrefix(item.Content, "本次行动的来由：")), &cause) == nil {
+				var originals []Message
+				for _, source := range []Message{cause.Quoted, cause.Trigger} {
+					if body, ok := known[source.ID]; source.ID != "" && (!ok || body != source.Body) {
+						originals = append(originals, source)
+						known[source.ID] = source.Body
+					}
+				}
+				if len(originals) > 0 {
+					result = append(result, ChatMessage{Role: "user", Content: "已交付的聊天原文：" + asJSON(originals)})
+				}
+				continue
+			}
+		}
+		result = append(result, item)
+	}
+	return distinctMessageSources(result)
+}
+
+// 只解析程序交付的原话容器。普通文本、主动读取的工具材料和不透明压缩项目
+// 不参与自动去重，避免把成员有意引用或比较的内容误当成重复通知。
+func messageBlock(item ChatMessage) (string, []Message, bool) {
+	if item.Role != "user" || len(item.ResponseItems) > 0 {
+		return "", nil, false
+	}
+	for _, prefix := range []string{"已交付的聊天原文：", "接续收到的聊天原文（author_id 标明说话者）：", "真人追加的消息："} {
+		if strings.HasPrefix(item.Content, prefix) {
+			var messages []Message
+			err := json.Unmarshal([]byte(strings.TrimPrefix(item.Content, prefix)), &messages)
+			return prefix, messages, err == nil
+		}
+	}
+	var scene map[string]json.RawMessage
+	if json.Unmarshal([]byte(item.Content), &scene) == nil && scene["self"] != nil && scene["trigger"] != nil && scene["time"] != nil {
+		var messages []Message
+		if json.Unmarshal(scene["latest_messages"], &messages) == nil {
+			return "", messages, true
+		}
+	}
+	return "", nil, false
+}
+
+// 发送参数只有与成功回执的消息 ID 对上才算已经交付。失败、未执行的调用
+// 不能吞掉真正到达的消息；不依靠文字相似或“这是自己说的”来猜测。
+func sentContextMessages(history []ChatMessage) map[string]string {
+	calls, sent := map[string]string{}, map[string]string{}
+	for _, item := range history {
+		for _, call := range item.ToolCalls {
+			var args struct {
+				Message string `json:"message"`
+			}
+			if call.Function.Name == "send_message" && json.Unmarshal([]byte(call.Function.Arguments), &args) == nil && args.Message != "" {
+				calls[call.ID] = args.Message
+			}
+		}
+		if item.Role != "tool" {
+			continue
+		}
+		var receipt struct {
+			Status string `json:"status"`
+			Result struct {
+				ID      string  `json:"message_id"`
+				Message *string `json:"message"`
+			} `json:"result"`
+		}
+		body, ok := calls[item.ToolCallID]
+		if ok && json.Unmarshal([]byte(item.Content), &receipt) == nil && receipt.Status == "succeeded" && receipt.Result.ID != "" && (receipt.Result.Message == nil || *receipt.Result.Message == body) {
+			sent[receipt.Result.ID] = body
+		}
+	}
+	return sent
+}
+
+func contextMessages(history []ChatMessage) map[string]string {
+	known := sentContextMessages(history)
+	for _, item := range history {
+		_, batch, ok := messageBlock(item)
+		if ok {
+			for _, message := range batch {
+				known[message.ID] = message.Body
+			}
+		}
+	}
+	return known
+}
+
+// 只减少相同正文的载体：调用参数保留原文，成功回执保留消息 ID、目的地和
+// 状态。工具原始结果仍完整存于 tool_runs；原生调用项目及其配对保持原样。
+func distinctMessageSources(history []ChatMessage) []ChatMessage {
+	sent := sentContextMessages(history)
+	known := make(map[string]string, len(sent))
+	for id, body := range sent {
+		known[id] = body
+	}
+	result := make([]ChatMessage, 0, len(history))
+	for _, item := range history {
+		if item.Role == "tool" {
+			var receipt, value map[string]json.RawMessage
+			var id, body string
+			if json.Unmarshal([]byte(item.Content), &receipt) == nil && json.Unmarshal(receipt["result"], &value) == nil {
+				_ = json.Unmarshal(value["message_id"], &id)
+				if expected, ok := sent[id]; json.Unmarshal(value["message"], &body) == nil && ok && expected == body {
+					delete(value, "message")
+					receipt["result"] = json.RawMessage(asJSON(value))
+					item.Content = asJSON(receipt)
+				}
+			}
+		}
+		if prefix, batch, ok := messageBlock(item); ok {
+			kept := []Message{}
+			ids := []string{}
+			for _, message := range batch {
+				if body, exists := known[message.ID]; !exists || body != message.Body {
+					kept = append(kept, message)
+					ids = append(ids, message.ID)
+					known[message.ID] = message.Body
+				}
+			}
+			if prefix == "" {
+				var scene map[string]json.RawMessage
+				_ = json.Unmarshal([]byte(item.Content), &scene)
+				scene["latest_messages"], scene["new_message_ids"] = json.RawMessage(asJSON(kept)), json.RawMessage(asJSON(ids))
+				item.Content = asJSON(scene)
+			} else if len(kept) > 0 {
+				item.Content = prefix + asJSON(kept)
+			} else {
+				continue
+			}
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+// 旧版把每批现场倒插到系统提示之后。完整保留“倒序原话块 + 对应行动来由”
+// 时可以确定还原位置：最早一批放回最早行动之前，工具链及便笺不动。
+// 已经压缩或缺少对应来由的窗口不猜测历史，也不为了升级清空成员的理解。
+func restoreSceneOrder(history []ChatMessage) []ChatMessage {
+	flat := refreshScene(history)
+	start := 0
+	for start < len(flat) && (flat[start].Role == "system" || flat[start].Role == "developer") {
+		start++
+	}
+	end := start
+	previous := int64(0)
+	for end < len(flat) {
+		prefix, batch, ok := messageBlock(flat[end])
+		if !ok || prefix != "已交付的聊天原文：" || len(batch) == 0 {
+			break
+		}
+		if batch[0].Seq <= 0 || (end > start && batch[len(batch)-1].Seq >= previous) {
+			return history
+		}
+		previous = batch[0].Seq
+		end++
+	}
+	if end-start < 2 {
+		return history
+	}
+	causes := 0
+	for _, item := range flat[end:] {
+		if item.Role == "user" && len(item.ResponseItems) == 0 && strings.HasPrefix(item.Content, "本次行动的来由：") {
+			causes++
+		}
+	}
+	// 更早版本的首轮只有原话与工具链，尚未引入独立“行动来由”。这种形状
+	// 多出最早的一批原话，先放回首个 assistant 之前，再配对后续行动。
+	initial := 0
+	if end < len(flat) && flat[end].Role == "assistant" {
+		initial = 1
+	}
+	if causes+initial != end-start {
+		return history
+	}
+	result := append([]ChatMessage{}, flat[:start]...)
+	next := end - 1
+	if initial == 1 {
+		result = append(result, flat[next])
+		next--
+	}
+	for _, item := range flat[end:] {
+		if item.Role == "user" && len(item.ResponseItems) == 0 && strings.HasPrefix(item.Content, "本次行动的来由：") {
+			result = append(result, flat[next])
+			next--
 		}
 		result = append(result, item)
 	}

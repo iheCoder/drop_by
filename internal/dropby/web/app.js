@@ -346,7 +346,7 @@ function editProfile(id) {
 // 历史按需读取。恢复先放回同一个编辑器，用户仍可修改，保存仍基于当前版本。
 async function profileHistory(id) {
   const changes = await api(`/api/members/${id}/profile-history`);
-  const origins = {created:'初次相识',edit:'你编辑了特质',instruction:'聊天中调整',answer:'情景问答',reflection:'经历后的新认识',previous:'原有特质'};
+  const origins = {created:'初次相识',edit:'你编辑了特质',instruction:'聊天中调整',answer:'情景问答',reflection:'旧版自动更新',previous:'原有特质'};
   showPanel('特质的变化', '', changes.length ? changes.map(change => `<details class="profile-change"><summary>${escapeHTML(origins[change.origin] || '特质更新')} · ${escapeHTML(dateLabel(change.created_at))}</summary><p>${escapeHTML(change.change_note)}</p><div class="profile-body">${escapeHTML(change.profile)}</div><button class="secondary" data-action="restore-profile" data-id="${id}" data-revision="${change.revision}">用这一版继续编辑</button></details>`).join('') : '<p class="empty-note">还没有特质变化。</p>', `profile-history:${id}`);
 }
 async function restoreProfile(id, revision) {
@@ -380,7 +380,7 @@ function focusBlock(id) {
 }
 function fullProfile(id) {
   const m = member(id); if (!m) return;
-  showPanel('朋友资料', '', `<div class="profile-head">${avatar(m)}<h3>${escapeHTML(m.name)}</h3><p>AI 朋友 · ${escapeHTML(dateLabel(m.created_at))} 相识</p></div><div class="profile-actions"><button class="primary" data-action="direct" data-id="${m.id}">${icon('message-circle')}单独聊聊</button><button class="secondary" data-action="edit-profile" data-id="${m.id}">${icon('pencil')}编辑</button></div>${focusBlock(id)}${capabilities(m)}<h3 class="section-label">自我介绍与特质</h3><div class="profile-body">${escapeHTML(m.profile)}</div><p class="profile-caption">这是 TA 当前的样子。你可以直接编辑，也可以通过情景问答一起调整；新的经历也可能带来变化。</p><div class="panel-nav"><button data-action="preference" data-id="${m.id}">${icon('circle-help')}用一个情景调整特质${icon('chevron-right')}</button><button data-action="profile-history" data-id="${m.id}">${icon('chevron-right')}看看特质的变化</button></div>`, `profile:${id}`);
+  showPanel('朋友资料', '', `<div class="profile-head">${avatar(m)}<h3>${escapeHTML(m.name)}</h3><p>AI 朋友 · ${escapeHTML(dateLabel(m.created_at))} 相识</p></div><div class="profile-actions"><button class="primary" data-action="direct" data-id="${m.id}">${icon('message-circle')}单独聊聊</button><button class="secondary" data-action="edit-profile" data-id="${m.id}">${icon('pencil')}编辑</button></div>${focusBlock(id)}${capabilities(m)}<h3 class="section-label">自我介绍与特质</h3><div class="profile-body">${escapeHTML(m.profile)}</div><p class="profile-caption">这是 TA 当前的样子。你可以直接编辑、通过情景问答调整，或在聊天中明确要求修改特质。</p><div class="panel-nav"><button data-action="preference" data-id="${m.id}">${icon('circle-help')}用一个情景调整特质${icon('chevron-right')}</button><button data-action="profile-history" data-id="${m.id}">${icon('chevron-right')}看看特质的变化</button></div>`, `profile:${id}`);
   $('panel-content').dataset.profileSignature = JSON.stringify([m, roomData?.member_states?.find(s => s.member_id === id),state.personal_focus?.[id]]);
 }
 function roomDetails(scroll = true) {

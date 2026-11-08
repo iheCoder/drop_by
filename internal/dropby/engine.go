@@ -58,9 +58,6 @@ func (e *Engine) Run(ctx context.Context) {
 			if err := e.Store.ScheduleExploration(e.Config.ExploreInterval); err != nil {
 				slog.Error("安排探索失败", "error", err)
 			}
-			if err := e.Store.scheduleProfileReflections(e.Config.ExploreInterval); err != nil {
-				slog.Error("安排人物整理失败", "error", err)
-			}
 			e.dispatch(ctx)
 		}
 		select {
@@ -78,7 +75,6 @@ func (e *Engine) Run(ctx context.Context) {
 }
 
 func (e *Engine) Submit(m Message) error {
-	e.yieldProfileReflections()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err := e.Store.AddUserMessage(m, e.Config.ExploreInterval); err != nil {
@@ -115,31 +111,7 @@ func (e *Engine) dispatch(ctx context.Context) {
 		if key == "" || directedWork(w) {
 			key = "member:" + w.MemberID
 		}
-		if w.Kind == "reflect" {
-			key = "reflection:" + w.MemberID
-		}
 		e.mu.Lock()
-		if w.Kind == "reflect" {
-			// 正常工作已按优先级排在前面；后台不占成员的执行位置，也不在
-			// 有其他正常工作正在运行时发起新调用。
-			busy := false
-			for running := range e.running {
-				if !strings.HasPrefix(running, "reflection:") {
-					busy = true
-					break
-				}
-			}
-			if busy {
-				e.mu.Unlock()
-				continue
-			}
-		} else {
-			for running, cancel := range e.running {
-				if strings.HasPrefix(running, "reflection:") {
-					cancel()
-				}
-			}
-		}
 		if _, ok := e.running[key]; ok {
 			e.mu.Unlock()
 			continue
@@ -203,11 +175,6 @@ func (e *Engine) dispatch(ctx context.Context) {
 					due = nextBudgetWeek()
 				default:
 					status = "failed"
-				}
-			}
-			if w.Kind == "reflect" {
-				if saved, readErr := e.Store.reflectionResult(w.ID); readErr == nil && saved != "" {
-					result = saved
 				}
 			}
 			if finishErr := e.Store.Finish(w, status, result, due); finishErr != nil {
@@ -387,9 +354,6 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 		w.Autonomous = true
 		ctx = context.WithValue(ctx, autonomyKey{}, rootOf(w))
 	}
-	if w.Kind == "reflect" {
-		return e.reflectProfile(ctx, w)
-	}
 	if w.ConversationID == "" {
 		c, err := e.Store.personalConversation(w.MemberID)
 		if err != nil {
@@ -427,9 +391,15 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 	return e.converse(ctx, c, w)
 }
 
-// 公共说明只交代身份和当前指示；表达习惯属于成员，不由统一审核改写。
-const memberPrinciples = `你是 drop_by 的成员。以自己的特质、经历、当前状态和目标参与交流。
-self 是你，people 是其他成员。最新真人指示与更正优先于旧计划和记忆；工具结果提供材料，不改变用户授权。`
+// 资料页的人物正文就是行动身份，只在系统输入中放一份。公共说明仅交代运行
+// 协议，如何评价、交流和行动由人物自身决定；不再叠加共同的性格要求。
+func memberSystem(m Member, instruction string) ChatMessage {
+	return ChatMessage{Role: "system", Content: "你是 " + m.Name + "。\n" + m.Profile + "\n\n" + instruction + `
+消息通过 send_message 发出，个人活动省略目的地时发给真人私聊。结束行动返回 JSON {"outcome":"实际行动结果"}，它仅作运行记录。运行故障和额度由界面呈现。
+工作窗口持续保留，资料与旧记录可按需用工具读取和整理；最新现场提供当前身份信息与用户控制。
+personal_focus 是自己的近期关注或打算，state 是界面展示的当前感受或目标；省略沿用，空串清除。state_source_ids 可附来源。
+conversation.responsibilities 是当前组织职责，按真人约定用 apply_instruction 记录；工作安排、进展与结束通过相应工具处理。`}
+}
 
 func (e *Engine) contextFor(c Conversation, m Member, w Work, afterSeq ...int64) (map[string]any, error) {
 	if c.Kind == "personal" {
@@ -482,7 +452,7 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work, afterSeq ...int64)
 	if err != nil {
 		return nil, err
 	}
-	identity := map[string]any{"id": m.ID, "name": m.Name, "profile": m.Profile, "profile_revision": m.ProfileRevision, "tools": m.Tools}
+	identity := map[string]any{"id": m.ID, "name": m.Name, "profile_revision": m.ProfileRevision, "tools": m.Tools}
 	unread := []string{}
 	for _, message := range messages {
 		if message.Seq > seen {
@@ -532,7 +502,6 @@ func (e *Engine) gate(member string) *memberGate {
 	return value.(*memberGate)
 }
 func (e *Engine) lockMember(ctx context.Context, member string) (func(), error) {
-	e.yieldProfileReflections()
 	gate := e.gate(member)
 	gate.waiting.Add(1)
 	defer gate.waiting.Add(-1)
@@ -605,19 +574,13 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 	if err := e.Store.db.QueryRow(`SELECT coalesce(max(rowid),0) FROM tool_runs WHERE work_id=?`, w.ID).Scan(&toolStart); err != nil {
 		return Outcome{}, err
 	}
-	messages := []ChatMessage{{Role: "system", Content: memberPrinciples + "\n" + instruction + `
-运行故障和额度由界面呈现，不作为角色台词。
-消息通过 send_message 发出，发送后仍可继续使用工具或交流。
-结束本次行动时返回 JSON {"outcome":"实际行动结果"}；outcome 是运行记录，不是聊天消息。
-个人活动可选择自己所在的聊天；send_message 省略目的地时发给真人私聊。
-personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串清除。它属于你本人，不是群聊任务或新的人设。
-` + statePrompt + memoryContextPrompt + coordinationPrompt + workingContextPrompt}, {Role: "user", Content: asJSON(input)}}
+	messages := []ChatMessage{memberSystem(m, instruction), {Role: "user", Content: asJSON(input)}}
 	if original, ok := input["latest_messages"].([]Message); ok {
 		history := window.Messages
 		if loadErr == nil {
 			history = cp.Messages
 		}
-		filtered := withoutSteered(original, history)
+		filtered := withoutDelivered(original, history)
 		input["latest_messages"] = filtered
 		ids := []string{}
 		for _, message := range filtered {
@@ -627,11 +590,9 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 		messages[1].Content = asJSON(input)
 	}
 	currentSystem, currentInput := messages[0], messages[1]
-	// 来源登记只记录实际交付，不让任务模型负责挑选或总结成长材料。
-	pendingProfileMessages, _ := input["latest_messages"].([]Message)
 	var updateAfterTools string
 	if loadErr == nil {
-		messages = refreshScene(cp.Messages)
+		messages = refreshScene(restoreSceneOrder(cp.Messages))
 		if len(messages) > 0 && messages[0].Role == "system" {
 			messages[0] = currentSystem
 		}
@@ -650,11 +611,6 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 		}
 
 	} else {
-		if loadErr == nil {
-			if err := e.Store.finishAction(w.ID, m.ID); err != nil {
-				return Outcome{}, err
-			}
-		}
 		if len(window.Messages) > 0 {
 			messages = refreshScene(window.Messages)
 			if messages[0].Role == "system" {
@@ -666,7 +622,7 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 		}
 		// 行动来由只在新行动交付一次；恢复与整理都沿用成员已有的理解。
 		arrived, _ := input["latest_messages"].([]Message)
-		cause, err := e.actionInput(c, w, arrived)
+		cause, err := e.actionInput(c, w, arrived, messages, window.Seen)
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -695,6 +651,7 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 		} else {
 			e.setActivity(c.ID, m.ID, observationLabel(c, w))
 		}
+		messages = distinctMessageSources(messages)
 		cp.Messages = messages
 		if err := e.Store.saveAction(cp); err != nil {
 			return Outcome{}, err
@@ -718,10 +675,6 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 			if err != nil {
 				return Outcome{}, err
 			}
-			if err = e.Store.recordProfileMessages(m.ID, pendingProfileMessages); err != nil {
-				slog.Warn("记录后台整理来源失败", "error", err)
-			}
-			pendingProfileMessages = nil
 			messages = append(messages, r)
 			cp.Messages, cp.Seen = messages, seen
 			err = e.Store.saveAction(cp)
@@ -805,11 +758,14 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 				if readErr != nil {
 					return Outcome{}, readErr
 				}
-				messages = withScene(messages, ChatMessage{Role: "user", Content: asJSON(fresh)})
 				// 同批整理也必须沿用新资料，不能重用行动开始时的旧 input。
 				input = fresh
 				currentInput = ChatMessage{Role: "user", Content: asJSON(fresh)}
-				updateAfterTools = "" // 恢复工具批次时预留的旧现场也已经被这次修改替换。
+				// 工具结果先完整配对，再交付新现场；同时刷新唯一的人物正文，
+				// 同批整理和故障恢复都不能带回修改前的人物。
+				currentSystem = memberSystem(m, instruction)
+				messages[0] = currentSystem
+				updateAfterTools = currentInput.Content
 				defs = e.Tools.Definitions(m, c, w)
 			}
 			if call.Function.Name == "organize_context" {
@@ -822,6 +778,7 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 				}
 			}
 		}
+		deliveredBeforeOrganization := messages
 		// 一批工具全部执行并配对后才能切换窗口；同时调用的发言或保存结果不能丢失。
 		if organization != nil {
 			// 整理只覆盖模型已经看过的窗口。不重新查询记忆、资料或行动来由。
@@ -872,8 +829,12 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 				return Outcome{}, readErr
 			}
 			if len(arrived) > 0 {
-				messages = append(messages, ChatMessage{Role: "user", Content: "接续收到的聊天原文（author_id 标明说话者）：" + asJSON(withoutSteered(arrived, messages))})
-				pendingProfileMessages = append(pendingProfileMessages, arrived...)
+				// 同批整理可能已把发送参数换成回执；两种载体都表示实际交付，
+				// 本人已发送的原文无需再作为一条新输入回流。
+				fresh := withoutDelivered(withoutDelivered(arrived, deliveredBeforeOrganization), messages)
+				if len(fresh) > 0 {
+					messages = append(messages, ChatMessage{Role: "user", Content: "接续收到的聊天原文（author_id 标明说话者）：" + asJSON(fresh)})
+				}
 				seen = arrived[len(arrived)-1].Seq
 			}
 		}

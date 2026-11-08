@@ -130,7 +130,7 @@ func TestFollowupOnlyWakesOwnerAndCanStaySilent(t *testing.T) {
 		var input struct {
 			Self Member `json:"self"`
 		}
-		json.Unmarshal([]byte(ms[1].Content), &input)
+		json.Unmarshal([]byte(latestSceneContent(t, ms)), &input)
 		if input.Self.ID != members[1].ID {
 			t.Errorf("wrong owner woke: %s", input.Self.ID)
 		}
@@ -322,7 +322,7 @@ func TestSharingFinishedWorkDoesNotCreateGenericResearch(t *testing.T) {
 		var input struct {
 			Messages []Message `json:"latest_messages"`
 		}
-		json.Unmarshal([]byte(ms[1].Content), &input)
+		json.Unmarshal([]byte(latestSceneContent(t, ms)), &input)
 		if len(input.Messages) > 0 {
 			return jsonReply(Outcome{Outcome: "已告知"}), nil
 		}

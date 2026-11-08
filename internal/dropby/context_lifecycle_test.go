@@ -93,14 +93,14 @@ func TestOrganizedWindowSurvivesFailureAndNextAction(t *testing.T) {
 	if !strings.Contains(recorded, "本轮休息的最终决定") {
 		t.Fatal("移除上下文时丢掉了行动审计")
 	}
-	// 真正的新消息仍交付，并且新行动的来由只交付一次。
+	// 真正的新消息仍交付；跟聊沿用旧根触发时，已整理掉的旧原话不回流。
 	nextMessage := userMessage(c, "现在你怎么看？")
 	if err := s.Publish(nextMessage, c.Revision); err != nil {
 		t.Fatal(err)
 	}
 	next := addWork(t, s, c, m, "followup")
-	next.SourceID = nextMessage.ID
-	next.Instruction = nextMessage.Body
+	next.SourceID = old.ID
+	next.Instruction = old.Body
 	nextEngine := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		assertClean(ms)
 		raw := asJSON(ms)

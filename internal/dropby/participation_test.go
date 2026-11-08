@@ -152,7 +152,7 @@ func TestWithdrawalsDoNotConsumeOtherMembersMessageOpportunity(t *testing.T) {
 		var input struct {
 			Self Member `json:"self"`
 		}
-		json.Unmarshal([]byte(ms[1].Content), &input)
+		json.Unmarshal([]byte(latestSceneContent(t, ms)), &input)
 
 		if testHasPublished(s, c.ID) {
 			return jsonReply(Outcome{Outcome: "本测试成员已完成这次回应"}), nil
@@ -193,7 +193,7 @@ func TestFirstMemberMayResearchWithoutAnnouncingIt(t *testing.T) {
 		var input struct {
 			Self Member `json:"self"`
 		}
-		json.Unmarshal([]byte(ms[1].Content), &input)
+		json.Unmarshal([]byte(latestSceneContent(t, ms)), &input)
 
 		if testHasPublished(s, c.ID) {
 			return jsonReply(Outcome{Outcome: "本测试成员已完成这次回应"}), nil
@@ -407,7 +407,7 @@ func TestProfileEditRetriesButOrdinaryHumanDoesNotReplaceRunningChat(t *testing.
 					Self    Member `json:"self"`
 					Trigger Work   `json:"trigger"`
 				}
-				if err := json.Unmarshal([]byte(ms[1].Content), &input); err != nil {
+				if err := json.Unmarshal([]byte(latestSceneContent(t, ms)), &input); err != nil {
 					return ChatMessage{}, err
 				}
 				step := acts.Add(1)
@@ -422,7 +422,7 @@ func TestProfileEditRetriesButOrdinaryHumanDoesNotReplaceRunningChat(t *testing.
 				if !strings.Contains(asJSON(ms), firstHuman.Body) {
 					t.Error("恢复丢失原问题")
 				}
-				return jsonReply(Outcome{Message: input.Self.Profile + "；" + firstHuman.Body}), nil
+				return jsonReply(Outcome{Message: strings.SplitN(ms[0].Content, "\n\n", 2)[0] + "；" + firstHuman.Body}), nil
 			}), cfg)
 			e.dispatch(context.Background())
 			select {

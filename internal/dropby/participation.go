@@ -99,5 +99,3 @@ func observedThrough(input map[string]any) int64 {
 	}
 	return seq
 }
-
-const statePrompt = `state 用于资料界面展示此刻的关注、感受或目标，不作为下次行动的指令；变化时填写；state_source_ids 可引用相关消息或行动。个人打算不需要外部证据。省略表示沿用；空串表示不再关注。`

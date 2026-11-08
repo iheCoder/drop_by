@@ -3,239 +3,100 @@ package dropby
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// 后台测试使用真实消息、来源登记、持久工作和提交路径；模型替身只让并发时序可控。
-func reflectionFixture(t *testing.T, s *Store, c Conversation, m Member) (Work, Message) {
-	t.Helper()
-	msg := userMessage(c, "刚才的试验里，大家能自己接着做，比做得整齐更让我意外。")
-	if err := s.Publish(msg, c.Revision); err != nil {
+// 升级真实旧库时，未完的后台改写不能在启动恢复后继续运行。历史人物版本、
+// 当下用户可见的人物和原始经历都保留；删除的只是旧功能的队列引用与游标。
+func TestPersonalityUpgradeStopsReflectionAndKeepsSources(t *testing.T) {
+	s, c, m := fixture(t)
+	source := userMessage(c, "大家喜欢极简，我仍然喜欢丰富的细节。")
+	if err := s.Publish(source, c.Revision); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.recordProfileMessages(m.ID, []Message{msg}); err != nil {
+	var failedID string
+	for _, status := range []string{"pending", "running", "waiting_budget", "paused", "failed", "done"} {
+		w := addWork(t, s, c, m, "reflect")
+		if status == "failed" {
+			failedID = w.ID
+		}
+		if _, err := s.db.Exec(`UPDATE work SET status=?,result='旧版整理记录' WHERE id=?`, status, w.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recordWork := addWork(t, s, c, m, "research")
+	if err := s.RecordTool(ToolRun{ID: "original_read", WorkID: recordWork.ID, MemberID: m.ID, ConversationID: c.ID, Name: "read_page", Arguments: json.RawMessage(`{}`), Status: "succeeded", Result: `{"content":"完整资料末尾"}`, CreatedAt: now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.scheduleProfileReflections(time.Hour); err != nil {
+	if _, err := s.db.Exec(`CREATE TABLE profile_experiences(member_id TEXT,source_id TEXT);
+CREATE TABLE profile_reflections(member_id TEXT,after_seq INTEGER,next_at INTEGER);
+INSERT INTO profile_experiences VALUES(?,?);
+INSERT INTO profile_reflections VALUES(?,0,0);`, m.ID, source.ID, m.ID); err != nil {
 		t.Fatal(err)
 	}
-	works, err := s.DueWorks()
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = setMemberProfile(tx, &m, "我重视鲜活的细节，也有自己的判断。", "reflection", "旧版产生的版本", []string{source.ID}); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(s.lock.Name())
+	s.Close()
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	// 重复初始化也不会回滚既有人物、产生新版本或恢复已停止的旧工作。
+	if err := reopened.initPersonality(); err != nil {
+		t.Fatal(err)
+	}
+	current, err := reopened.Member(m.ID)
+	if err != nil || current.Profile != m.Profile || current.ProfileRevision != m.ProfileRevision {
+		t.Fatal("升级擅自重写了已有特质", err, current)
+	}
+	versions, err := reopened.profileHistory(m.ID)
+	if err != nil || len(versions) != 2 || versions[0].Origin != "reflection" {
+		t.Fatal("历史版本丢失", err, versions)
+	}
+	var stopped, done, tables int
+	reopened.db.QueryRow(`SELECT count(*) FROM work WHERE kind='reflect' AND status='stopped' AND result='旧版整理记录'`).Scan(&stopped)
+	reopened.db.QueryRow(`SELECT count(*) FROM work WHERE kind='reflect' AND status='done'`).Scan(&done)
+	reopened.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('profile_experiences','profile_reflections')`).Scan(&tables)
+	if stopped != 5 || done != 1 || tables != 0 {
+		t.Fatal("旧后台未正确移除", stopped, done, tables)
+	}
+	// 旧失败项也不能通过通用“恢复工作”入口变成普通个人活动。
+	response := preferenceRequest(NewHandler(NewEngine(reopened, nil, testConfig())), "POST", "/api/work/"+failedID+"/resume", nil)
+	if response.Code != 409 {
+		t.Fatal("已移除的旧后台仍能恢复", response.Code)
+	}
+	if err := reopened.ScheduleExploration(time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	works, err := reopened.DueWorks()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, w := range works {
-		if w.Kind == "reflect" && w.MemberID == m.ID {
-			return w, msg
+		if w.Kind == "reflect" {
+			t.Fatal("旧后台重新进入调度")
 		}
 	}
-	t.Fatal("实际新经历没有安排后台整理")
-	return Work{}, Message{}
-}
-
-func TestProfileReflectionWaitsOnlyForCommitAndKeepsProposal(t *testing.T) {
-	// 模型尚未完成时，前台仍能执行。整理完成但前台占用成员时，只延后提交，
-	// 重试复用已保存的结果，既不打断任务也不再付一次整理调用。
-	s, c, m := fixture(t)
-	w, source := reflectionFixture(t, s, c, m)
-	started, release := make(chan struct{}), make(chan struct{})
-	var calls atomic.Int32
-	newProfile := "我喜欢通过小实验理解问题，也更在意别人能否自然接上自己的行动。"
-	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, defs []ToolDefinition, _ bool) (ChatMessage, error) {
-		if !strings.Contains(ms[0].Content, profileSelfPrompt) {
-			return jsonReply(Outcome{Outcome: "前台正常完成"}), nil
-		}
-		calls.Add(1)
-		for _, def := range defs {
-			if !reflectionReadTool(def.Function.Name) {
-				t.Error("后台出现行动工具", def.Function.Name)
-			}
-		}
-		close(started)
-		<-release
-		return jsonReply(profileUpdate{Profile: &newProfile, SourceIDs: []string{source.ID}, ChangeNote: "更关注行动如何被接续"}), nil
-	}), testConfig())
-	finished := make(chan error, 1)
-	go func() { finished <- e.reflectProfile(context.Background(), w) }()
-	<-started
-	// 后台生成期间调用真实前台行动，短期限只用于检出被锁住的测试故障。
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	front := addWork(t, s, c, m, "followup")
-	if _, err := e.act(ctx, c, m, front, "接着聊"); err != nil {
-		t.Fatal("后台阻塞了前台", err)
+	var body, raw string
+	if err := reopened.db.QueryRow(`SELECT body FROM messages WHERE id=?`, source.ID).Scan(&body); err != nil || body != source.Body {
+		t.Fatal("原始消息丢失", err)
 	}
-	unlock, err := e.lockMember(ctx, m.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	close(release)
-	if err := <-finished; !errors.Is(err, errActionYield) {
-		unlock()
-		t.Fatal("忙碌时没有延后提交", err)
-	}
-	current, _ := s.Member(m.ID)
-	if current.Profile != m.Profile {
-		t.Fatal("任务中途更换了特质")
-	}
-	unlock()
-	w.Result, err = s.reflectionResult(w.ID)
-	if err != nil || w.Result == "" {
-		t.Fatal("整理结果没有保存", err)
-	}
-	if err := e.reflectProfile(context.Background(), w); err != nil {
-		t.Fatal(err)
-	}
-	current, _ = s.Member(m.ID)
-	if current.Profile != newProfile || current.ProfileRevision != 1 || calls.Load() != 1 {
-		t.Fatal("提交丢失或重复调用", current, calls.Load())
-	}
-	room, _ := s.Conversation(c.ID)
-	if room.Revision != c.Revision {
-		t.Fatal("后台修改取消了正在进行的房间任务")
-	}
-	changes, _ := s.profileHistory(m.ID)
-	if len(changes) != 2 || changes[0].Origin != "reflection" || changes[0].SourceIDs[0] != source.ID {
-		t.Fatal("变化没有保留真实来源", changes)
-	}
-}
-
-func TestProfileDispatcherYieldsToIncomingChat(t *testing.T) {
-	// 真实调度器启动整理后到达新聊天：取消后台 HTTP 上下文，但不等待它
-	// 清理完毕；前台完成且人物不变，后台工作仍可在下一次空闲时恢复。
-	s, c, m := fixture(t)
-	w, _ := reflectionFixture(t, s, c, m)
-	started, canceled := make(chan struct{}), make(chan struct{})
-	e := NewEngine(s, modelFunc(func(ctx context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		if strings.Contains(ms[0].Content, profileSelfPrompt) {
-			close(started)
-			<-ctx.Done()
-			close(canceled)
-			return ChatMessage{}, ctx.Err()
-		}
-		return jsonReply(Outcome{}), nil
-	}), testConfig())
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	e.dispatch(ctx)
-	select {
-	case <-started:
-	case <-ctx.Done():
-		t.Fatal("后台没有启动")
-	}
-	if err := e.Submit(userMessage(c, "先聊眼前这件事")); err != nil {
-		t.Fatal(err)
-	}
-	e.dispatch(ctx)
-	select {
-	case <-canceled:
-	case <-ctx.Done():
-		t.Fatal("前台没有取消后台生成")
-	}
-	e.wg.Wait()
-	current, _ := s.Member(m.ID)
-	if current.Profile != m.Profile {
-		t.Fatal("取消的整理仍然修改了人格")
-	}
-	var status string
-	if err := s.db.QueryRow(`SELECT status FROM work WHERE id=?`, w.ID).Scan(&status); err != nil || status != "pending" {
-		t.Fatal("后台没有保留续接机会", status, err)
-	}
-	var completed int
-	if err := s.db.QueryRow(`SELECT count(*) FROM work WHERE kind='chat' AND status='done'`).Scan(&completed); err != nil || completed != 1 {
-		t.Fatal("前台没有完成", completed, err)
-	}
-}
-
-func TestProfileReflectionRebasesAfterHumanEdit(t *testing.T) {
-	// 先完成但暂未提交的后台结果不能覆盖用户后来的编辑，且不得把旧结果
-	// 合并回新人物。下一次整理重新读取当前说明和这批尚未消费的经历。
-	s, c, m := fixture(t)
-	w, _ := reflectionFixture(t, s, c, m)
-	evidence, through, err := s.profileReflectionInput(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stale := "这是后台基于旧说明形成的结果"
-	w.Result = asJSON(profileReflection{Revision: 0, ThroughSeq: through, Update: profileUpdate{Profile: &stale}})
-	e := NewEngine(s, nil, testConfig())
-	edited := "我说话直接，喜欢热闹，也愿意自己试试。"
-	response := preferenceRequest(NewHandler(e), "PATCH", "/api/members/"+m.ID, map[string]any{"profile": edited, "profile_revision": 0})
-	if response.Code != 200 {
-		t.Fatal(response.Body.String())
-	}
-	calls := 0
-	e.Model = modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		calls++
-		if !strings.Contains(ms[1].Content, edited) || strings.Contains(ms[1].Content, stale) || !strings.Contains(ms[1].Content, evidence[0].ID) {
-			t.Error("没有基于新设定重新理解")
-		}
-		return jsonReply(profileUpdate{ChangeNote: "本次经历没有改变我"}), nil
-	})
-	if err := e.reflectProfile(context.Background(), w); err != nil {
-		t.Fatal(err)
-	}
-	current, _ := s.Member(m.ID)
-	if calls != 1 || current.Profile != edited || current.ProfileRevision != 1 {
-		t.Fatal("迟到结果覆盖用户编辑")
-	}
-	response = preferenceRequest(NewHandler(e), "PATCH", "/api/members/"+m.ID, map[string]any{"profile": stale, "profile_revision": 0})
-	if response.Code != 409 {
-		t.Fatal("旧编辑页面覆盖了新版本", response.Code)
-	}
-}
-
-func TestProfileExperiencesAreDeliveredSourcesAndConsumedOnce(t *testing.T) {
-	// 同一条消息多次回读不变成多条独立经历；从未交付的群消息不会凭空
-	// 进入此成员的自我整理。失败工具仍保留失败这一真实状态。
-	s, c, m := fixture(t)
-	w, source := reflectionFixture(t, s, c, m)
-	unseen := userMessage(c, "这条是还没看见的消息")
-	if err := s.Publish(unseen, c.Revision); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.recordProfileMessages(m.ID, []Message{source, source}); err != nil {
-		t.Fatal(err)
-	}
-	run := ToolRun{ID: "failed_experiment", WorkID: w.ID, ConversationID: c.ID, MemberID: m.ID, Name: "read_page", Arguments: json.RawMessage(`{}`), Result: "网络失败，没有取得正文", Status: "failed", CreatedAt: now()}
-	if err := s.RecordTool(run); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.recordProfileTool(m.ID, run.ID); err != nil {
-		t.Fatal(err)
-	}
-	evidence, _, err := s.profileReflectionInput(m)
-	if err != nil || len(evidence) != 2 || evidence[1].Kind != "tool:read_page:failed" {
-		t.Fatal("来源重复或状态失真", evidence, err)
-	}
-	for _, item := range evidence {
-		if item.ID == unseen.ID {
-			t.Fatal("把未读消息当作已经历")
-		}
-	}
-	e := NewEngine(s, modelFunc(func(_ context.Context, _ []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		return jsonReply(profileUpdate{}), nil
-	}), testConfig())
-	if err := e.reflectProfile(context.Background(), w); err != nil {
-		t.Fatal(err)
-	}
-	// 没变化也推进游标，避免每个时钟重复整理同一材料。
-	if _, err := s.db.Exec(`UPDATE profile_reflections SET next_at=0`); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.scheduleProfileReflections(time.Hour); err != nil {
-		t.Fatal(err)
-	}
-	var count int
-	if err := s.db.QueryRow(`SELECT count(*) FROM work WHERE kind='reflect'`).Scan(&count); err != nil || count != 1 {
-		t.Fatal("无新经历仍重复安排", count, err)
-	}
-	current, _ := s.Member(m.ID)
-	if current.Profile != m.Profile {
-		t.Fatal("无新认识仍重写人物")
+	if err := reopened.db.QueryRow(`SELECT result FROM tool_runs WHERE id='original_read'`).Scan(&raw); err != nil || !strings.Contains(raw, "完整资料末尾") {
+		t.Fatal("原始工具结果丢失", err)
 	}
 }
 
@@ -277,7 +138,7 @@ func TestCurrentProfileAppearsOnceAndSurvivesOrganization(t *testing.T) {
 }
 
 func TestProfileChangeReconsidersUnexecutedCheckpoint(t *testing.T) {
-	// 故障现场可能还包含旧人格生成、但尚未执行的发言。后台更新后恢复
+	// 故障现场可能还包含旧人格生成、但尚未执行的发言。用户修改后恢复
 	// 必须让模型重新决定；已经执行的回执仍沿用现有幂等恢复机制。
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "followup")
@@ -290,7 +151,7 @@ func TestProfileChangeReconsidersUnexecutedCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := setMemberProfile(tx, &m, "我现在喜欢热烈地交流。", "reflection", "关注发生了变化", nil); err != nil {
+	if _, err := setMemberProfile(tx, &m, "我现在喜欢热烈地交流。", "edit", "用户明确修改", nil); err != nil {
 		tx.Rollback()
 		t.Fatal(err)
 	}
@@ -323,11 +184,8 @@ func TestResumedProfileEditReplacesPendingScene(t *testing.T) {
 	w := latestChatWork(t, s, c.ID)
 	updated := "我喜欢寻找原始材料，也乐于主动与人交流。"
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		var scene struct {
-			Self Member `json:"self"`
-		}
-		if err := json.Unmarshal([]byte(ms[1].Content), &scene); err != nil || scene.Self.Profile != updated {
-			t.Error("恢复工具后仍使用旧场景", err, scene.Self.Profile)
+		if !strings.Contains(ms[0].Content, updated) || strings.Contains(ms[0].Content, m.Profile) {
+			t.Error("恢复工具后仍使用旧人物", ms[0].Content)
 		}
 		return jsonReply(Outcome{}), nil
 	}), testConfig())
@@ -374,7 +232,7 @@ func TestProfilePersistsAcrossRestartAndNewRoom(t *testing.T) {
 	}
 	e := NewEngine(s, nil, testConfig())
 	input, err := e.contextFor(c, saved, Work{})
-	if err != nil || input["self"].(map[string]any)["profile"] != m.Profile {
+	if err != nil || input["self"].(map[string]any)["profile_revision"] != m.ProfileRevision || !strings.Contains(memberSystem(saved, "继续交流").Content, m.Profile) {
 		t.Fatal("换群后人物不连续", err)
 	}
 	history, _ := s.profileHistory(m.ID)

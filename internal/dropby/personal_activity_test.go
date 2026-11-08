@@ -50,7 +50,7 @@ func TestPersonalExplorationSharingAndRecovery(t *testing.T) {
 		}
 		if calls == 1 {
 			var input map[string]any
-			json.Unmarshal([]byte(messages[1].Content), &input)
+			json.Unmarshal([]byte(latestSceneContent(t, messages)), &input)
 			if len(input["latest_messages"].([]any)) != 0 || input["personal_focus"] == nil {
 				t.Error("个人活动仍以房间历史为主")
 			}
@@ -290,7 +290,7 @@ func TestResearchPublicationInvitesPeersBeforeItsOwnActionEnds(t *testing.T) {
 			Self    Member `json:"self"`
 			Trigger Work   `json:"trigger"`
 		}
-		json.Unmarshal([]byte(ms[1].Content), &input)
+		json.Unmarshal([]byte(latestSceneContent(t, ms)), &input)
 		if input.Trigger.ID == work.ID {
 			steps++
 			if steps == 1 {

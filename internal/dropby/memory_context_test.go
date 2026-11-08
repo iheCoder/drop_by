@@ -43,7 +43,7 @@ func TestTopicWindowRetainsIdentityGoalsAndRetrievableHistory(t *testing.T) {
 			t.Fatal("无关旧话题仍在默认窗口")
 		}
 	}
-	if input["self"].(map[string]any)["profile"] != m.Profile || input["current_state"] != nil || input["work"] != nil {
+	if input["self"].(map[string]any)["profile"] != nil || !strings.Contains(memberSystem(m, "").Content, m.Profile) || input["current_state"] != nil || input["work"] != nil {
 		t.Fatal("身份丢失，或旧状态/工作仍自动注入")
 	}
 	jobs, err := e.Tools.perform(context.Background(), c, m, job, toolCall("read_work", map[string]string{"id": job.ID}))
@@ -58,7 +58,7 @@ func TestTopicWindowRetainsIdentityGoalsAndRetrievableHistory(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		s.SystemMessage(c.ID, newID("later"), "最近另一段闲聊")
 	}
-	cause, err := e.actionInput(c, Work{SourceID: old.ID, Kind: "revisit"}, nil)
+	cause, err := e.actionInput(c, Work{SourceID: old.ID, Kind: "revisit"}, nil, nil, 0)
 	if err != nil || !strings.Contains(cause.Content, old.ID) || !strings.Contains(cause.Content, "不要催促") {
 		t.Fatalf("新到期任务没有交付一次原始来由：%v", err)
 	}

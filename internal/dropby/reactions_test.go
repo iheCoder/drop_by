@@ -183,7 +183,7 @@ func TestQuietMemberCanReactDuringExistingAction(t *testing.T) {
 		var scene struct {
 			Self Member `json:"self"`
 		}
-		json.Unmarshal([]byte(messages[1].Content), &scene)
+		json.Unmarshal([]byte(latestSceneContent(t, messages)), &scene)
 		member := scene.Self.ID
 		if member == "" {
 			return jsonReply(Control{}), nil

@@ -69,8 +69,8 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 		if message.Role == "system" || message.Role == "developer" {
 			core = append(core, message)
 		} else {
-			// 当前人物与控制现场精确保留，已经交付的原话仍由原生压缩处理。
-			// 这样人物只存于 self 一处，也不会因窗口变长而只剩一份模糊摘要。
+			// 人物正文已在系统输入中精确保留；现场只保留当前控制与身份信息。
+			// 已交付的原话仍由原生压缩处理，不会把人物压成模糊摘要。
 			var scene map[string]json.RawMessage
 			if message.Role == "user" && len(message.ResponseItems) == 0 && json.Unmarshal([]byte(message.Content), &scene) == nil && scene["self"] != nil && scene["trigger"] != nil && scene["time"] != nil {
 				history = append(history, refreshScene([]ChatMessage{message})...)

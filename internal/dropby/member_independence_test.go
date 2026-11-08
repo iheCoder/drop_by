@@ -62,7 +62,7 @@ func TestMemberFailureDoesNotStopPeersAndResumesOnce(t *testing.T) {
 		var input struct {
 			Self Member `json:"self"`
 		}
-		if err := json.Unmarshal([]byte(ms[1].Content), &input); err != nil {
+		if err := json.Unmarshal([]byte(latestSceneContent(t, ms)), &input); err != nil {
 			return ChatMessage{}, err
 		}
 

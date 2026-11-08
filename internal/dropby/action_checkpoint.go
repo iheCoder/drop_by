@@ -34,10 +34,6 @@ func (s *Store) saveAction(cp actionCheckpoint) error {
 	_, err := s.db.Exec("INSERT INTO action_checkpoints(id,work_id,member_id,revision,profile_revision,seen,messages) VALUES(?,?,?,?,?,?,?) ON CONFLICT(work_id,member_id) DO UPDATE SET revision=excluded.revision,profile_revision=excluded.profile_revision,seen=excluded.seen,messages=excluded.messages", cp.ID, cp.WorkID, cp.MemberID, cp.Revision, cp.ProfileRevision, cp.Seen, asJSON(cp.Messages))
 	return err
 }
-func (s *Store) finishAction(work, member string) error {
-	_, err := s.db.Exec("DELETE FROM action_checkpoints WHERE work_id=? AND member_id=?", work, member)
-	return err
-}
 
 // 多位成员可以分别保留未完现场；恢复时逐个接上，已发布者没有现场可重放。
 func (s *Store) pendingActions(work string) ([]string, error) {

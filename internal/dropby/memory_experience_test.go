@@ -140,7 +140,7 @@ func TestRelevantMemoryDoesNotCrowdOutCurrentWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if input["memory"] != nil || input["self"].(map[string]any)["profile"] != m.Profile || !strings.Contains(asJSON(input["latest_messages"]), "三种邀请方式") {
+	if input["memory"] != nil || input["self"].(map[string]any)["profile"] != nil || !strings.Contains(memberSystem(m, "").Content, m.Profile) || !strings.Contains(asJSON(input["latest_messages"]), "三种邀请方式") {
 		t.Fatal("首次现场仍自动注入记忆，或丢失身份/当前消息")
 	}
 	// 旧经历仍可按需检索，无需先知道 ID；无需默认灌入全部匹配项。

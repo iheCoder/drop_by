@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -124,16 +123,6 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 			props["version"] = map[string]any{"type": "integer", "minimum": 1, "description": "指定历史版本；省略读最新版"}
 		}
 	}
-	if w.Kind == "reflect" {
-		// 用户要求后台独立整理；只开放回查记录，不执行日常交流或其他任务。
-		reads := []ToolDefinition{}
-		for _, def := range defs {
-			if reflectionReadTool(def.Function.Name) {
-				reads = append(reads, def)
-			}
-		}
-		return reads
-	}
 	return defs
 }
 
@@ -182,13 +171,6 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	if call.ID != "" {
 		runID = fmt.Sprintf("tool_%x", sha256.Sum256([]byte(w.ID+"\x00"+m.ID+"\x00"+call.ID)))
 	}
-	if w.Kind != "reflect" {
-		defer func() {
-			if err := t.Store.recordProfileTool(m.ID, runID); err != nil {
-				slog.Warn("记录后台整理工具来源失败", "error", err)
-			}
-		}()
-	}
 	resuming := false
 	var oldStatus, oldResult string
 	readErr := t.Store.db.QueryRow("SELECT status,result FROM tool_runs WHERE id=?", runID).Scan(&oldStatus, &oldResult)
@@ -211,7 +193,7 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 			return "", err
 		}
 	}
-	if t.Activity != nil && call.Function.Name != reactionTool && w.Kind != "reflect" {
+	if t.Activity != nil && call.Function.Name != reactionTool {
 		labels := map[string]string{"organize_context": "正在整理思路", "search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_message": "正在发送消息", "read_conversation": "正在看聊天近况", "send_private": "正在准备私聊", "read_history": "正在翻阅聊天记录", "read_artifact": "正在查看成果", "read_tool_result": "正在核对已有材料", "read_memory": "正在回顾经历", "search_memory": "正在找回相关经历", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
 		t.Activity(c.ID, m.ID, labels[call.Function.Name])
 	}

@@ -144,7 +144,7 @@ func TestPersonalActivityYieldsAtSavedBoundary(t *testing.T) {
 		var scene struct {
 			Trigger Work `json:"trigger"`
 		}
-		json.Unmarshal([]byte(ms[1].Content), &scene)
+		json.Unmarshal([]byte(latestSceneContent(t, ms)), &scene)
 		if scene.Trigger.ID == w.ID {
 			close(entered)
 			<-release
@@ -186,7 +186,7 @@ func TestFailedMemberReceivesNewPeerMessage(t *testing.T) {
 		var scene struct {
 			Self Member `json:"self"`
 		}
-		json.Unmarshal([]byte(ms[1].Content), &scene)
+		json.Unmarshal([]byte(latestSceneContent(t, ms)), &scene)
 		if scene.Self.ID == a.ID {
 			if ac.Add(1) == 1 {
 				close(failed)

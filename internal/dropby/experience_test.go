@@ -40,7 +40,7 @@ func TestAnotherMemberCanReplyAfterFirstSchedulesResearch(t *testing.T) {
 		var input struct {
 			Self Member `json:"self"`
 		}
-		if err := json.Unmarshal([]byte(ms[1].Content), &input); err != nil {
+		if err := json.Unmarshal([]byte(latestSceneContent(t, ms)), &input); err != nil {
 			t.Fatal(err)
 		}
 
@@ -94,7 +94,7 @@ func TestQuietRoomCanExploreWithoutHumanMessageOrBrowser(t *testing.T) {
 		var input struct {
 			Messages []Message `json:"latest_messages"`
 		}
-		json.Unmarshal([]byte(ms[1].Content), &input)
+		json.Unmarshal([]byte(latestSceneContent(t, ms)), &input)
 		if len(input.Messages) > 0 {
 			return jsonReply(Outcome{Outcome: "这次已经分享过"}), nil
 		}

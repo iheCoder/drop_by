@@ -29,7 +29,7 @@ func TestUnreadBurstAndWorkingContextContinueAcrossActions(t *testing.T) {
 		var input struct {
 			Messages []Message `json:"latest_messages"`
 		}
-		if err := json.Unmarshal([]byte(ms[1].Content), &input); err != nil {
+		if err := json.Unmarshal([]byte(latestSceneContent(t, ms)), &input); err != nil {
 			t.Fatal(err)
 		}
 		if len(input.Messages) != 30 {
@@ -62,7 +62,7 @@ func TestUnreadBurstAndWorkingContextContinueAcrossActions(t *testing.T) {
 		var input struct {
 			Messages []Message `json:"latest_messages"`
 		}
-		if err := json.Unmarshal([]byte(ms[1].Content), &input); err != nil {
+		if err := json.Unmarshal([]byte(latestSceneContent(t, ms)), &input); err != nil {
 			t.Fatal(err)
 		}
 		if len(input.Messages) != 1 || !strings.Contains(input.Messages[0].Body, "第三十一条") {

@@ -195,11 +195,6 @@ func (s *Store) artifactIndexForMember(room, member, query string, offset int, p
 	return map[string]any{"artifacts": list, "next_offset": offset + len(list), "has_more": more}, rows.Err()
 }
 
-// 记忆说明保留来源、更新和范围语义，不再叠加一套表达方式要求。
-const memoryContextPrompt = `
-self.profile 是你的特质，personal_focus 是自己的近期关注。需要自己的经历、对人的了解或旧原话时，可用历史与记忆工具找回；资料和工作进展可按需读取。
-有值得留下的经历时可以 remember，不必每次聊天都整理笔记。更新已有理解用原 id 和 revision；当前交流中的纠正立即适用，不必等笔记保存完成。scope=member 可跨聊天携带，conversation 留在本群。`
-
 func observationLabel(c Conversation, w Work) string {
 	switch w.Kind {
 	case "explore":

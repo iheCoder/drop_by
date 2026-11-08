@@ -182,9 +182,6 @@ func (s *Store) AddMember(m Member) error {
 	if _, e = tx.Exec(`INSERT INTO personal_activity(member_id) VALUES(?)`, m.ID); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(`INSERT INTO profile_reflections(member_id) VALUES(?)`, m.ID); e != nil {
-		return e
-	}
 	if e = recordProfileVersion(tx, m, "created", "创建时的人物说明", nil); e != nil {
 		return e
 	}
@@ -552,7 +549,7 @@ func (s *Store) Participations(room string) ([]Participation, error) {
 	return list, rows.Err()
 }
 func (s *Store) DueWorks() ([]Work, error) {
-	rows, e := s.db.Query(`SELECT `+workColumns+` FROM work WHERE status IN ('pending','waiting_budget') AND due_at<=? ORDER BY CASE kind WHEN 'chat' THEN 0 WHEN 'share' THEN 1 WHEN 'revisit' THEN 2 WHEN 'research' THEN 2 WHEN 'reflect' THEN 4 ELSE 3 END,created_at LIMIT 100`, time.Now().UnixMilli())
+	rows, e := s.db.Query(`SELECT `+workColumns+` FROM work WHERE status IN ('pending','waiting_budget') AND due_at<=? ORDER BY CASE kind WHEN 'chat' THEN 0 WHEN 'share' THEN 1 WHEN 'revisit' THEN 2 WHEN 'research' THEN 2 ELSE 3 END,created_at LIMIT 100`, time.Now().UnixMilli())
 	if e != nil {
 		return nil, e
 	}

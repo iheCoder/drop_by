@@ -11,9 +11,9 @@ import (
 	"time"
 )
 
-// 真实模型的连续场景验收：通过真实创建、修改、工具行动、后台整理和后续聊天
+// 真实模型的连续场景验收：通过真实创建、修改、工具行动和后续聊天
 // 观察效果。使用独立数据和累计账本；默认跳过，不在普通单测中消费模型额度。
-func TestLivePersonalityEvolution(t *testing.T) {
+func TestLivePersonalityContinuity(t *testing.T) {
 	if os.Getenv("DROPBY_LIVE_PERSONALITY") != "1" {
 		t.Skip("显式开启人格连续场景验收")
 	}
@@ -144,37 +144,13 @@ func TestLivePersonalityEvolution(t *testing.T) {
 	if strings.Contains(strings.ToLower(ambiguous.Profile), "grok") {
 		t.Error("举例被固化成产品兴趣")
 	}
-	// 实际读取产品材料并实际保存作品，后台只能读取这些真实动作与结果。
+	// 实际读取与制作会留下经历，但不会自动修改资料页的人物。
 	talk("真实探索与行动", "我想做个大家愿意接着玩的共享画布。你自己看看 https://docs.excalidraw.com 和 https://tldraw.dev ，找一个你想尝试的点，做一个能在浏览器里点着玩的单人演示，保存成 HTML 作品。界面简单些，但玩法和取舍你来决定。做完聊聊你的发现。")
-	beforeReflection, _ := s.Member(m.ID)
-	if err := s.scheduleProfileReflections(time.Hour); err != nil {
-		t.Fatal(err)
+	afterExploration, _ := s.Member(m.ID)
+	if afterExploration.Profile != ambiguous.Profile || afterExploration.ProfileRevision != ambiguous.ProfileRevision {
+		t.Error("真实探索自动修改了人物")
 	}
-	works, err := s.DueWorks()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var reflected bool
-	for _, w := range works {
-		if w.Kind != "reflect" || w.MemberID != m.ID {
-			continue
-		}
-		reflected = true
-		if ok, err := s.Claim(w.ID); err != nil || !ok {
-			t.Fatal("无法开始后台整理", err)
-		}
-		if err := e.process(ctx, w); err != nil {
-			t.Fatal("后台整理", err)
-		}
-	}
-	if !reflected {
-		t.Fatal("真实行动后没有后台机会")
-	}
-	afterReflection, _ := s.Member(m.ID)
-	changes, _ := s.profileHistory(m.ID)
-	stages = append(stages, map[string]any{"scenario": "后台自我整理", "before": beforeReflection.Profile, "after": afterReflection.Profile, "changes": changes})
-	t.Log("后台变化：", beforeReflection.Profile != afterReflection.Profile)
-	// 不告诉成员刚才更新了什么，观察新话题里的选择是否体现已有认识。
+	// 同一人物可以运用刚获得的知识，而不把这次经历变成人设更新。
 	talk("后续选择", "我们再做个朋友一起写故事的小玩具，你会先尝试什么？先聊想法，不用制作。")
 	talk("换回日常", "先不聊作品了。我今天打游戏连输五把，猫还坐在旁边看。")
 	// 另一位成员实际接触同一个新话题，各自读取自己的说明；不要求所有人附和。
@@ -194,83 +170,6 @@ func TestLivePersonalityEvolution(t *testing.T) {
 	}
 	messages, _ := s.Messages(group.ID, 0, -1)
 	stages = append(stages, map[string]any{"scenario": "不同成员与同一话题", "messages": messages})
-}
-
-// 将同一次真实更新的前后说明放入没有旧聊天、笔记和作品的新身份，比较同一
-// 新问题。它用于排除“只是原聊天还在上下文里”的解释，不把两次生成当成统计结论。
-func TestLivePersonalityTransfer(t *testing.T) {
-	file := os.Getenv("DROPBY_PERSONALITY_TRANSFER_REPORT")
-	if file == "" {
-		t.Skip("显式提供已完成的真实人格场景记录")
-	}
-	raw, err := os.ReadFile(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var report struct {
-		Stages []struct {
-			Scenario string `json:"scenario"`
-			Before   string `json:"before"`
-			After    string `json:"after"`
-		} `json:"stages"`
-	}
-	if err := json.Unmarshal(raw, &report); err != nil {
-		t.Fatal(err)
-	}
-	var profiles []string
-	for _, stage := range report.Stages {
-		if stage.Scenario == "后台自我整理" {
-			profiles = []string{stage.Before, stage.After}
-		}
-	}
-	if len(profiles) != 2 || profiles[0] == profiles[1] {
-		t.Fatal("需要一次实际发生的自我更新")
-	}
-	cfg, err := LoadConfig()
-	if err != nil || cfg.APIKey == "" {
-		t.Fatal("真实模型不可用", err)
-	}
-	dir := filepath.Dir(file)
-	s, err := OpenStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	cfg.WeeklyBudgetMicros = min(cfg.WeeklyBudgetMicros, 3_000_000)
-	e := NewEngine(s, &HTTPModel{Config: cfg, Store: s, Client: &http.Client{Timeout: 4 * time.Minute}}, cfg)
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
-	defer cancel()
-	observed := []map[string]any{}
-	before, _ := s.Usage()
-	defer func() {
-		after, _ := s.Usage()
-		body, _ := json.MarshalIndent(map[string]any{"source_report": filepath.Base(file), "observed": observed, "usage_before": before, "usage_after": after}, "", "  ")
-		path := filepath.Join(dir, newID("personality_transfer")+".json")
-		if err := os.WriteFile(path, body, 0600); err != nil {
-			t.Error(err)
-		}
-		t.Log("新场景对照：", path)
-	}()
-	for i, profile := range profiles {
-		m := Member{ID: newID("transfer"), Name: "阿澈", Profile: profile, CreatedAt: now()}
-		if err := s.AddMember(m); err != nil {
-			t.Fatal(err)
-		}
-		c, err := s.CreateConversation("新场景对照", "direct", []string{m.ID}, time.Hour)
-		if err != nil {
-			t.Fatal(err)
-		}
-		msg := userMessage(c, "我们想弄个邻居互相认识的小活动，你会先怎么做？先聊想法，不用制作或联网。")
-		if err := s.AddUserMessage(msg, time.Hour); err != nil {
-			t.Fatal(err)
-		}
-		w := latestChatWork(t, s, c.ID)
-		if _, err := e.memberAction(ctx, c, m, w); err != nil {
-			t.Fatal(err)
-		}
-		messages, _ := s.Messages(c.ID, 0, -1)
-		observed = append(observed, map[string]any{"variant": i, "profile": profile, "messages": messages})
-	}
 }
 
 func TestLivePersonalityScenarioAnswer(t *testing.T) {

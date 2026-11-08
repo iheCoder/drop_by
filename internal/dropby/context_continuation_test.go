@@ -100,12 +100,13 @@ func TestNativeCompactionPreservesCoreProtocolAndContinuesFromReturnedWindow(t *
 	cfg.ContextTokenBudget = 3000
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	chain := largeArtifactChain()
-	scene := ChatMessage{Role: "user", Content: asJSON(map[string]any{"self": map[string]any{"profile": profile, "profile_revision": 3}, "trigger": map[string]string{"id": "work"}, "time": now(), "latest_messages": []Message{{ID: "scene_msg", Body: "刚交付的原话"}}, "new_message_ids": []string{"scene_msg"}})}
+	chain[0].Content += "\n" + profile
+	scene := ChatMessage{Role: "user", Content: asJSON(map[string]any{"self": map[string]any{"profile_revision": 3}, "trigger": map[string]string{"id": "work"}, "time": now(), "latest_messages": []Message{{ID: "scene_msg", Body: "刚交付的原话"}}, "new_message_ids": []string{"scene_msg"}})}
 	chain = append(chain[:1], append([]ChatMessage{scene}, chain[1:]...)...)
 	if _, err := completeModel(context.Background(), model, &chain, nil, false); err != nil {
 		t.Fatal(err)
 	}
-	if len(chain) != 3 || chain[0].Content != "身份与当前目标必须保留" || !strings.Contains(chain[1].Content, profile) || strings.Contains(chain[1].Content, "刚交付的原话") || len(chain[2].ResponseItems) != 2 {
+	if len(chain) != 3 || chain[0].Content != "身份与当前目标必须保留\n"+profile || strings.Contains(chain[1].Content, profile) || strings.Contains(chain[1].Content, "刚交付的原话") || len(chain[2].ResponseItems) != 2 {
 		t.Fatalf("行动层没有继承整个压缩窗口: %+v", chain)
 	}
 	for i := range returned {

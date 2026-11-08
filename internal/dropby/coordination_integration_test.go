@@ -106,7 +106,7 @@ func TestCoordinatorAPIAndTwoStagePeerHandoff(t *testing.T) {
 			return jsonReply(Outcome{Outcome: "核对工作已安排，暂时不额外催促"}), nil
 		}
 		for i := 1; i <= 2; i++ {
-			if input.Self.ID == members[i].ID && input.Self.Profile != profiles[i] {
+			if input.Self.ID == members[i].ID && !strings.Contains(messages[0].Content, profiles[i]) {
 				return ChatMessage{}, fmt.Errorf("peer personality overwritten by coordination")
 			}
 		}
