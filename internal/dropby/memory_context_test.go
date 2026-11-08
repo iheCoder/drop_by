@@ -9,7 +9,7 @@ import (
 )
 
 func TestTopicWindowRetainsIdentityGoalsAndRetrievableHistory(t *testing.T) {
-	// 旧话题退出默认输入后，人物特质、仍挂念的事与旧的未完成工作必须留下。
+	// 旧话题退出默认输入后，人物特质保留；状态与旧工作按需查回，不自动注入。
 	// 截断只影响本次输入，实际原话、另一个人的阅读窗口和私聊仍相互独立。
 	s, c, members := groupWithMembers(t, 2)
 	m := members[0]
@@ -43,17 +43,12 @@ func TestTopicWindowRetainsIdentityGoalsAndRetrievableHistory(t *testing.T) {
 			t.Fatal("无关旧话题仍在默认窗口")
 		}
 	}
-	if input["self"].(map[string]any)["profile"] != m.Profile || input["current_state"].(MemberState).Body != focus {
-		t.Fatal("切话题丢掉了身份或持续关注")
+	if input["self"].(map[string]any)["profile"] != m.Profile || input["current_state"] != nil || input["work"] != nil {
+		t.Fatal("身份丢失，或旧状态/工作仍自动注入")
 	}
-	found := false
-	for _, w := range input["work"].([]Work) {
-		if w.ID == job.ID {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("旧的未完成工作被已完成记录挤掉")
+	jobs, err := e.Tools.perform(context.Background(), c, m, job, toolCall("read_work", map[string]string{"id": job.ID}))
+	if err != nil || !strings.Contains(asJSON(jobs), job.ID) {
+		t.Fatal("旧的未完成工作不能主动查回")
 	}
 	raw, err := s.searchHistory(c.ID, "", old.ID, 0, 0)
 	if err != nil || !strings.Contains(asJSON(raw), old.Body) {
@@ -63,9 +58,9 @@ func TestTopicWindowRetainsIdentityGoalsAndRetrievableHistory(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		s.SystemMessage(c.ID, newID("later"), "最近另一段闲聊")
 	}
-	input, err = e.contextFor(c, m, Work{SourceID: old.ID, Kind: "revisit"})
-	if err != nil || input["trigger_message"].(*Message).ID != old.ID || !strings.Contains(asJSON(input["trigger_message"]), "不要催促") {
-		t.Fatalf("旧触发消息没有独立找回：%v", err)
+	cause, err := e.actionInput(c, Work{SourceID: old.ID, Kind: "revisit"}, nil)
+	if err != nil || !strings.Contains(cause.Content, old.ID) || !strings.Contains(cause.Content, "不要催促") {
+		t.Fatalf("新到期任务没有交付一次原始来由：%v", err)
 	}
 	other, _ := s.contextStart(c.ID, members[1].ID)
 	if other != 0 {

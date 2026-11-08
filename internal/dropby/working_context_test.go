@@ -20,6 +20,12 @@ func TestUnreadBurstAndWorkingContextContinueAcrossActions(t *testing.T) {
 	w := addWork(t, s, c, m, "followup")
 	var delivered int64
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if strings.Contains(asJSON(ms), "已有理解延续") {
+			if err := s.Publish(userMessage(c, "生成过程中追加的第三十一条"), c.Revision); err != nil {
+				t.Fatal(err)
+			}
+			return jsonReply(Outcome{Outcome: "本轮安静"}), nil
+		}
 		var input struct {
 			Messages []Message `json:"latest_messages"`
 		}
@@ -30,10 +36,8 @@ func TestUnreadBurstAndWorkingContextContinueAcrossActions(t *testing.T) {
 			t.Fatalf("只交付 %d 条", len(input.Messages))
 		}
 		delivered = input.Messages[29].Seq
-		if err := s.Publish(userMessage(c, "生成过程中追加的第三十一条"), c.Revision); err != nil {
-			t.Fatal(err)
-		}
-		return jsonReply(Outcome{Outcome: "暂时安静，已有理解延续"}), nil
+
+		return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("organize_context", map[string]string{"note": "已有理解延续"})}}, nil
 	}), testConfig())
 	if _, err := e.memberAction(context.Background(), c, m, w); err != nil {
 		t.Fatal(err)
@@ -84,6 +88,9 @@ func TestMemberOrganizesBeforeCapacityAndRetainsOriginals(t *testing.T) {
 	if err := s.RecordTool(ToolRun{ID: "old_page", WorkID: w.ID, ConversationID: c.ID, MemberID: m.ID, Name: "read_page", Arguments: json.RawMessage(`{"url":"https://example.com"}`), Result: raw, Status: "succeeded", CreatedAt: now()}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.RecordTool(ToolRun{ID: "new_page", WorkID: w.ID, ConversationID: c.ID, MemberID: m.ID, Name: "read_page", Arguments: json.RawMessage(`{}`), Result: strings.Repeat("新读取内容", 5000) + "新原文尾部", Status: "succeeded", CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
 	note := "我原来偏好甲；同伴偏好乙，尚未达成共识。用户今晚只想聊，不做计划。"
 	calls := 0
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
@@ -95,15 +102,18 @@ func TestMemberOrganizesBeforeCapacityAndRetainsOriginals(t *testing.T) {
 			if !strings.Contains(asJSON(ms), "原文尾部") {
 				t.Error("主动读取正文被提前截断")
 			}
-			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("read_tool_result", map[string]any{"id": "old_page", "length": 100000}), toolCall("organize_context", map[string]any{"note": note, "keep_message_ids": []string{source.ID}}), toolCall("send_message", map[string]string{"message": "那就随便聊聊。"})}}, nil
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("read_tool_result", map[string]any{"id": "new_page", "length": 100000}), toolCall("organize_context", map[string]any{"note": note, "keep_message_ids": []string{source.ID}}), toolCall("send_message", map[string]string{"message": "那就随便聊聊。"})}}, nil
 		default:
 			if strings.Contains(asJSON(ms), strings.Repeat("旧节目资料", 50)) {
 				t.Error("主动整理后旧正文仍在请求里")
 			}
+			if !strings.Contains(asJSON(ms), "新原文尾部") {
+				t.Error("同批刚读取的结果尚未看过就被丢弃")
+			}
 			if !strings.Contains(asJSON(ms), note) || !strings.Contains(asJSON(ms), source.ID) {
 				t.Error("整理丢失分歧或原话")
 			}
-			// 同批 send_message 的调用与结果必须成对保留，不能因整理而丢弃或重复执行。
+			// 整批完成后以回执交付，不能留下孤立工具协议或重复执行发言。
 			var calls, results int
 			for _, msg := range ms {
 				calls += len(msg.ToolCalls)

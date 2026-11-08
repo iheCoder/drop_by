@@ -232,12 +232,13 @@ func TestLivePersonalExperienceContinuity(t *testing.T) {
 			round(room, "合作反馈与个人理解", feedback)
 		}
 		for _, member := range members {
-			notes, err := s.relevantMemories(member.ID, room.ID, "同伴 合作 配合")
+			result, err := s.searchMemories(member.ID, room.ID, "同伴 合作 配合", 0)
 			if err != nil {
 				t.Fatal(err)
 			}
+			notes := result.(map[string]any)["memories"].([]Memory)
 			if len(notes) == 0 {
-				t.Fatalf("%s 没有召回合作相关理解", member.Name)
+				t.Fatalf("%s 没有检索到合作相关理解", member.Name)
 			}
 			// 不把“人人都写一条对同伴的看法”设为通过条件。是否形成具体
 			// 个人视角、是否只复述用户偏好，必须审阅内容，不能靠名字命中判定。

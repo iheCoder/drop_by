@@ -3,6 +3,7 @@ package dropby
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -234,7 +235,17 @@ func (e *Engine) memberAction(ctx context.Context, c Conversation, m Member, w W
 			return err
 		}
 		// 窗口与行动完成原子落盘；静默结束也保留连续理解，崩溃后不会重放已发消息。
-		if _, err := tx.Exec(`INSERT INTO working_contexts(conversation_id,member_id,seen,messages) SELECT ?,member_id,seen,messages FROM action_checkpoints WHERE work_id=? AND member_id=? ON CONFLICT(conversation_id,member_id) DO UPDATE SET seen=excluded.seen,messages=excluded.messages`, c.ID, w.ID, m.ID); err != nil {
+		var raw string
+		var seen int64
+		if err := tx.QueryRow(`SELECT messages,seen FROM action_checkpoints WHERE work_id=? AND member_id=?`, w.ID, m.ID).Scan(&raw, &seen); err != nil {
+			return err
+		}
+		var history []ChatMessage
+		if err := json.Unmarshal([]byte(raw), &history); err != nil {
+			return err
+		}
+		// 到此最终结果已消费；只从续接窗口移除运行结果，断点在事务提交前仍完整。
+		if _, err := tx.Exec(`INSERT INTO working_contexts(conversation_id,member_id,seen,messages) VALUES(?,?,?,?) ON CONFLICT(conversation_id,member_id) DO UPDATE SET seen=excluded.seen,messages=excluded.messages`, c.ID, m.ID, seen, asJSON(completedHistory(history))); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`DELETE FROM action_checkpoints WHERE work_id=? AND member_id=?`, w.ID, m.ID); err != nil {

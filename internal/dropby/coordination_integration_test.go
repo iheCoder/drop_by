@@ -49,6 +49,19 @@ func TestCoordinatorAPIAndTwoStagePeerHandoff(t *testing.T) {
 			}
 		}
 
+		// 行动来由已经与常驻现场分离；模拟成员从一次性交付中读取任务详情。
+		for _, message := range messages {
+			if strings.HasPrefix(message.Content, "本次行动的来由：") {
+				var cause struct {
+					Trigger Work `json:"trigger"`
+				}
+				json.Unmarshal([]byte(strings.TrimPrefix(message.Content, "本次行动的来由：")), &cause)
+				if cause.Trigger.ID == input.Trigger.ID {
+					input.Trigger = cause.Trigger
+				}
+			}
+		}
+
 		if (input.Self.ID != members[0].ID && input.Trigger.Kind != "research") || input.Trigger.Kind == "share" {
 			return jsonReply(Outcome{Outcome: "这次没有需要补充的，按自己的节奏旁听"}), nil
 		}

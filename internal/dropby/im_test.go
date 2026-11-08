@@ -148,7 +148,7 @@ func TestResumedContextKeepsSavedArtifactAndExcludesPortraitBytes(t *testing.T) 
 	if err := s.RecordTool(saved); err != nil {
 		t.Fatal(err)
 	}
-	// 后续有多个读取行动，已保存作品仍应保留在续接索引，不能再次写一份同名文稿。
+	// 后续有多个读取行动，已保存成果仍能主动发现，不依靠默认索引。
 	for i := 0; i < 8; i++ {
 		r := saved
 		r.ID = newID("tool")
@@ -163,7 +163,8 @@ func TestResumedContextKeepsSavedArtifactAndExcludesPortraitBytes(t *testing.T) 
 		t.Fatal(err)
 	}
 	raw := asJSON(input)
-	if !strings.Contains(raw, "saved_before_pause") || strings.Contains(raw, "data:image/") {
+	result, readErr := engine.Tools.perform(context.Background(), c, m, job, toolCall("read_tool_result", map[string]string{"query": "saved_artifact"}))
+	if readErr != nil || !strings.Contains(asJSON(result), "saved_before_pause") || strings.Contains(raw, "saved_before_pause") || strings.Contains(raw, "data:image/") {
 		t.Fatal("续接遗漏已存成果或把图片塞进文字上下文")
 	}
 }

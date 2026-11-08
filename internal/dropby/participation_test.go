@@ -199,7 +199,7 @@ func TestFirstMemberMayResearchWithoutAnnouncingIt(t *testing.T) {
 			return jsonReply(Outcome{Outcome: "本测试成员已完成这次回应"}), nil
 		}
 		if input.Self.ID == members[0].ID {
-			if len(ms) == 2 {
+			if len(ms) == 3 {
 				return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("schedule_exploration", map[string]any{"instruction": "查找纸飞机失速与重心的原始资料", "delay_seconds": 60})}}, nil
 			}
 			return jsonReply(Outcome{}), nil
@@ -338,7 +338,7 @@ func TestQuestionToolIsARealContributionAndKeepsQuestionContext(t *testing.T) {
 			return jsonReply(Outcome{Outcome: "本测试成员已完成这次回应"}), nil
 		}
 
-		if len(ms) == 2 {
+		if len(ms) == 3 {
 			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("ask_question", map[string]any{"text": "你喜欢我怎样分享新的想法？", "options": []string{"直接说出来", "先听我说完"}})}}, nil
 		}
 		return jsonReply(Outcome{}), nil
@@ -415,7 +415,7 @@ func TestProfileEditRetriesButOrdinaryHumanDoesNotReplaceRunningChat(t *testing.
 					<-release // 故意模拟无法立即取消的网络返回，最后仍须通过修订检查。
 					return jsonReply(Outcome{Message: "这是一份已经过时的旧人物回复。"}), nil
 				}
-				return jsonReply(Outcome{Message: input.Self.Profile + "；" + input.Trigger.Instruction}), nil
+				return jsonReply(Outcome{Message: input.Self.Profile + "；" + ms[1].Content}), nil
 			}), cfg)
 			e.dispatch(context.Background())
 			select {

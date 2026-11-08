@@ -63,10 +63,12 @@ func TestPrivateMemoryCannotLeakThroughSharedToolHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(asJSON(inputA["tool_runs"]), secret) || !strings.Contains(asJSON(inputA["tool_runs"]), copyRecord.ID) {
-		t.Fatal("自己的历史回忆只应保留回查入口，不能自动重放可能已经修正的旧笔记")
+	if inputA["tool_runs"] != nil || inputB["tool_runs"] != nil {
+		t.Fatal("资料索引仍自动进入现场")
 	}
-	if strings.Contains(asJSON(inputB["tool_runs"]), secret) || !strings.Contains(asJSON(inputB["tool_runs"]), "shared_search") {
-		t.Fatal("自动上下文泄露同伴经历，或丢失共享行动")
+	// 移出默认现场不影响主动发现，也不改变同伴私有记录的归属。
+	index, err := e.Tools.perform(context.Background(), c, b, wb, toolCall("read_tool_result", map[string]any{}))
+	if err != nil || strings.Contains(asJSON(index), secret) || !strings.Contains(asJSON(index), "shared_search") {
+		t.Fatalf("主动发现泄露私有笔记或遗漏共享资料: %v", err)
 	}
 }

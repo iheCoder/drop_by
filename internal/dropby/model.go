@@ -336,7 +336,7 @@ func requestJSON(ctx context.Context, client *http.Client, endpoint, key string,
 		client = &copy
 	}
 	if ctx.Err() != nil {
-		return &requestFailure{Stage: ctx.Err().Error(), NotSent: true}
+		return &requestFailure{Stage: ctx.Err().Error(), Cause: ctx.Err(), NotSent: true}
 	}
 	var wroteHeaders atomic.Bool
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{WroteHeaders: func() { wroteHeaders.Store(true) }}))
@@ -350,7 +350,12 @@ func requestJSON(ctx context.Context, client *http.Client, endpoint, key string,
 		if errors.As(e, &ne) && ne.Timeout() {
 			stage = "等待服务响应超时"
 		}
-		return &requestFailure{Stage: stage, Temporary: ctx.Err() == nil, NotSent: notSent}
+		// 取消和超时仍交由上层按原语义恢复，NotSent 只决定本笔预留如何结算。
+		cause := e
+		if ctx.Err() != nil {
+			cause, stage = ctx.Err(), ctx.Err().Error()
+		}
+		return &requestFailure{Stage: stage, Cause: cause, Temporary: ctx.Err() == nil, NotSent: notSent}
 	}
 	defer r.Body.Close()
 	if r.StatusCode < 200 || r.StatusCode >= 300 {
@@ -366,6 +371,9 @@ func requestJSON(ctx context.Context, client *http.Client, endpoint, key string,
 			} `json:"error"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&detail)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		message := strings.ReplaceAll(detail.Error.Message, key, "[credential]")
 		return &requestFailure{Detail: message, Stage: "服务请求失败", Status: r.StatusCode, RetryAfter: wait, Temporary: r.StatusCode == 429 || r.StatusCode == 408 || r.StatusCode == 500 || r.StatusCode == 502 || r.StatusCode == 503 || r.StatusCode == 504}
 	}

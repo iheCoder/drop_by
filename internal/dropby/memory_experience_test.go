@@ -122,8 +122,7 @@ func TestMemoryCorrectionRejectsOldVersion(t *testing.T) {
 }
 
 func TestRelevantMemoryDoesNotCrowdOutCurrentWork(t *testing.T) {
-	// 相关旧经历排在数百条新笔记之前，且输入增长只发生在独立小窗口。
-	// 最新任务约束、原始触发、稳定特质及未完成工作不能被档案量挤掉。
+	// 数百条档案不自动进入首次现场；需要的经历仍可通过工具发现。
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "research")
 	trigger := userMessage(c, "21:10 的邀请卡要能一键关闭开场，按按钮才播放动画；请保留三种邀请方式。")
@@ -141,22 +140,18 @@ func TestRelevantMemoryDoesNotCrowdOutCurrentWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recalled := input["memory"].([]Memory)
-	if len(recalled) != 1 || recalled[0].ID != useful.ID {
-		t.Fatalf("旧相关经历没有召回或超出独立窗口：%v", recalled)
+	if input["memory"] != nil || input["self"].(map[string]any)["profile"] != m.Profile || !strings.Contains(asJSON(input["latest_messages"]), "三种邀请方式") {
+		t.Fatal("首次现场仍自动注入记忆，或丢失身份/当前消息")
 	}
-	if input["self"].(map[string]any)["profile"] != m.Profile || !strings.Contains(asJSON(input["trigger_message"]), "三种邀请方式") || !strings.Contains(asJSON(input["work"]), w.ID) {
-		t.Fatal("召回挤掉了人物、当前条件或正在推进的工作")
-	}
-	// 独立人物不可读；切换到无关主题时，没有命中的旧故事也无需填满窗口。
-	if notes, err := s.relevantMemories(m.ID, c.ID, "volcano basalt"); err != nil || len(notes) != 0 {
-		t.Fatalf("无关场景仍强行带入旧记忆：%v %v", notes, err)
+	// 旧经历仍可按需检索，无需先知道 ID；无需默认灌入全部匹配项。
+	found, err := box.perform(context.Background(), c, m, w, toolCall("search_memory", map[string]string{"query": "关闭入口"}))
+	if err != nil || !strings.Contains(asJSON(found), useful.ID) {
+		t.Fatalf("主动检索找不到经历：%v", err)
 	}
 }
 
 func TestCorrectionBeforeSilenceAndNoStaleToolReplay(t *testing.T) {
-	// 模型在参与判断阶段更新理解，最后选择沉默。下一次行动只能自动读到
-	// 新版，不能经 remember/search/read 工具日志重新注入旧标签。
+	// 成员更新理解后保持安静；下次现场不自动重放笔记，主动读取获得新版。
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "chat")
 	box := &Toolbox{Store: s, Hub: NewHub()}
@@ -190,7 +185,8 @@ func TestCorrectionBeforeSilenceAndNoStaleToolReplay(t *testing.T) {
 		t.Fatalf("安静时纠正没有完成：%+v", result)
 	}
 	input, err := e.contextFor(c, m, w)
-	if err != nil || strings.Contains(asJSON(input), old.Body) || !strings.Contains(asJSON(input["memory"]), "点击触发小动画") {
+	updated, readErr := s.readMemory(m.ID, c.ID, old.ID, nil)
+	if err != nil || readErr != nil || input["memory"] != nil || strings.Contains(asJSON(input), old.Body) || !strings.Contains(asJSON(updated), "点击触发小动画") {
 		t.Fatalf("下次行动丢失新理解或重放了旧标签：%v", err)
 	}
 	messages, _ := s.Messages(c.ID, 0, 20)

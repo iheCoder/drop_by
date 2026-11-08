@@ -189,7 +189,8 @@ func TestPersonalRelationshipRecallUsesCorrection(t *testing.T) {
 	}
 	json.Unmarshal([]byte(asJSON(raw)), &first)
 	input, err := e.personalContext(m, Work{})
-	if err != nil || !strings.Contains(asJSON(input["relationships"]), first.Memory.ID) {
+	found, readErr := s.searchMemories(m.ID, "", "选择题", 0)
+	if err != nil || readErr != nil || input["relationships"] != nil || !strings.Contains(asJSON(found), first.Memory.ID) {
 		t.Fatalf("自己对人的认识没有被召回: %v", err)
 	}
 	_, err = e.Tools.remember(context.Background(), room, m, work, memoryWrite{ID: first.Memory.ID, Revision: &first.Memory.Revision, Body: "做取舍时用选项，开放探索时先一起发散。", SubjectIDs: &subjects, SourceIDs: []string{source.ID}})
@@ -197,7 +198,8 @@ func TestPersonalRelationshipRecallUsesCorrection(t *testing.T) {
 		t.Fatal(err)
 	}
 	input, _ = e.personalContext(m, Work{})
-	if strings.Contains(asJSON(input), "总想用选择题") || !strings.Contains(asJSON(input), "开放探索时先一起发散") {
+	updated, readErr := s.readMemory(m.ID, "", first.Memory.ID, nil)
+	if readErr != nil || input["relationships"] != nil || strings.Contains(asJSON(input), "总想用选择题") || !strings.Contains(asJSON(updated), "开放探索时先一起发散") {
 		t.Fatal("个人活动仍使用旧标签")
 	}
 	other, _ := e.personalContext(people[1], Work{})

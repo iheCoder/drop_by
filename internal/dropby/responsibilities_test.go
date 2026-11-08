@@ -151,7 +151,7 @@ func TestExplicitFirstSpeakerScopeDoesNotMuteOtherTopics(t *testing.T) {
 	e := NewEngine(s, nil, testConfig())
 	for _, member := range m {
 		input, err := e.contextFor(c, member, w)
-		if err != nil || !strings.Contains(asJSON(input["trigger_message"]), "A 先说") || strings.Contains(asJSON(input["trigger"]), "first_speakers") {
+		if err != nil || !strings.Contains(asJSON(input["latest_messages"]), "A 先说") || strings.Contains(asJSON(input["trigger"]), "first_speakers") {
 			t.Fatalf("原指示丢失或变成统一排序规则: %v", err)
 		}
 	}

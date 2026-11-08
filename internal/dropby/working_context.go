@@ -25,6 +25,7 @@ func (s *Store) loadWorkingContext(room, member string) (workingContext, error) 
 		return result, err
 	}
 	err = json.Unmarshal([]byte(raw), &result.Messages)
+	result.Messages = completedHistory(result.Messages)
 	return result, err
 }
 
@@ -74,19 +75,12 @@ const workingContextPrompt = `
 你在持续参与这段交流。读过新消息后，根据自己的关注决定回应什么、继续做什么，或暂时不说话。
 工作上下文会延续到下次行动。话题转变、问题告一段落、资料已经读懂，或旧内容妨碍当前思考时，可以调用 organize_context 整理；无需每轮整理，也不必因为一句插话就放下原话题。可以先回应，再整理。
 整理时留下接下来有帮助的便笺和必要原文引用：保持说话者、不同意见、更正和未完打算各自的含义，不把分歧合并成共识，也不把一次表达写成永久特质。原消息、工具结果和成果仍可查回。
-已经读到的内容足以回应时可以先回应；后来到达的普通消息接着处理，不必推翻已经形成的表达。最新现场中的用户控制、人物资料和实际工作状态优先于旧窗口。
+已经读到的内容足以回应时可以先回应；后来到达的普通消息接着处理，不必推翻已经形成的表达。最新现场中的用户控制与人物资料优先于旧窗口。需要经历、资料或工作进展时，可主动使用记忆、历史、工具结果、成果和工作读取工具。
+本轮发言、安静或结束只是本次行动的决定；有新输入时结合新内容自行判断。要延续的理解或打算留在工作窗口与整理便笺中，outcome 只记本次运行结果。
 `
 
-// 私有笔记和旧的写入参数不重新注入默认索引，避免已整理的内容绕路回来。
-func sourceArguments(run ToolRun) string {
-	if run.Name == "search" || run.Name == "read_page" {
-		return string(run.Arguments)
-	}
-	return ""
-}
-
 // 每次只携带一份最新现场。旧现场中的实际交付原话留下，状态、索引和
-// 自动召回由最新现场替换；不触碰普通聊天、模型便笺及不透明协议项目。
+// 历史自动召回不再注入；不触碰普通聊天、模型便笺及不透明协议项目。
 func refreshScene(history []ChatMessage) []ChatMessage {
 	result := make([]ChatMessage, 0, len(history))
 	for _, msg := range history {
@@ -145,6 +139,61 @@ func withScene(history []ChatMessage, scene ChatMessage) []ChatMessage {
 	result = append(result, history[at:]...)
 	if len(result) > 0 && result[len(result)-1].Role == "assistant" {
 		result = append(result, ChatMessage{Role: "user", Content: "本次行动的最新现场已更新，请继续自行决定如何参与。"})
+	}
+	return result
+}
+
+// 行动的原始来由属于一次性交付的经历，不是每次更新现场都要重申的指令。
+// 已在本批新消息里的触发原话不重复附带；旧任务仍可首次交付其真实来由。
+func (e *Engine) actionInput(c Conversation, w Work, delivered []Message) (ChatMessage, error) {
+	trigger := roleWork(w)
+	input := map[string]any{}
+	known := map[string]bool{}
+	for _, message := range delivered {
+		known[message.ID] = true
+		if trigger.Instruction == message.Body {
+			trigger.Instruction = ""
+		}
+	}
+	if w.SourceID != "" && c.ID != "" {
+		var source Message
+		err := e.Store.db.QueryRow(`SELECT conversation_id,seq,id,author_id,body,reply_to,created_at FROM messages WHERE id=? AND conversation_id=?`, w.SourceID, c.ID).Scan(&source.ConversationID, &source.Seq, &source.ID, &source.AuthorID, &source.Body, &source.ReplyTo, &source.CreatedAt)
+		if err != nil && err != sql.ErrNoRows {
+			return ChatMessage{}, err
+		}
+		if err == nil {
+			if !known[source.ID] {
+				input["trigger_message"] = source
+			}
+			if trigger.Instruction == source.Body {
+				trigger.Instruction = ""
+			}
+			if source.ReplyTo != "" && !known[source.ReplyTo] {
+				var quoted Message
+				err := e.Store.db.QueryRow(`SELECT conversation_id,seq,id,author_id,body,reply_to,created_at FROM messages WHERE id=? AND conversation_id=?`, source.ReplyTo, c.ID).Scan(&quoted.ConversationID, &quoted.Seq, &quoted.ID, &quoted.AuthorID, &quoted.Body, &quoted.ReplyTo, &quoted.CreatedAt)
+				if err != nil && err != sql.ErrNoRows {
+					return ChatMessage{}, err
+				}
+				if err == nil {
+					input["quoted_message"] = quoted
+				}
+			}
+		}
+	}
+	input["trigger"] = trigger
+	return ChatMessage{Role: "user", Content: "本次行动的来由：" + asJSON(input)}, nil
+}
+
+// 已完成的 outcome 属于运行记录；不把“本轮安静”等决定续接为下一轮状态。
+// 仅用于已完成窗口，绝不用于待消费的断点；原话、工具链和便笺仍按原样保留。
+func completedHistory(history []ChatMessage) []ChatMessage {
+	result := make([]ChatMessage, 0, len(history))
+	for _, item := range history {
+		var outcome map[string]json.RawMessage
+		if item.Role == "assistant" && len(item.ToolCalls) == 0 && json.Unmarshal([]byte(item.Content), &outcome) == nil && outcome["outcome"] != nil {
+			continue
+		}
+		result = append(result, item)
 	}
 	return result
 }

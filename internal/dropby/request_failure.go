@@ -10,6 +10,7 @@ import (
 // requestFailure 保留故障分类和供应商 error.message，凭据在请求边界脱敏。
 // 只在外部只读/模型请求边界重试；不重放工具，也不重跑整项工作。
 type requestFailure struct {
+	Cause      error // 保留取消/超时等原始语义；费用状态不能改变调度器的恢复判断。
 	Detail     string
 	Stage      string
 	Status     int
@@ -17,6 +18,8 @@ type requestFailure struct {
 	Temporary  bool
 	NotSent    bool // 仅在可证明连接未建立/请求尚未开始时释放预留。
 }
+
+func (e *requestFailure) Unwrap() error { return e.Cause }
 
 func (e *requestFailure) Error() string {
 	if e.Status != 0 {

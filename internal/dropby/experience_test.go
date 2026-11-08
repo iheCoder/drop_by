@@ -52,7 +52,7 @@ func TestAnotherMemberCanReplyAfterFirstSchedulesResearch(t *testing.T) {
 		}
 
 		if input.Self.ID == first.ID {
-			if len(ms) == 2 {
+			if len(ms) == 3 {
 				return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("schedule_exploration", map[string]any{"instruction": "查找公开原始材料", "reason": "需要核实", "delay_seconds": 10})}}, nil
 			}
 			return jsonReply(Outcome{Message: "我先说个看法，再去核对原始材料。", Unfinished: true}), nil

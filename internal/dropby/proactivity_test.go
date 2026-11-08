@@ -155,7 +155,7 @@ func TestQuietMemberCanScheduleReconsiderationWithoutPosting(t *testing.T) {
 	s, c, m := fixture(t)
 	w := addWork(t, s, c, m, "explore")
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		if len(ms) == 2 {
+		if len(ms) == 3 {
 			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("schedule_followup", map[string]any{"instruction": "晚点再想卡片的结尾", "delay_seconds": 3600})}}, nil
 		}
 		return jsonReply(Outcome{}), nil
@@ -200,7 +200,7 @@ func TestIndependentBackgroundWorkDoesNotOccupyHumanResponse(t *testing.T) {
 		if strings.HasPrefix(ms[0].Content, "你只解释") {
 			return jsonReply(Control{}), nil
 		}
-		if len(ms) == 2 {
+		if len(ms) == 3 {
 			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("send_message", map[string]string{"message": "我在，接着聊。"})}}, nil
 		}
 		return jsonReply(Outcome{}), nil

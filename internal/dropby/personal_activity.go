@@ -191,44 +191,8 @@ func (e *Engine) personalContext(m Member, w Work) (map[string]any, error) {
 			known[id] = true
 		}
 	}
-	memories, err := e.Store.relevantMemories(m.ID, "", a.Body+"\n"+m.Profile+"\n"+w.Instruction)
-	if err != nil {
-		return nil, err
-	}
-	// 按相关人的 ID 召回相处理解，不要求当前话题重复当时笔记的字面关键词。
-	relations, err := e.Store.relationshipMemories(m.ID, "", []string{"user"})
-	if err != nil {
-		return nil, err
-	}
-	runs, err := e.Store.personalToolRuns(m.ID)
-	if err != nil {
-		return nil, err
-	}
-	activity := []map[string]any{}
-	for _, r := range runs {
-		if r.Name == "organize_context" || r.Name == "remember" || r.Name == "read_memory" || r.Name == "search_memory" || r.Name == "read_tool_result" {
-			continue
-		}
-		if r.Status == "failed" || r.Status == "cancelled" {
-			continue
-		}
-		activity = append(activity, map[string]any{"id": r.ID, "name": r.Name, "arguments": sourceArguments(r), "status": r.Status, "created_at": r.CreatedAt})
-	}
-	// 未完成事项只是自己的背景之一；不作为这次探索必须延续的命题。
-	jobs, err := e.Store.OpenWork("")
-	if err != nil {
-		return nil, err
-	}
-	ownJobs := []Work{}
-	for _, job := range jobs {
-		if job.MemberID == m.ID {
-			job = roleWork(job)
-
-			ownJobs = append(ownJobs, job)
-		}
-	}
-	openCount := len(ownJobs)
-	return map[string]any{"open_work_count": openCount, "time": now(), "local_time": time.Now().Format(time.RFC3339), "self": map[string]any{"id": m.ID, "name": m.Name, "profile": m.Profile, "tools": m.Tools}, "personal_focus": PersonalActivity{Body: a.Body, UpdatedAt: a.UpdatedAt}, "work": ownJobs, "memory": memories, "relationships": relations, "recent_activity": activity, "people": people, "conversations": destinations, "trigger": roleWork(w)}, nil
+	// 个人活动同样不自动加载旧经历、工具索引和工作正文，按需使用已有读取工具。
+	return map[string]any{"time": now(), "local_time": time.Now().Format(time.RFC3339), "self": map[string]any{"id": m.ID, "name": m.Name, "profile": m.Profile, "tools": m.Tools}, "personal_focus": PersonalActivity{Body: a.Body, UpdatedAt: a.UpdatedAt}, "people": people, "conversations": destinations, "trigger": map[string]string{"id": w.ID, "kind": w.Kind}}, nil
 }
 
 func (s *Store) personalToolRuns(member string) ([]ToolRun, error) {
