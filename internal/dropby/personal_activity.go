@@ -223,19 +223,16 @@ func (e *Engine) personalContext(m Member, w Work) (map[string]any, error) {
 	for _, job := range jobs {
 		if job.MemberID == m.ID {
 			job = roleWork(job)
-			job.Instruction = contextExcerpt(job.Instruction, 500)
+
 			ownJobs = append(ownJobs, job)
 		}
 	}
 	openCount := len(ownJobs)
-	if len(ownJobs) > 32 {
-		ownJobs = ownJobs[:32]
-	}
-	return map[string]any{"open_work_count": openCount, "time": now(), "local_time": time.Now().Format(time.RFC3339), "self": map[string]any{"id": m.ID, "name": m.Name, "profile": m.Profile, "tools": m.Tools}, "personal_focus": PersonalActivity{Body: contextExcerpt(a.Body, 800), UpdatedAt: a.UpdatedAt}, "work": ownJobs, "memory": memories, "relationships": relations, "recent_activity": activity, "people": people, "conversations": destinations, "trigger": roleWork(w)}, nil
+	return map[string]any{"open_work_count": openCount, "time": now(), "local_time": time.Now().Format(time.RFC3339), "self": map[string]any{"id": m.ID, "name": m.Name, "profile": m.Profile, "tools": m.Tools}, "personal_focus": PersonalActivity{Body: a.Body, UpdatedAt: a.UpdatedAt}, "work": ownJobs, "memory": memories, "relationships": relations, "recent_activity": activity, "people": people, "conversations": destinations, "trigger": roleWork(w)}, nil
 }
 
 func (s *Store) personalToolRuns(member string) ([]ToolRun, error) {
-	rows, err := s.db.Query(`SELECT id,work_id,member_id,name,arguments,result,status,created_at FROM tool_runs WHERE conversation_id='' AND member_id=? ORDER BY rowid DESC LIMIT 8`, member)
+	rows, err := s.db.Query(`SELECT id,work_id,member_id,name,arguments,result,status,created_at FROM tool_runs WHERE conversation_id='' AND member_id=? ORDER BY rowid DESC`, member)
 	if err != nil {
 		return nil, err
 	}
@@ -254,9 +251,9 @@ func (s *Store) personalToolRuns(member string) ([]ToolRun, error) {
 }
 
 func (s *Store) relationshipMemories(member, room string, subjects []string) ([]Memory, error) {
-	rows, err := s.db.Query(memorySelect+` WHERE m.member_id=? AND (m.conversation_id=? OR m.conversation_id='' OR ?='')
+	rows, err := s.db.Query(memorySelect+` WHERE m.member_id=?
  AND EXISTS(SELECT 1 FROM json_each(d.subject_ids) WHERE value IN (SELECT value FROM json_each(?)))
- ORDER BY m.updated_at DESC,m.rowid DESC LIMIT 4`, member, room, room, asJSON(subjects))
+ ORDER BY m.updated_at DESC,m.rowid DESC`, member, asJSON(subjects))
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +264,7 @@ func (s *Store) relationshipMemories(member, room string, subjects []string) ([]
 		if err != nil {
 			return nil, err
 		}
-		m.Body = contextExcerpt(m.Body, 500)
+
 		result = append(result, m)
 	}
 	return result, rows.Err()

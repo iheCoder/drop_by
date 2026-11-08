@@ -48,7 +48,7 @@ func scanMemory(row interface{ Scan(...any) error }, prefix ...any) (Memory, err
 }
 
 func (s *Store) memory(member, room, id string) (Memory, error) {
-	m, err := scanMemory(s.db.QueryRow(memorySelect+` WHERE m.id=? AND m.member_id=? AND (m.conversation_id=? OR m.conversation_id='')`, id, member, room))
+	m, err := scanMemory(s.db.QueryRow(memorySelect+` WHERE m.id=? AND m.member_id=?`, id, member))
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, fmt.Errorf("当前没有权限读取这条经历，或这条经历已被删除")
 	}
@@ -56,7 +56,7 @@ func (s *Store) memory(member, room, id string) (Memory, error) {
 }
 
 // MemoryEvidence 保留作者、来源会话与实际原文，避免将他人的转述改写为自己
-// 的亲历。其他会话只返回来源标识；携带个人理解不等于获得跨会话原文权限。
+// 的亲历。本人参与过的其他聊天原文可回读，是否分享由成员判断。
 type MemoryEvidence struct {
 	ID             string `json:"id"`
 	ConversationID string `json:"conversation_id"`
@@ -77,8 +77,13 @@ func (s *Store) memoryEvidence(member, room string, ids, inherited []string) ([]
 			err = s.db.QueryRow(`SELECT conversation_id,member_id,name,result,status FROM tool_runs WHERE id=?`, id).
 				Scan(&e.ConversationID, &e.AuthorID, &name, &e.Body, &status)
 			e.Kind = "tool:" + name
-			if err == nil && (status != "succeeded" || name == "organize_context" || name == "remember" || name == "read_memory" || name == "search_memory" || name == "read_tool_result") {
-				return nil, fmt.Errorf("经历依据需要原始消息或成功行动；失败、笔记及其复制不能作为新的事实依据：%s", id)
+			// 失败和旧笔记也可以成为反思的来源；保留真实种类与状态，
+			// 不由代码替成员判断该材料能支持什么结论。
+			if err == nil {
+				if !toolResultVisibleTo(ToolRun{Name: name, MemberID: e.AuthorID}, member) {
+					return nil, fmt.Errorf("这不是本人的记忆记录：%s", id)
+				}
+				e.Kind += ":" + status
 			}
 		}
 		if errors.Is(err, sql.ErrNoRows) {
@@ -93,25 +98,13 @@ func (s *Store) memoryEvidence(member, room string, ids, inherited []string) ([]
 		if err != nil {
 			return nil, err
 		}
-		// 个人活动本来就可以查看本人所在的聊天，也会向那里发消息。
-		// 这些真实记录可成为本人经历，不要求先把同一消息复制回个人空间。
-		// 群内回忆仍沿用该群边界；没有加入的聊天和同伴个人行动不会因此开放。
-		personalSource := false
-		if room == "" && e.ConversationID != "" {
-			var joined int
-			if err := s.db.QueryRow(`SELECT count(*) FROM participants WHERE conversation_id=? AND member_id=?`, e.ConversationID, member).Scan(&joined); err != nil {
+		// 来源由真实参与关系决定；当前在哪个聊天回忆不改变本人已知的经历。
+		if e.ConversationID != "" {
+			if _, err := s.accessibleConversation(member, e.ConversationID); err != nil {
 				return nil, err
 			}
-			personalSource = joined > 0
-		}
-		// 本人的个人探索材料也可以用于其后在聊天里形成的经历。
-		if e.ConversationID != room && !personalSource && !(e.ConversationID == "" && e.AuthorID == member) {
-			if !contains(inherited, id) {
-				return nil, fmt.Errorf("不能用未携带的其他聊天记录形成经历：%s", id)
-			}
-			e.Body = "" // 仍可解释出处，但不借个人笔记读取别的群或私聊原文。
-		} else {
-			e.Body = contextExcerpt(e.Body, 1800)
+		} else if e.AuthorID != member {
+			return nil, fmt.Errorf("这不是本人的个人记录：%s", id)
 		}
 		result = append(result, e)
 	}
@@ -131,10 +124,6 @@ func (s *Store) readMemory(member, room, id string, revision *int) (any, error) 
 		}
 		if err := json.Unmarshal([]byte(raw), &m); err != nil {
 			return nil, err
-		}
-		// 缩小可见范围之后，旧版本不能绕过新的会话边界。
-		if m.ConversationID != "" && m.ConversationID != room {
-			return nil, fmt.Errorf("旧版本属于其他聊天")
 		}
 	}
 	evidence, err := s.memoryEvidence(member, room, m.SourceIDs, m.SourceIDs)
@@ -186,11 +175,6 @@ func (t *Toolbox) remember(ctx context.Context, c Conversation, m Member, w Work
 	}
 	if args.SubjectIDs != nil {
 		next.SubjectIDs = uniqueMemoryIDs(*args.SubjectIDs)
-	}
-	for _, id := range next.SubjectIDs {
-		if id != "user" && id != m.ID && !contains(c.MemberIDs, id) && !contains(previous.SubjectIDs, id) {
-			return nil, fmt.Errorf("经历涉及的人必须来自当前聊天或原有经历：%s", id)
-		}
 	}
 	if next.Body != "" {
 		// 没有显式列出来源时仍绑定本次真实触发，兼容原有工具调用。原来的

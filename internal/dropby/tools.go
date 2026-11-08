@@ -32,20 +32,20 @@ func textField(desc string) any { return map[string]string{"type": "string", "de
 
 func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition {
 	defs := []ToolDefinition{
-		definition("organize_context", "整理本人在当前场景的工作上下文。用续接便笺和选中的完整原文替换旧窗口，随后继续行动；不删除历史、不修改人物或任务状态。省略引用则只留便笺。", map[string]any{"note": textField("接下来仍有用的理解、分歧、更正或未完打算，自由撰写"), "keep_message_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "需要继续保留完整原话的当前聊天消息 ID"}, "keep_tool_run_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "需要继续保留完整结果的可见工具记录 ID"}}, "note"),
+		definition("organize_context", "整理本人在当前场景的工作上下文。用续接便笺和选中的完整原文替换旧窗口，随后继续行动；不删除历史、不修改人物或任务状态。省略引用则只留便笺。", map[string]any{"note": textField("接下来仍有用的理解、分歧、更正或未完打算，自由撰写"), "keep_message_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "需要保留原话的消息 ID，可来自本人参与的其他聊天"}, "keep_tool_run_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "需要继续保留完整结果的可见工具记录 ID"}}, "note"),
 		definition("send_message", "发送消息后可继续行动。可发到自己所在的聊天；个人活动省略目的地时发给真人私聊。", map[string]any{"conversation_id": textField("目的聊天 ID，普通聊天省略则发在当前聊天"), "message": textField("自己的消息"), "reply_to": textField("可选的目的聊天消息 ID"), "evidence": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "可选成果 tool_run ID"}, "notify": map[string]any{"type": "boolean", "description": "额外系统通知，默认 false"}}, "message"),
-		definition("read_tool_result", "分段查看当前聊天已保存的完整工具结果，供旧正文折叠后核对。", map[string]any{"id": textField("真实 tool_run ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}, "id"),
+		definition("read_tool_result", "分段查看本人可访问的完整工具结果，供旧正文折叠后核对。", map[string]any{"id": textField("真实 tool_run ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}, "id"),
 		definition("read_memory", "读取个人记忆及来源；默认最新版本，revision 可指定历史版本。", map[string]any{"id": textField("已有记忆 ID"), "revision": map[string]any{"type": "integer", "minimum": 0, "description": "通常省略；回查历史版本时才填写"}}, "id"),
 		definition("remember", "保存个人经历或想法。更新用原 id 和 revision；body 为空时删除。", map[string]any{
 			"id": textField("更新已有笔记的 ID；新建省略"), "revision": map[string]any{"type": "integer", "minimum": 0, "description": "更新/删除时填写读到的 revision；发生冲突先重新读取"},
 			"scope":       map[string]any{"type": "string", "enum": []string{"conversation", "member"}, "description": "新建默认 conversation，更新默认沿用；member 可携带自己的非敏感经历与相处理解，不搬运秘密或私聊原文"},
 			"body":        textField("以自己的视角记下经历、想法或以后想怎么做"),
-			"subject_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "相关人的 ID，来自 people/self"},
-			"source_ids":  map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "相关消息或成功行动 ID；省略时绑定本次触发"},
+			"subject_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "相关人的真实 ID，不限当前聊天成员"},
+			"source_ids":  map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "相关消息或行动 ID；可引用失败和旧笔记，来源状态如实保留；省略时绑定本次触发"},
 		}, "body"),
-		definition("read_history", "检索当前聊天原话。可用多词换词搜索、before_seq 向前翻页；指定 id 后用 offset 分段读取完整原文。只能访问当前聊天。", map[string]any{"query": textField("字词以空格分隔，任一匹配；空串浏览记录"), "before_seq": map[string]any{"type": "integer", "minimum": 0}, "id": textField("完整读取某条消息时填写实际ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
-		definition("search_memory", "查找自己的当前聊天及可携带经历。多个词以空格分隔，任一匹配；空串浏览，before 用返回游标翻页。旧经历不必常驻上下文，需要时 read_memory 读全文。", map[string]any{"query": textField("想找回的词；可换词检索，不是向量语义搜索"), "before": map[string]any{"type": "integer", "minimum": 0}}, "query"),
-		definition("read_work", "查看当前聊天的实际工作状态与结果。提供 id 读完整工作；省略 id 列出未完工作，可按 member_id 筛选、offset 翻页。不能访问其他群或私聊。", map[string]any{"id": textField("实际工作ID"), "member_id": textField("可选，浏览某位成员的未完工作"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
+		definition("read_history", "检索当前聊天原话。可用多词换词搜索、before_seq 向前翻页；指定 id 后用 offset 分段读取完整原文。可用 conversation_id 选择本人参与的聊天。", map[string]any{"query": textField("字词以空格分隔，任一匹配；空串浏览记录"), "before_seq": map[string]any{"type": "integer", "minimum": 0}, "id": textField("完整读取某条消息时填写实际ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
+		definition("search_memory", "查找自己的全部经历。多个词以空格分隔，任一匹配；空串浏览，before 用返回游标翻页。旧经历不必常驻上下文，需要时 read_memory 读全文。", map[string]any{"query": textField("想找回的词；可换词检索，不是向量语义搜索"), "before": map[string]any{"type": "integer", "minimum": 0}}, "query"),
+		definition("read_work", "查看当前聊天的实际工作状态与结果。提供 id 读完整工作；省略 id 列出未完工作，可按 member_id 筛选、offset 翻页。可用 conversation_id 选择本人参与的其他聊天。", map[string]any{"id": textField("实际工作ID"), "member_id": textField("可选，浏览某位成员的未完工作"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
 		// 本地成果创作是基本能力，旧成员不必重新配置工具才能生成网页。
 		definition("save_artifact", "保存可查看的 Markdown 或 HTML 成果，如小卡片、文章、网页草稿。HTML 使用完整自包含文档和内联样式，不依赖 CDN 或外部资源。修改时提供原 id，新版本保留历史。", map[string]any{"id": textField("修改已有成果的 ID，新建时省略"), "title": textField("具体标题"), "format": map[string]any{"type": "string", "enum": []string{"markdown", "html"}, "description": "新建默认 markdown；修改省略时沿用原格式"}, "content": textField("完整内容；HTML 使用完整源代码")}, "title", "content"),
 		definition("read_artifact", "发现当前聊天的成果，或读取指定成果及历史版本。不知道 ID 时用 query 按标题查找，空串浏览，可用 offset 翻页；知道 ID 后读取正文。", map[string]any{"id": textField("已有成果 ID，可省略"), "query": textField("要找的标题字词，省略则浏览"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
@@ -90,17 +90,14 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 			if !c.ResearchPaused && t.Config.SearchKey != "" {
 				defs = append(defs, definition("read_page", "读取公开网页，返回正文或本次读取结果。", map[string]any{"url": textField("公开 HTTP(S) 地址")}, "url"))
 			}
-
 		}
 	}
-	if c.Kind == "personal" {
-		defs = append(defs, definition("read_conversation", "查看自己所在聊天的当前现场。用于选择交流对象或接续关系；历史可继续用 read_history。", map[string]any{"conversation_id": textField("conversations 中的聊天 ID")}, "conversation_id"))
-	}
+	defs = append(defs, definition("read_conversation", "查看自己所在聊天的当前现场。用于选择交流对象或接续关系；历史可继续用 read_history。", map[string]any{"conversation_id": textField("conversations 中的聊天 ID")}, "conversation_id"))
 	for i := range defs {
 		props := defs[i].Function.Parameters.(map[string]any)["properties"].(map[string]any)
 		name := defs[i].Function.Name
-		if c.Kind == "personal" && (name == "read_history" || name == "read_work" || name == "read_artifact" || name == "read_tool_result" || name == "read_memory" || name == "search_memory" || name == "remember") {
-			props["conversation_id"] = textField("可选，自己所在的聊天 ID；省略访问个人记录")
+		if name == "read_history" || name == "read_work" || name == "read_artifact" || name == "read_tool_result" || name == "read_memory" || name == "search_memory" || name == "remember" {
+			props["conversation_id"] = textField("可选，自己参与的聊天 ID；省略使用当前场景")
 		}
 
 		switch name {
@@ -284,7 +281,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		}
 	}
 	var err error
-	if c.Kind == "personal" && args.ConversationID != "" && call.Function.Name != "send_message" && call.Function.Name != "read_conversation" {
+	if args.ConversationID != "" && (call.Function.Name == "read_history" || call.Function.Name == "read_work" || call.Function.Name == "read_artifact" || call.Function.Name == "read_tool_result" || call.Function.Name == "read_memory" || call.Function.Name == "search_memory" || call.Function.Name == "remember") {
 		c, err = t.Store.accessibleConversation(m.ID, args.ConversationID)
 		if err != nil {
 			return nil, err
@@ -330,7 +327,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		}
 		var run ToolRun
 		var originalArguments string
-		if err := t.Store.db.QueryRow(`SELECT member_id,name,result,arguments,created_at FROM tool_runs WHERE id=? AND (conversation_id=? OR (conversation_id='' AND member_id=?)) AND (conversation_id<>'' OR member_id=?)`, args.ID, c.ID, m.ID, m.ID).Scan(&run.MemberID, &run.Name, &run.Result, &originalArguments, &run.CreatedAt); err != nil {
+		if err := t.Store.db.QueryRow(`SELECT member_id,name,result,arguments,created_at FROM tool_runs WHERE id=? AND ((conversation_id='' AND member_id=?) OR conversation_id IN (SELECT conversation_id FROM participants WHERE member_id=?))`, args.ID, m.ID, m.ID).Scan(&run.MemberID, &run.Name, &run.Result, &originalArguments, &run.CreatedAt); err != nil {
 			return nil, fmt.Errorf("当前聊天没有这条可读取的行动记录")
 		}
 		if !toolResultVisibleTo(run, m.ID) {
@@ -421,9 +418,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		end := args.Offset + min(limit, len(filtered)-args.Offset)
 		page := filtered[args.Offset:end]
 		for i := range page {
-			page[i].Instruction = clip(page[i].Instruction, 500)
 			page[i] = roleWork(page[i])
-			page[i].Result = clip(page[i].Result, 700)
 		}
 		return map[string]any{"work": page, "next_offset": end, "has_more": end < len(filtered)}, nil
 	case "delegate_work":

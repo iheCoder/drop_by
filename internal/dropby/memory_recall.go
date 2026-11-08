@@ -7,10 +7,6 @@ import (
 	"unicode"
 )
 
-// 长期经历有独立的小窗口。它不从当前任务、最新原话、人物或工作进度里借空间，
-// 不随档案条数增长。需要更多细节时，成员用 read_memory/read_history 主动回查。
-const memoryContextChars = 3600
-
 // 中文相邻字对与英文单词提供本地候选检索，无网络费用。这里的 BM25 只衡量
 // 文本相关性，不衡量好感、人格或证据可信度；换说法仍可由成员换词主动检索。
 // 不把人物设定拼进查询，否则“我喜欢设计”会让每个话题都召回旧设计经历。
@@ -56,7 +52,7 @@ func (s *Store) relevantMemories(member, room, query string) ([]Memory, error) {
 	if len(queryTerms) == 0 {
 		return result, nil
 	}
-	rows, err := s.db.Query(memorySelect+` WHERE m.member_id=? AND (m.conversation_id=? OR m.conversation_id='')`, member, room)
+	rows, err := s.db.Query(memorySelect+` WHERE m.member_id=?`, member)
 	if err != nil {
 		return nil, err
 	}
@@ -113,16 +109,10 @@ func (s *Store) relevantMemories(member, room, query string) ([]Memory, error) {
 		return items[i].score > items[j].score
 	})
 	for _, item := range items {
-		if item.score == 0 || len(result) == 6 {
+		if item.score == 0 {
 			break
 		}
-		m := item.memory
-		m.Body = contextExcerpt(m.Body, 600)
-		// 连元数据也计入容量，避免很多来源 ID 或长字段绕过正文长度限制。
-		proposed := append(append([]Memory{}, result...), m)
-		if len([]rune(asJSON(proposed))) <= memoryContextChars {
-			result = proposed
-		}
+		result = append(result, item.memory)
 	}
 	return result, nil
 }

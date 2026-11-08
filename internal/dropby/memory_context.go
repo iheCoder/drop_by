@@ -67,10 +67,10 @@ func likeTerms(query string) ([]string, []any) {
 func (s *Store) searchMemories(member, room, query string, before int64, pageSize ...int) (any, error) {
 	limit := readDefault(pageSize, 0, 12)
 	clauses, values := likeTerms(query)
-	args := []any{member, room, before, before}
+	args := []any{member, before, before}
 	args = append(args, values...)
 	rows, err := s.db.Query(strings.Replace(memorySelect, "SELECT m.id", "SELECT m.rowid,m.id", 1)+`
-	 WHERE m.member_id=? AND (m.conversation_id=? OR m.conversation_id='') AND (?=0 OR m.rowid<?)
+	 WHERE m.member_id=? AND (?=0 OR m.rowid<?)
 	 AND (`+strings.Join(clauses, " OR ")+`) ORDER BY m.rowid DESC LIMIT ?`, append(args, limit+1)...)
 	if err != nil {
 		return nil, err
@@ -89,7 +89,6 @@ func (s *Store) searchMemories(member, room, query string, before int64, pageSiz
 			more = true
 			break
 		}
-		m.Body = clip(m.Body, 400)
 		list = append(list, m)
 		cursor = id
 	}

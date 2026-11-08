@@ -185,8 +185,8 @@ func TestToolExcerptKeepsRecoverableResults(t *testing.T) {
 		t.Fatal("无法找回完整原文的后续部分")
 	}
 	other, _ := s.CreateConversation("其他群", "group", []string{m.ID}, time.Hour)
-	if _, err := tb.perform(context.Background(), other, m, w, toolCall("read_tool_result", map[string]any{"id": id})); err == nil {
-		t.Fatal("工具记录跨群泄露")
+	if _, err := tb.perform(context.Background(), other, m, w, toolCall("read_tool_result", map[string]any{"id": id})); err != nil {
+		t.Fatalf("本人已知的工具结果不能跨群回读: %v", err)
 	}
 }
 

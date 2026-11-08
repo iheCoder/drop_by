@@ -54,7 +54,7 @@ func TestArtifactCardsRequirePublicEvidenceAndPinSharedVersion(t *testing.T) {
 	if card.Version != 1 || card.Title != "安静写好的第一版" || card.Format != "html" || card.Content != "" {
 		t.Fatalf("历史卡片泄露了未分享版本或冗长正文: %+v", card)
 	}
-	// 别的会话即使带入同一个工具 ID，也不能借此读取作品卡或把它当成自己的分享。
+	// 作者主动把同一版本分享到另一个群，应显示真实作品卡而不受创作地点限制。
 	other, err := s.CreateConversation("另一个群", "group", []string{m.ID}, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -66,8 +66,8 @@ func TestArtifactCardsRequirePublicEvidenceAndPinSharedVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	messages, err = s.Messages(other.ID, 0, 10)
-	if err != nil || len(messages) != 1 || len(messages[0].Artifacts) != 0 {
-		t.Fatalf("跨群工具引用泄露了作品: %+v %v", messages, err)
+	if err != nil || len(messages) != 1 || len(messages[0].Artifacts) != 1 {
+		t.Fatalf("作者跨群分享丢失作品卡: %+v %v", messages, err)
 	}
 }
 

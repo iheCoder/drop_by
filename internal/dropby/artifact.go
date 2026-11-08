@@ -42,9 +42,9 @@ func (s *Store) attachMessageArtifacts(messages []Message) error {
 	rows, err := s.db.Query(`SELECT DISTINCT m.id,a.id,coalesce(a.conversation_id,''),a.member_id,a.title,a.version,a.source_id,a.created_at,a.format
 	FROM json_each(?) selected JOIN messages m ON m.id=selected.value
 	JOIN json_each(m.evidence) evidence
-	JOIN tool_runs t ON t.id=evidence.value AND (t.conversation_id=m.conversation_id OR (t.conversation_id='' AND t.member_id=m.author_id)) AND t.status='succeeded' AND t.name='save_artifact'
+	JOIN tool_runs t ON t.id=evidence.value AND (t.conversation_id=m.conversation_id OR t.member_id=m.author_id) AND t.status='succeeded' AND t.name='save_artifact'
 	JOIN artifacts a ON a.id=json_extract(CASE WHEN json_valid(t.result) THEN t.result ELSE '{}' END,'$.artifact_id')
-	AND a.version=json_extract(CASE WHEN json_valid(t.result) THEN t.result ELSE '{}' END,'$.version') AND (a.conversation_id=m.conversation_id OR (a.conversation_id IS NULL AND a.member_id=m.author_id))
+	AND a.version=json_extract(CASE WHEN json_valid(t.result) THEN t.result ELSE '{}' END,'$.version') AND (a.conversation_id=m.conversation_id OR a.member_id=m.author_id)
 	ORDER BY m.seq,a.created_at,a.id,a.version`, asJSON(ids))
 	if err != nil {
 		return err
@@ -176,7 +176,7 @@ func (a *API) artifactDownload(w http.ResponseWriter, r *http.Request) {
 
 // 个人作品先属于作者。发到群里的某一版成为共同材料，作者后来安静修改的版本
 // 仍属于作者；不能因为公开过第一版就让同伴读到所有未发布草稿。
-const visibleArtifactSQL = `(a.conversation_id=? OR (a.conversation_id IS NULL AND a.member_id=?) OR EXISTS(
+const visibleArtifactSQL = `(a.conversation_id=? OR a.member_id=? OR EXISTS(
  SELECT 1 FROM messages message JOIN json_each(message.evidence) evidence
  JOIN tool_runs run ON run.id=evidence.value AND run.name='save_artifact' AND run.status='succeeded'
  WHERE message.conversation_id=? AND message.author_id=a.member_id

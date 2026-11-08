@@ -147,11 +147,15 @@ func TestOrganizeContextOwnershipAndToolFailure(t *testing.T) {
 	s.Publish(secret, private.Revision)
 	s.RecordTool(ToolRun{ID: "peer_note", WorkID: w.ID, ConversationID: c.ID, MemberID: other.ID, Name: "organize_context", Arguments: json.RawMessage(`{}`), Result: `{"note":"同伴自己的理解"}`, Status: "succeeded", CreatedAt: now()})
 	box := NewEngine(s, nil, testConfig()).Tools
-	for _, args := range []map[string]any{{"note": "x", "keep_message_ids": []string{secret.ID}}, {"note": "x", "keep_tool_run_ids": []string{"peer_note"}}} {
+	for _, args := range []map[string]any{{"note": "x", "keep_tool_run_ids": []string{"peer_note"}}} {
 		raw, err := box.Execute(context.Background(), c, m, w, toolCall("organize_context", args))
 		if err != nil || !strings.Contains(raw, `"status":"failed"`) {
 			t.Fatalf("越权整理应返回可修正的工具失败：%s %v", raw, err)
 		}
+	}
+	got, err := s.organizeContext(c, m, asJSON(map[string]any{"note": "跨场景引用", "keep_message_ids": []string{secret.ID}}))
+	if err != nil || len(got.Messages) != 1 || got.Messages[0].Body != secret.Body || got.Messages[0].ConversationID != private.ID {
+		t.Fatalf("本人原话跨场景丢失: %+v %v", got, err)
 	}
 	// 本人的有效引用完整传递；无任意条数或字符上限。
 	longNote := strings.Repeat("仍有用的不同看法。", 2000)

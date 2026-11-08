@@ -142,7 +142,7 @@ func TestLongTermMemoryDiscoveryAndHistoryPagination(t *testing.T) {
 	s.db.Exec(`INSERT INTO memories VALUES(?,?,?,?,?,?)`, "other_person", members[1].ID, c.ID, "星灯卡秘密", "", now())
 	s.db.Exec(`INSERT INTO memories VALUES(?,?,?,?,?,?)`, "other_room", m.ID, "private_room", "星灯卡秘密", "", now())
 	result, err := s.searchMemories(m.ID, c.ID, "星灯 倒计时", 0)
-	if err != nil || !strings.Contains(asJSON(result), "memory_0") || strings.Contains(asJSON(result), "秘密") {
+	if err != nil || !strings.Contains(asJSON(result), "memory_0") || strings.Contains(asJSON(result), "other_person") || !strings.Contains(asJSON(result), "other_room") {
 		t.Fatalf("记忆范围/发现出错：%v %v", result, err)
 	}
 	page, err := s.searchHistory(c.ID, "", "", 0, 0)
