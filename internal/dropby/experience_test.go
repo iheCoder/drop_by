@@ -216,10 +216,12 @@ func TestLargeEncryptedReasoningIsNotUserContextOrBudget(t *testing.T) {
 }
 
 func TestNameOnlyCreationAndOptionalPreference(t *testing.T) {
-	// 没有模型和额度，也能立即创建身份。跳过偏好不调用模型、不更改资料；
+	// 名字即可生成并保存具体人物。跳过偏好不调用模型、不更改资料；
 	// 自愿回答只修改原身份，既有私聊仍引用同一个成员 ID。
 	s, _, _ := fixture(t)
-	e := NewEngine(s, nil, testConfig())
+	e := NewEngine(s, modelFunc(func(_ context.Context, _ []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		return jsonReply(map[string]any{"profile": "我喜欢把想法变成小实验，交流时有点干幽默。"}), nil
+	}), testConfig())
 	h := NewHandler(e)
 	request := func(path string, body any) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("POST", "http://localhost"+path, strings.NewReader(asJSON(body)))

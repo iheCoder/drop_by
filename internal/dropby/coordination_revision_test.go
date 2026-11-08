@@ -92,18 +92,17 @@ func TestCoordinatorChangeDuringControlKeepsUnprocessedPreference(t *testing.T) 
 	var calls atomic.Int32
 	cfg := testConfig()
 	e := NewEngine(s, modelFunc(func(_ context.Context, messages []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		if strings.Contains(messages[0].Content, members[0].ID) && calls.Load() < 2 {
+		var input struct {
+			Self Member `json:"self"`
+		}
+		json.Unmarshal([]byte(messages[1].Content), &input)
+		if input.Self.ID == members[0].ID && calls.Load() < 2 {
 			if calls.Add(1) == 1 {
 				close(started)
 				<-release
 			}
 			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("apply_instruction", map[string]any{"source_id": msg.ID, "preference_updates": []PreferenceUpdate{{MemberID: members[0].ID, Profile: "愿意核对来源，也喜欢幽默地表达", SourceID: msg.ID}}})}}, nil
 		}
-		var input struct {
-			Self Member `json:"self"`
-		}
-		json.Unmarshal([]byte(messages[1].Content), &input)
-
 		if testHasPublished(s, c.ID) {
 			return jsonReply(Outcome{Outcome: "本测试成员已完成这次回应"}), nil
 		}

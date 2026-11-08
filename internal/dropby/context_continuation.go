@@ -64,12 +64,26 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 	// 稳定规则单独保留并在压缩后重新提供。其余完整 Responses 输入交由原生
 	// compaction 维护协议与必要推理状态，不能用手工截断 call arguments 冒充压缩。
 	core, history := []ChatMessage{}, []ChatMessage{}
+	var currentScene *ChatMessage
 	for _, message := range messages {
 		if message.Role == "system" || message.Role == "developer" {
 			core = append(core, message)
 		} else {
+			// 当前人物与控制现场精确保留，已经交付的原话仍由原生压缩处理。
+			// 这样人物只存于 self 一处，也不会因窗口变长而只剩一份模糊摘要。
+			var scene map[string]json.RawMessage
+			if message.Role == "user" && len(message.ResponseItems) == 0 && json.Unmarshal([]byte(message.Content), &scene) == nil && scene["self"] != nil && scene["trigger"] != nil && scene["time"] != nil {
+				history = append(history, refreshScene([]ChatMessage{message})...)
+				scene["latest_messages"], scene["new_message_ids"] = json.RawMessage(`[]`), json.RawMessage(`[]`)
+				kept := ChatMessage{Role: "user", Content: asJSON(scene)}
+				currentScene = &kept
+				continue
+			}
 			history = append(history, message)
 		}
+	}
+	if currentScene != nil {
+		core = append(core, *currentScene)
 	}
 	encoded, _ := m.responseBody(history, nil, false)
 	var request map[string]json.RawMessage

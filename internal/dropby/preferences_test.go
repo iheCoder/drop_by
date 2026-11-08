@@ -21,10 +21,14 @@ func preferenceRequest(h interface {
 	return w
 }
 
-func TestWelcomeQuestionIsOptionalChatAndDoesNotNeedModel(t *testing.T) {
-	// 前置条件：尚无模型连接。仅凭名字创建，打开私聊仍可立即看到一个相识问题。
+func TestWelcomeUsesSavedIntroductionWithoutAnotherModelCall(t *testing.T) {
+	// 创建完成后仅复用已保存的介绍，不再生成第二份人格或强制插入问卷。
 	s, _, _ := fixture(t)
-	h := NewHandler(NewEngine(s, nil, testConfig()))
+	calls := 0
+	h := NewHandler(NewEngine(s, modelFunc(func(_ context.Context, _ []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		calls++
+		return jsonReply(map[string]any{"profile": "我是小月，喜欢沿着一个小发现继续试试，也有点慢热。"}), nil
+	}), testConfig()))
 	created := preferenceRequest(h, "POST", "/api/members", map[string]any{"name": "小月", "avatar_icon": "moon"})
 	if created.Code != 201 {
 		t.Fatal(created.Body.String())
@@ -41,18 +45,18 @@ func TestWelcomeQuestionIsOptionalChatAndDoesNotNeedModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 1 || messages[0].Question == nil || messages[0].QuestionStatus != "open" || messages[0].AuthorID != m.ID {
-		t.Fatalf("没有单条可选问题: %+v", messages)
+	if len(messages) != 1 || messages[0].Question != nil || messages[0].Body != m.Profile || messages[0].AuthorID != m.ID || calls != 1 {
+		t.Fatalf("没有复用同一份人物介绍: %+v calls=%d", messages, calls)
 	}
 
-	// 用户无需回答或点击跳过，直接聊别的；正文保留，选项立即收起，也不改人物偏好。
+	// 用户直接聊别的；消息照常进入聊天，不因收到普通消息自动重写人物。
 	response := preferenceRequest(h, "POST", "/api/conversations/"+c.ID+"/messages", map[string]any{"body": "今天看到一只很可爱的猫"})
 	if response.Code != 201 {
 		t.Fatal(response.Body.String())
 	}
 	messages, _ = s.Messages(c.ID, 0, 10)
-	if len(messages) != 2 || messages[0].QuestionStatus != "dismissed" {
-		t.Fatalf("普通消息没有自然略过: %+v", messages)
+	if len(messages) != 2 {
+		t.Fatalf("普通消息没有保留: %+v", messages)
 	}
 	saved, _ := s.Member(m.ID)
 	if saved.Profile != m.Profile {

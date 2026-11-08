@@ -8,18 +8,19 @@ import (
 // 下一次模型请求失败时，恢复不能重新生成并执行那批工具。
 // 公开消息提交与删除现场在同一事务内完成，崩溃后不会再次发布同一行动。
 type actionCheckpoint struct {
-	ID       string
-	WorkID   string
-	MemberID string
-	Revision int64
-	Seen     int64
-	Messages []ChatMessage
+	ID              string
+	WorkID          string
+	MemberID        string
+	Revision        int64
+	ProfileRevision int
+	Seen            int64
+	Messages        []ChatMessage
 }
 
 func (s *Store) loadAction(work, member string) (actionCheckpoint, error) {
 	var cp actionCheckpoint
 	var raw string
-	err := s.db.QueryRow("SELECT id,work_id,member_id,revision,seen,messages FROM action_checkpoints WHERE work_id=? AND member_id=?", work, member).Scan(&cp.ID, &cp.WorkID, &cp.MemberID, &cp.Revision, &cp.Seen, &raw)
+	err := s.db.QueryRow("SELECT id,work_id,member_id,revision,profile_revision,seen,messages FROM action_checkpoints WHERE work_id=? AND member_id=?", work, member).Scan(&cp.ID, &cp.WorkID, &cp.MemberID, &cp.Revision, &cp.ProfileRevision, &cp.Seen, &raw)
 	if err != nil {
 		return cp, err
 	}
@@ -30,7 +31,7 @@ func (s *Store) saveAction(cp actionCheckpoint) error {
 	if cp.WorkID == "" {
 		return nil
 	} // 无持久工作的一次性调用没有可恢复的调度身份。
-	_, err := s.db.Exec("INSERT INTO action_checkpoints(id,work_id,member_id,revision,seen,messages) VALUES(?,?,?,?,?,?) ON CONFLICT(work_id,member_id) DO UPDATE SET revision=excluded.revision,seen=excluded.seen,messages=excluded.messages", cp.ID, cp.WorkID, cp.MemberID, cp.Revision, cp.Seen, asJSON(cp.Messages))
+	_, err := s.db.Exec("INSERT INTO action_checkpoints(id,work_id,member_id,revision,profile_revision,seen,messages) VALUES(?,?,?,?,?,?,?) ON CONFLICT(work_id,member_id) DO UPDATE SET revision=excluded.revision,profile_revision=excluded.profile_revision,seen=excluded.seen,messages=excluded.messages", cp.ID, cp.WorkID, cp.MemberID, cp.Revision, cp.ProfileRevision, cp.Seen, asJSON(cp.Messages))
 	return err
 }
 func (s *Store) finishAction(work, member string) error {

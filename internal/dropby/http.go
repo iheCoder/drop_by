@@ -36,6 +36,7 @@ func NewHandler(engine *Engine) http.Handler {
 	mux.HandleFunc("POST /api/member-questions", a.questions)
 	mux.HandleFunc("POST /api/members", a.createMember)
 	mux.HandleFunc("PATCH /api/members/{id}", a.updateMember)
+	mux.HandleFunc("GET /api/members/{id}/profile-history", a.profileHistory)
 	mux.HandleFunc("POST /api/members/{id}/question", a.memberQuestion)
 	mux.HandleFunc("POST /api/members/{id}/preferences", a.preferences)
 	mux.HandleFunc("POST /api/conversations", a.createConversation)
@@ -139,7 +140,7 @@ func (a *API) state(w http.ResponseWriter, r *http.Request) {
 	active := []string{}
 	activities := []Activity{}
 	for id := range a.engine.running {
-		if !strings.HasPrefix(id, "member:") {
+		if !strings.HasPrefix(id, "member:") && !strings.HasPrefix(id, "reflection:") {
 			active = append(active, id)
 		}
 	}
@@ -216,14 +217,14 @@ func (a *API) createMember(w http.ResponseWriter, r *http.Request) {
 	if !contains([]string{"jade", "apricot", "blue", "rose", "violet", "moss"}, in.Color) {
 		in.Color = "jade"
 	}
-	// 创建身份不需要等待模型、回答问卷或消耗预算。未知偏好保持未知，
-	// 用户在聊天或自愿补充偏好时再逐步认识；默认提供产品现有的安全工具。
-	m := Member{ID: newID("member"), Name: in.Name, Direction: in.Direction, Color: in.Color, Avatar: in.Avatar, AvatarIcon: in.AvatarIcon, CreatedAt: now(), Questions: in.Questions, Answers: in.Answers, Tools: []string{"search", "read_page", "save_artifact"}, Profile: "性格和兴趣尚未设定，可在交流中逐步形成。"}
-	if in.Direction != "" {
-		m.Profile = "用户希望的起点：" + in.Direction + "\n具体判断可随真实经历变化。"
-	}
-	if len(in.Answers) > 0 {
-		m.Profile += "\n用户自愿提供的情境偏好：" + asJSON(map[string]any{"questions": in.Questions, "answers": in.Answers})
+	// 只填名字也生成具体起点。模型成功后一次保存；重开资料、换群与重启不再生成。
+	// 工具是产品能力，生成性格不同时替成员改变工具配置。
+	m := Member{ID: newID("member"), Name: in.Name, Direction: in.Direction, Color: in.Color, Avatar: in.Avatar, AvatarIcon: in.AvatarIcon, CreatedAt: now(), Questions: in.Questions, Answers: in.Answers, Tools: []string{"search", "read_page", "save_artifact"}}
+	var err error
+	m, err = generateMemberProfile(r.Context(), a.engine.Model, m)
+	if err != nil {
+		a.fail(w, err)
+		return
 	}
 	if err := a.engine.Store.AddMember(m); err != nil {
 		a.fail(w, err)
@@ -277,7 +278,7 @@ func (a *API) preferences(w http.ResponseWriter, r *http.Request) {
 	}
 	m.Questions = []Question{in.Question}
 	m.Answers = []string{in.Answer}
-	previousProfile := m.Profile
+	previousRevision := m.ProfileRevision
 	// 旧 profile 一并交给模型，只合并这次明确提供的偏好，保留同一身份及经历。
 	m, err = CompleteMember(r.Context(), a.engine.Model, m)
 	if err != nil {
@@ -302,18 +303,29 @@ func (a *API) preferences(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	if current.Profile != previousProfile {
+	if current.ProfileRevision != previousRevision {
 		respond(w, http.StatusConflict, map[string]string{"error": "人物说明刚刚已修改，请基于最新说明继续聊偏好"})
 		return
 	}
-	current.Profile, current.Tools, current.Questions, current.Answers = m.Profile, m.Tools, m.Questions, m.Answers
+	changed, err := setMemberProfile(tx, &current, m.Profile, "answer", "回答「"+in.Question.Text+"」："+in.Answer, nil)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	current.Questions, current.Answers = m.Questions, m.Answers
 	if _, err = tx.Exec(`UPDATE members SET data=? WHERE id=?`, asJSON(current), current.ID); err != nil {
 		a.fail(w, err)
 		return
 	}
-	if _, err = tx.Exec(`UPDATE conversations SET revision=revision+1 WHERE id IN (SELECT conversation_id FROM participants WHERE member_id=?)`, current.ID); err != nil {
-		a.fail(w, err)
-		return
+	if changed {
+		if _, err = tx.Exec(`UPDATE conversations SET revision=revision+1 WHERE id IN (SELECT conversation_id FROM participants WHERE member_id=?)`, current.ID); err != nil {
+			a.fail(w, err)
+			return
+		}
+		if err = markIdentityRetry(tx, current.ID, ""); err != nil {
+			a.fail(w, err)
+			return
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		a.fail(w, err)

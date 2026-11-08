@@ -12,9 +12,11 @@ import (
 // 偏好仍然是一段可读、可编辑的人物说明。这里的结构只承载一次用户明确提出的修改，
 // source_id 用来保证网页、其他成员的发言或旧上下文不能替用户修改人物。
 type PreferenceUpdate struct {
-	MemberID string `json:"member_id"`
-	Profile  string `json:"profile"`
-	SourceID string `json:"source_id"`
+	MemberID         string `json:"member_id"`
+	Profile          string `json:"profile"`
+	SourceID         string `json:"source_id"`
+	ExpectedRevision *int   `json:"expected_revision,omitempty"`
+	ChangeNote       string `json:"change_note,omitempty"`
 }
 
 // 控制层用同一个模型请求理解普通指令和明确偏好，避免每句话再串行调用一个模型。
@@ -77,7 +79,7 @@ func applyPreferenceUpdates(tx *sql.Tx, c Conversation, sourceID string, updates
 		return err
 	}
 	for _, update := range updates {
-		if update.SourceID != sourceID || !contains(c.MemberIDs, update.MemberID) || strings.TrimSpace(update.Profile) == "" || len([]rune(update.Profile)) > 3000 {
+		if update.SourceID != sourceID || !contains(c.MemberIDs, update.MemberID) || strings.TrimSpace(update.Profile) == "" {
 			return fmt.Errorf("人物偏好修改的来源或成员无效")
 		}
 		if questionOwner != "" && questionOwner != update.MemberID {
@@ -91,9 +93,15 @@ func applyPreferenceUpdates(tx *sql.Tx, c Conversation, sourceID string, updates
 		if err := json.Unmarshal([]byte(raw), &m); err != nil {
 			return err
 		}
-		profileChanged := m.Profile != strings.TrimSpace(update.Profile)
-		m.Profile = strings.TrimSpace(update.Profile)
-		if _, err := tx.Exec(`UPDATE members SET data=? WHERE id=?`, asJSON(m), m.ID); err != nil {
+		if update.ExpectedRevision != nil && m.ProfileRevision != *update.ExpectedRevision {
+			return errProfileChanged
+		}
+		note := update.ChangeNote
+		if note == "" {
+			note = "用户在聊天中调整了人物说明"
+		}
+		profileChanged, err := setMemberProfile(tx, &m, update.Profile, "instruction", note, []string{sourceID})
+		if err != nil {
 			return err
 		}
 		// 人物说明属于同一个成员，其他房间中尚未发出的旧性格草稿也需要重新考虑。
@@ -132,11 +140,12 @@ var avatarColors = []string{"jade", "apricot", "blue", "rose", "violet", "moss"}
 // 表示恢复默认图标，图片仍经过与创建相同的小型栅格验证。
 func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name       *string `json:"name"`
-		Profile    *string `json:"profile"`
-		Color      *string `json:"color"`
-		Avatar     *string `json:"avatar"`
-		AvatarIcon *string `json:"avatar_icon"`
+		Name            *string `json:"name"`
+		Profile         *string `json:"profile"`
+		Color           *string `json:"color"`
+		Avatar          *string `json:"avatar"`
+		AvatarIcon      *string `json:"avatar_icon"`
+		ProfileRevision *int    `json:"profile_revision"`
 	}
 	if !readBody(w, r, &in) {
 		return
@@ -150,10 +159,6 @@ func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Profile != nil {
 		*in.Profile = strings.TrimSpace(*in.Profile)
-		if len([]rune(*in.Profile)) > 3000 {
-			respond(w, 400, map[string]string{"error": "人物说明不超过 3000 字"})
-			return
-		}
 	}
 	if in.Avatar != nil {
 		if err := validateAvatar(*in.Avatar); err != nil {
@@ -186,12 +191,19 @@ func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	profileChanged := in.Profile != nil && *in.Profile != m.Profile
+	if in.Profile != nil && in.ProfileRevision != nil && m.ProfileRevision != *in.ProfileRevision {
+		respond(w, http.StatusConflict, map[string]string{"error": errProfileChanged.Error()})
+		return
+	}
 	contextChanged := (in.Name != nil && *in.Name != m.Name) || profileChanged
 	if in.Name != nil {
 		m.Name = *in.Name
 	}
 	if in.Profile != nil {
-		m.Profile = *in.Profile
+		if _, err = setMemberProfile(tx, &m, *in.Profile, "edit", "用户直接编辑了人物说明", nil); err != nil {
+			a.fail(w, err)
+			return
+		}
 	}
 	if in.Color != nil {
 		m.Color = *in.Color
@@ -272,8 +284,8 @@ func (s *Store) AskQuestion(c Conversation, m Member, q Question, body string, e
 	return out, err
 }
 
-// 创建不等待模型。第一句话只是相识邀请，不凭名字替人编造性格或过去；之后用户可
-// 点一个选项、自己回答，或者直接开始其他话题，均不阻塞聊天。
+// 首次见面直接展示生效的人物说明。情景问题由用户在资料中按需发起，
+// 不再把统一的相处选择题当作每个成员的第一句话。
 func (s *Store) EnsureWelcome(c Conversation) error {
 	if c.Kind != "direct" || len(c.MemberIDs) != 1 {
 		return nil
@@ -289,9 +301,7 @@ func (s *Store) EnsureWelcome(c Conversation) error {
 	if err != nil {
 		return err
 	}
-	q := Question{Text: "你希望我们平时怎么相处？", Options: []string{"有想法就主动分享", "先听我说，偶尔接话", "一起琢磨有趣的事"}}
-	_, err = s.AskQuestion(c, m, q, "你好，我是 "+m.Name+"。很高兴认识你。", true)
-	return err
+	return s.Publish(Message{ID: newID("msg"), ConversationID: c.ID, AuthorID: m.ID, Body: m.Profile, CreatedAt: now()}, c.Revision)
 }
 
 func (a *API) memberQuestion(w http.ResponseWriter, r *http.Request) {
@@ -329,7 +339,7 @@ func (a *API) memberQuestion(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	message, err := a.engine.Store.AskQuestion(c, m, qs[0], qs[0].Text, true)
+	message, err := a.engine.Store.AskQuestion(c, m, qs[0], "一起调整我的特质："+qs[0].Text, true)
 	if err != nil {
 		a.fail(w, err)
 		return

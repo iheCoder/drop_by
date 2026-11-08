@@ -11,17 +11,18 @@ import (
 // 这里的结构只描述真实记录和执行边界。性格、兴趣、关系与经历保留为自然语言，
 // 不把朋友的变化压成分数，也不把每句话都转换成一个待办。
 type Member struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Direction  string     `json:"direction"`
-	Profile    string     `json:"profile"`
-	Color      string     `json:"color"`
-	Avatar     string     `json:"avatar,omitempty"`
-	AvatarIcon string     `json:"avatar_icon,omitempty"`
-	Questions  []Question `json:"questions"`
-	Answers    []string   `json:"answers"`
-	Tools      []string   `json:"tools"`
-	CreatedAt  string     `json:"created_at"`
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Direction       string     `json:"direction"`
+	Profile         string     `json:"profile"`
+	ProfileRevision int        `json:"profile_revision"` // 同一人物说明的编辑版本，不是人格分数。
+	Color           string     `json:"color"`
+	Avatar          string     `json:"avatar,omitempty"`
+	AvatarIcon      string     `json:"avatar_icon,omitempty"`
+	Questions       []Question `json:"questions"`
+	Answers         []string   `json:"answers"`
+	Tools           []string   `json:"tools"`
+	CreatedAt       string     `json:"created_at"`
 }
 
 type Question struct {

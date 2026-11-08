@@ -119,6 +119,10 @@ CREATE TABLE IF NOT EXISTS usage(day TEXT PRIMARY KEY, calls INTEGER NOT NULL DE
 		db.Close()
 		return nil, err
 	}
+	if err = s.initPersonality(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// 进程退出不等于工作完成。只读网络行动可再次执行，已保存的工具记录会回到上下文。
 	_, err = db.Exec(`UPDATE work SET status='pending', result=CASE WHEN result='' THEN '上次运行因服务退出中断；继续前请检查已有工具结果和最新聊天。' ELSE result END WHERE status='running'`)
 	if err != nil {
@@ -176,6 +180,12 @@ func (s *Store) AddMember(m Member) error {
 		return e
 	}
 	if _, e = tx.Exec(`INSERT INTO personal_activity(member_id) VALUES(?)`, m.ID); e != nil {
+		return e
+	}
+	if _, e = tx.Exec(`INSERT INTO profile_reflections(member_id) VALUES(?)`, m.ID); e != nil {
+		return e
+	}
+	if e = recordProfileVersion(tx, m, "created", "创建时的人物说明", nil); e != nil {
 		return e
 	}
 	return tx.Commit()
@@ -542,7 +552,7 @@ func (s *Store) Participations(room string) ([]Participation, error) {
 	return list, rows.Err()
 }
 func (s *Store) DueWorks() ([]Work, error) {
-	rows, e := s.db.Query(`SELECT `+workColumns+` FROM work WHERE status IN ('pending','waiting_budget') AND due_at<=? ORDER BY CASE kind WHEN 'chat' THEN 0 WHEN 'share' THEN 1 WHEN 'revisit' THEN 2 WHEN 'research' THEN 2 ELSE 3 END,created_at LIMIT 100`, time.Now().UnixMilli())
+	rows, e := s.db.Query(`SELECT `+workColumns+` FROM work WHERE status IN ('pending','waiting_budget') AND due_at<=? ORDER BY CASE kind WHEN 'chat' THEN 0 WHEN 'share' THEN 1 WHEN 'revisit' THEN 2 WHEN 'research' THEN 2 WHEN 'reflect' THEN 4 ELSE 3 END,created_at LIMIT 100`, time.Now().UnixMilli())
 	if e != nil {
 		return nil, e
 	}

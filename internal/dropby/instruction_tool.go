@@ -21,7 +21,13 @@ func instructionDefinition() ToolDefinition {
 		"stop_ids":        ids, "resume_ids": ids, "complete_ids": ids,
 		"updates":                array(map[string]any{"id": textField("实际工作 ID"), "instruction": textField("调整后的方向")}),
 		"responsibility_changes": array(map[string]any{"id": textField("修改或撤销已有职责时填写"), "member_id": textField("承担职责的成员"), "scope_id": textField("空串为长期；this 为本次事项；也可用已有工作 ID"), "body": textField("职责内容"), "revoke": map[string]string{"type": "boolean"}}),
-		"preference_updates":     array(map[string]any{"member_id": textField("成员 ID"), "profile": textField("保留其他特点后的完整人物说明，仅用于真人明确修改设定"), "source_id": textField("同一真人消息 ID")}),
+		"preference_updates": array(map[string]any{
+			"member_id":         textField("成员 ID"),
+			"profile":           textField("用户明确修改特质或回答角色设置问题时，直接给出调整后的完整人物说明；保留其他特点。含义不清的举例保持原有抽象程度。仅与用户相处的长期约定用 remember，本次要求留在当前交流"),
+			"source_id":         textField("同一真人消息 ID"),
+			"expected_revision": map[string]any{"type": "integer", "description": "目标成员当前人物说明的版本；修改自己时取 self.profile_revision，未取得时省略"},
+			"change_note":       textField("简述这次修改了什么"),
+		}),
 	}, "source_id")
 }
 

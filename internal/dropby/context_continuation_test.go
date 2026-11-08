@@ -57,6 +57,7 @@ func TestActualInputCountOverridesByteFalsePositive(t *testing.T) {
 
 func TestNativeCompactionPreservesCoreProtocolAndContinuesFromReturnedWindow(t *testing.T) {
 	s, _, _ := fixture(t)
+	profile := "我喜欢亲手试出问题在哪里，也会主动分享有意思的发现。"
 	compactCalls, countCalls, generations := 0, 0, 0
 	returned := []json.RawMessage{json.RawMessage(`{"type":"message","role":"user","content":[{"type":"input_text","text":"请完成作品并说明真实进度"}]}`), json.RawMessage(`{"type":"compaction","id":"cmp_1","encrypted_content":"opaque-compact-state"}`)}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -72,12 +73,18 @@ func TestNativeCompactionPreservesCoreProtocolAndContinuesFromReturnedWindow(t *
 			}
 		case "/responses/compact":
 			compactCalls++
+			if strings.Contains(body, profile) || !strings.Contains(body, "刚交付的原话") {
+				t.Error("压缩应处理原话，当前人格单独精确保留")
+			}
 			if !strings.Contains(body, "saved_call") || !strings.Contains(body, "saved_artifact") || !strings.Contains(body, "已保存的完整作品") {
 				t.Error("压缩输入必须包含完整调用和已保存结果")
 			}
 			json.NewEncoder(w).Encode(map[string]any{"output": returned, "usage": map[string]any{"input_tokens": 9000, "output_tokens": 40, "input_tokens_details": map[string]int{"cached_tokens": 3000, "cache_write_tokens": 2000}}})
 		case "/responses":
 			generations++
+			if strings.Count(body, profile) != 1 {
+				t.Error("压缩后人物说明缺失或重复")
+			}
 			if !strings.Contains(body, "身份与当前目标必须保留") || !strings.Contains(body, "opaque-compact-state") || strings.Contains(body, "已保存的完整作品") {
 				t.Error("压缩后请求没有同时保留核心与完整压缩窗口")
 			}
@@ -93,14 +100,16 @@ func TestNativeCompactionPreservesCoreProtocolAndContinuesFromReturnedWindow(t *
 	cfg.ContextTokenBudget = 3000
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	chain := largeArtifactChain()
+	scene := ChatMessage{Role: "user", Content: asJSON(map[string]any{"self": map[string]any{"profile": profile, "profile_revision": 3}, "trigger": map[string]string{"id": "work"}, "time": now(), "latest_messages": []Message{{ID: "scene_msg", Body: "刚交付的原话"}}, "new_message_ids": []string{"scene_msg"}})}
+	chain = append(chain[:1], append([]ChatMessage{scene}, chain[1:]...)...)
 	if _, err := completeModel(context.Background(), model, &chain, nil, false); err != nil {
 		t.Fatal(err)
 	}
-	if len(chain) != 2 || chain[0].Content != "身份与当前目标必须保留" || len(chain[1].ResponseItems) != 2 {
+	if len(chain) != 3 || chain[0].Content != "身份与当前目标必须保留" || !strings.Contains(chain[1].Content, profile) || strings.Contains(chain[1].Content, "刚交付的原话") || len(chain[2].ResponseItems) != 2 {
 		t.Fatalf("行动层没有继承整个压缩窗口: %+v", chain)
 	}
 	for i := range returned {
-		if string(chain[1].ResponseItems[i]) != string(returned[i]) {
+		if string(chain[2].ResponseItems[i]) != string(returned[i]) {
 			t.Error("原生输出被挑选或改写")
 		}
 	}

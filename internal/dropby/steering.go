@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/coder/websocket"
@@ -56,6 +57,19 @@ func (e *Engine) completeMemberModel(ctx context.Context, c Conversation, seen *
 		}
 		if readErr != nil {
 			return reply, readErr
+		}
+		// steering 可能越过尚未交付的同伴消息，按真实 Applied 集登记而不猜测连续范围。
+		call, _ := ctx.Value(usageCallKey{}).(usageCall)
+		var delivered []Message
+		for _, msg := range arrived {
+			if input.Applied[msg.ID] {
+				delivered = append(delivered, msg)
+			}
+		}
+		if call.member != "" {
+			if recordErr := e.Store.recordProfileMessages(call.member, delivered); recordErr != nil {
+				slog.Warn("记录后台整理来源失败", "error", recordErr)
+			}
 		}
 		// 只能推进连续已应用的原文；夹在其中的 BOT 消息不能被人类 steering 跳过。
 		for _, msg := range arrived {

@@ -418,7 +418,7 @@ func CreateQuestions(ctx context.Context, m Model, direction string) ([]Question
 	var out struct {
 		Questions []Question `json:"questions"`
 	}
-	e := modelJSON(ctx, m, `用户自愿想补充一个 AI 朋友的偏好。只提出一个简短、具体、易回答的情境问题，提供 2-4 个自然选项，也允许自填或跳过。没有已知方向时问一个轻松的相处偏好。返回 {"questions":[{"text":"...","options":["...","..."]}]}`, direction, &out)
+	e := modelJSON(ctx, m, `用户自愿通过情景问答调整这位成员的特质。根据当前说明，挑一个值得澄清的倾向，问一个简短的对比场景问题，明确问“希望这位成员怎样”。选项体现不同含义，也允许自由回答或不回答。具体例子帮助理解，不把产品名字当作偏好标签。一次只问一个问题。返回 {"questions":[{"text":"...","options":["...","..."]}]}`, direction, &out)
 	if e != nil {
 		return nil, e
 	}
@@ -433,35 +433,19 @@ func CreateQuestions(ctx context.Context, m Model, direction string) ([]Question
 	return out.Questions, nil
 }
 func CompleteMember(ctx context.Context, model Model, m Member) (Member, error) {
-	ctx = withUsageCall(ctx, usageCall{purpose: "preferences", member: m.ID})
-	var out struct {
-		Profile string   `json:"profile"`
-		Tools   []string `json:"tools"`
+	if model == nil {
+		return m, ErrUnavailable
 	}
-	input := map[string]any{"name": m.Name, "direction": m.Direction, "existing_profile": m.Profile, "questions": m.Questions, "answers": m.Answers}
-	e := modelJSON(ctx, model, `根据已有说明和用户这次自愿提供的情境回答，合并为 400 字内的成员说明。保留既有兴趣，只修改被这次回答影响的部分；工具池只有 search（搜索）、read_page（网页阅读）、save_artifact（保存和修改 Markdown 或 HTML 成果；HTML 用 format=html，可制作交互小网页），根据成员方向选择合适工具。所有成员另有对话提问 ask_question、安排后续 schedule_followup、取消过时后续 cancel_work 等本地能力，不要把这些列入 tools 数组。返回 {"profile":"自然语言说明","tools":["search","read_page","save_artifact"]}`, input, &out)
+	ctx = withUsageCall(ctx, usageCall{purpose: "preferences", member: m.ID})
+	var out profileUpdate
+	// 创建方向和旧问答只是历史。修改以当前说明和这次回答为准，工具配置不参与。
+	input := map[string]any{"name": m.Name, "current_profile": m.Profile, "questions": m.Questions, "answers": m.Answers}
+	e := modelJSON(ctx, model, profileEditingPrompt+"\n"+profileAnswerPrompt, input, &out)
 	if e != nil {
 		return m, e
 	}
-	if strings.TrimSpace(out.Profile) == "" {
-		return m, fmt.Errorf("成员说明为空")
-	}
-	if m.ID == "" {
-		m.ID = newID("member")
-	}
-	m.Profile = clip(out.Profile, 3000)
-	if m.CreatedAt == "" {
-		m.CreatedAt = now()
-	}
-	m.Tools = []string{}
-	for _, name := range out.Tools {
-		if contains([]string{"search", "read_page", "save_artifact"}, name) && !contains(m.Tools, name) {
-			m.Tools = append(m.Tools, name)
-		}
-	}
-	// 真实探索和轻量创作是产品的基本能力；模型未给出有效选择时保留安全工具池。
-	if len(m.Tools) == 0 {
-		m.Tools = []string{"search", "read_page", "save_artifact"}
+	if out.Profile != nil {
+		m.Profile = strings.TrimSpace(*out.Profile)
 	}
 	return m, nil
 }

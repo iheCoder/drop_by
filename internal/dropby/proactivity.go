@@ -81,7 +81,7 @@ func (s *Store) ScheduleExploration(interval time.Duration) error {
 	defer tx.Rollback()
 	rows, err := tx.Query(`SELECT a.member_id FROM personal_activity a WHERE a.next_at<=?
  AND EXISTS(SELECT 1 FROM participants p JOIN conversations c ON c.id=p.conversation_id WHERE p.member_id=a.member_id AND c.research_paused=0)
- AND NOT EXISTS(SELECT 1 FROM work w WHERE w.member_id=a.member_id AND w.conversation_id IS NULL AND
+ AND NOT EXISTS(SELECT 1 FROM work w WHERE w.member_id=a.member_id AND w.conversation_id IS NULL AND w.kind<>'reflect' AND
  (w.status IN ('running','waiting_budget') OR (w.status='pending' AND (w.due_at<=? OR (w.kind='explore' AND w.attempts>0)))))`, time.Now().UnixMilli(), time.Now().UnixMilli())
 	if err != nil {
 		return err

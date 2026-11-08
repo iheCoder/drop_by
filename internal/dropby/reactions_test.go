@@ -180,13 +180,11 @@ func TestQuietMemberCanReactDuringExistingAction(t *testing.T) {
 	modelCalls := map[string]int{}
 	var target string
 	e := NewEngine(s, modelFunc(func(_ context.Context, messages []ChatMessage, defs []ToolDefinition, _ bool) (ChatMessage, error) {
-		var member string
-		for _, m := range members {
-			if strings.Contains(messages[0].Content, "（"+m.ID+"）") {
-				member = m.ID
-				break
-			}
+		var scene struct {
+			Self Member `json:"self"`
 		}
+		json.Unmarshal([]byte(messages[1].Content), &scene)
+		member := scene.Self.ID
 		if member == "" {
 			return jsonReply(Control{}), nil
 		}

@@ -79,6 +79,8 @@ func (s *Store) workSummary(w Work) (ActivitySummary, error) {
 	d := ActivitySummary{Title: "后续安排", Status: workStatusText(w), SourceID: w.SourceID}
 	name := s.activityMember(w.MemberID)
 	switch w.Kind {
+	case "reflect":
+		d.Title = name + "的人物整理"
 	case "explore":
 		d.Title = name + "的个人活动"
 	case "research":

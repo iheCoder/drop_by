@@ -234,6 +234,11 @@ func (e *Engine) memberAction(ctx context.Context, c Conversation, m Member, w W
 			if err := publishMessage(tx, *msg); err != nil {
 				return err
 			}
+			// 兼容以最终正文完成的行动：自己的已发布发言也是实际经历。
+			// 与发布一并记录引用，不要求再来一条消息才进入后台可读材料。
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO profile_experiences(member_id,source_id) VALUES(?,?)`, m.ID, msg.ID); err != nil {
+				return err
+			}
 			if target.ID != c.ID || directedWork(w) {
 				if err := wakeConversation(tx, *msg, w); err != nil {
 					return err

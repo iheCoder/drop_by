@@ -58,6 +58,9 @@ func (e *Engine) Run(ctx context.Context) {
 			if err := e.Store.ScheduleExploration(e.Config.ExploreInterval); err != nil {
 				slog.Error("安排探索失败", "error", err)
 			}
+			if err := e.Store.scheduleProfileReflections(e.Config.ExploreInterval); err != nil {
+				slog.Error("安排人物整理失败", "error", err)
+			}
 			e.dispatch(ctx)
 		}
 		select {
@@ -75,6 +78,7 @@ func (e *Engine) Run(ctx context.Context) {
 }
 
 func (e *Engine) Submit(m Message) error {
+	e.yieldProfileReflections()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err := e.Store.AddUserMessage(m, e.Config.ExploreInterval); err != nil {
@@ -111,7 +115,31 @@ func (e *Engine) dispatch(ctx context.Context) {
 		if key == "" || directedWork(w) {
 			key = "member:" + w.MemberID
 		}
+		if w.Kind == "reflect" {
+			key = "reflection:" + w.MemberID
+		}
 		e.mu.Lock()
+		if w.Kind == "reflect" {
+			// 正常工作已按优先级排在前面；后台不占成员的执行位置，也不在
+			// 有其他正常工作正在运行时发起新调用。
+			busy := false
+			for running := range e.running {
+				if !strings.HasPrefix(running, "reflection:") {
+					busy = true
+					break
+				}
+			}
+			if busy {
+				e.mu.Unlock()
+				continue
+			}
+		} else {
+			for running, cancel := range e.running {
+				if strings.HasPrefix(running, "reflection:") {
+					cancel()
+				}
+			}
+		}
 		if _, ok := e.running[key]; ok {
 			e.mu.Unlock()
 			continue
@@ -175,6 +203,11 @@ func (e *Engine) dispatch(ctx context.Context) {
 					due = nextBudgetWeek()
 				default:
 					status = "failed"
+				}
+			}
+			if w.Kind == "reflect" {
+				if saved, readErr := e.Store.reflectionResult(w.ID); readErr == nil && saved != "" {
+					result = saved
 				}
 			}
 			if finishErr := e.Store.Finish(w, status, result, due); finishErr != nil {
@@ -354,6 +387,9 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 		w.Autonomous = true
 		ctx = context.WithValue(ctx, autonomyKey{}, rootOf(w))
 	}
+	if w.Kind == "reflect" {
+		return e.reflectProfile(ctx, w)
+	}
 	if w.ConversationID == "" {
 		c, err := e.Store.personalConversation(w.MemberID)
 		if err != nil {
@@ -435,7 +471,7 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work, afterSeq ...int64)
 			return nil, err
 		}
 		person := map[string]string{"id": id, "name": member.Name}
-		if canCoordinate {
+		if canCoordinate && id != m.ID {
 			// 协调依据是公开人物设定和当前群的工作；不读取同伴其他会话的私有状态。
 			person["profile"] = member.Profile
 			person["tools"] = strings.Join(member.Tools, ", ")
@@ -446,7 +482,7 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work, afterSeq ...int64)
 	if err != nil {
 		return nil, err
 	}
-	identity := map[string]any{"id": m.ID, "name": m.Name, "profile": m.Profile, "tools": m.Tools}
+	identity := map[string]any{"id": m.ID, "name": m.Name, "profile": m.Profile, "profile_revision": m.ProfileRevision, "tools": m.Tools}
 	unread := []string{}
 	for _, message := range messages {
 		if message.Seq > seen {
@@ -496,6 +532,7 @@ func (e *Engine) gate(member string) *memberGate {
 	return value.(*memberGate)
 }
 func (e *Engine) lockMember(ctx context.Context, member string) (func(), error) {
+	e.yieldProfileReflections()
 	gate := e.gate(member)
 	gate.waiting.Add(1)
 	defer gate.waiting.Add(-1)
@@ -568,7 +605,7 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 	if err := e.Store.db.QueryRow(`SELECT coalesce(max(rowid),0) FROM tool_runs WHERE work_id=?`, w.ID).Scan(&toolStart); err != nil {
 		return Outcome{}, err
 	}
-	messages := []ChatMessage{{Role: "system", Content: fmt.Sprintf("%s\n你是 %s（%s）。你的特质：%s\n", memberPrinciples, m.Name, m.ID, m.Profile) + instruction + `
+	messages := []ChatMessage{{Role: "system", Content: memberPrinciples + "\n" + instruction + `
 运行故障和额度由界面呈现，不作为角色台词。
 消息通过 send_message 发出，发送后仍可继续使用工具或交流。
 结束本次行动时返回 JSON {"outcome":"实际行动结果"}；outcome 是运行记录，不是聊天消息。
@@ -590,6 +627,8 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 		messages[1].Content = asJSON(input)
 	}
 	currentSystem, currentInput := messages[0], messages[1]
+	// 来源登记只记录实际交付，不让任务模型负责挑选或总结成长材料。
+	pendingProfileMessages, _ := input["latest_messages"].([]Message)
 	var updateAfterTools string
 	if loadErr == nil {
 		messages = refreshScene(cp.Messages)
@@ -597,7 +636,7 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 			messages[0] = currentSystem
 		}
 		// 有新消息或控制变化，旧调用必须重新判断；没有变化则继续消费断点。
-		if seen > cp.Seen || cp.Revision != c.Revision {
+		if seen > cp.Seen || cp.Revision != c.Revision || cp.ProfileRevision != m.ProfileRevision {
 			messages, err = e.resumeReceipts(messages, w, m)
 			if err != nil {
 				return Outcome{}, err
@@ -635,6 +674,7 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 		cp = actionCheckpoint{ID: newID("msg"), WorkID: w.ID, MemberID: m.ID, Seen: seen}
 	}
 	cp.Revision = c.Revision
+	cp.ProfileRevision = m.ProfileRevision
 	defs := e.Tools.Definitions(m, c, w)
 	for {
 		if w.ID != "" {
@@ -678,6 +718,10 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 			if err != nil {
 				return Outcome{}, err
 			}
+			if err = e.Store.recordProfileMessages(m.ID, pendingProfileMessages); err != nil {
+				slog.Warn("记录后台整理来源失败", "error", err)
+			}
+			pendingProfileMessages = nil
 			messages = append(messages, r)
 			cp.Messages, cp.Seen = messages, seen
 			err = e.Store.saveAction(cp)
@@ -755,13 +799,17 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 				if readErr != nil {
 					return Outcome{}, readErr
 				}
-				messages[0].Content = strings.Replace(messages[0].Content, m.Profile, updated.Profile, 1)
 				m = updated
+				cp.ProfileRevision = m.ProfileRevision
 				fresh, readErr := e.contextFor(c, m, w, seen)
 				if readErr != nil {
 					return Outcome{}, readErr
 				}
 				messages = withScene(messages, ChatMessage{Role: "user", Content: asJSON(fresh)})
+				// 同批整理也必须沿用新资料，不能重用行动开始时的旧 input。
+				input = fresh
+				currentInput = ChatMessage{Role: "user", Content: asJSON(fresh)}
+				updateAfterTools = "" // 恢复工具批次时预留的旧现场也已经被这次修改替换。
 				defs = e.Tools.Definitions(m, c, w)
 			}
 			if call.Function.Name == "organize_context" {
@@ -825,6 +873,7 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 			}
 			if len(arrived) > 0 {
 				messages = append(messages, ChatMessage{Role: "user", Content: "接续收到的聊天原文（author_id 标明说话者）：" + asJSON(withoutSteered(arrived, messages))})
+				pendingProfileMessages = append(pendingProfileMessages, arrived...)
 				seen = arrived[len(arrived)-1].Seq
 			}
 		}
