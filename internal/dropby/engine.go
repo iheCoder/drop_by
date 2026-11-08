@@ -3,6 +3,7 @@ package dropby
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -665,9 +666,23 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串清除。它属于你本人，不是群聊任务或新的人设。
 ` + statePrompt + memoryContextPrompt + coordinationPrompt + workingContextPrompt}, {Role: "user", Content: asJSON(input)}}
 	var updateAfterTools string
+	if original, ok := input["latest_messages"].([]Message); ok {
+		history := window.Messages
+		if loadErr == nil && cp.Revision == c.Revision {
+			history = cp.Messages
+		}
+		filtered := withoutSteered(original, history)
+		input["latest_messages"] = filtered
+		ids := []string{}
+		for _, message := range filtered {
+			ids = append(ids, message.ID)
+		}
+		input["new_message_ids"] = ids
+		messages[1].Content = asJSON(input)
+	}
 	currentSystem, currentInput := messages[0], messages[1]
 	if loadErr == nil && cp.Revision == c.Revision {
-		messages = cp.Messages
+		messages = refreshScene(cp.Messages)
 		if len(messages) > 0 && messages[0].Role == "system" {
 			messages[0] = currentSystem
 		}
@@ -677,7 +692,7 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 			updateAfterTools = currentInput.Content
 			seen = cp.Seen
 		} else {
-			messages = append(messages, currentInput)
+			messages = withScene(messages, currentInput)
 			cp.Seen = seen
 		}
 	} else {
@@ -687,13 +702,13 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 			}
 		}
 		if len(window.Messages) > 0 {
-			messages = window.Messages
+			messages = refreshScene(window.Messages)
 			if messages[0].Role == "system" {
 				messages[0] = currentSystem
 			} else {
 				messages = append([]ChatMessage{currentSystem}, messages...)
 			}
-			messages = append(messages, currentInput)
+			messages = withScene(messages, currentInput)
 		}
 		cp = actionCheckpoint{ID: newID("msg"), WorkID: w.ID, MemberID: m.ID, Seen: seen}
 	}
@@ -718,12 +733,17 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 		if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
 			r = messages[len(messages)-1]
 		} else {
-			r, err = e.completeMemberModel(ctx, c, &seen, &messages, defs)
+			// 已成功压缩的窗口立即保存，不依赖随后生成成功。
+			modelCtx := context.WithValue(ctx, preparedContextKey{}, savePreparedContext(func(prepared []ChatMessage) error {
+				cp.Messages, cp.Seen = prepared, seen
+				return e.Store.saveAction(cp)
+			}))
+			r, err = e.completeMemberModel(modelCtx, c, &seen, &messages, defs)
 			if err != nil {
 				return Outcome{}, err
 			}
 			messages = append(messages, r)
-			cp.Messages = messages
+			cp.Messages, cp.Seen = messages, seen
 			err = e.Store.saveAction(cp)
 		}
 		if err != nil {
@@ -807,10 +827,37 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 			}
 			// 新消息下面统一追加；整理只处理已交付的历史，不能把未读标为已读。
 			fresh["latest_messages"], fresh["new_message_ids"] = []Message{}, []string{}
-			messages = append([]ChatMessage{currentSystem, {Role: "user", Content: asJSON(fresh)}, {Role: "user", Content: "你为自己留下的续接上下文：" + asJSON(organization)}}, messages[batchStart:]...)
+			// 整批已执行完毕，不留下待执行工具协议或重复便笺。
+			// 读取正文按成员的整理选择保留；实际写入回执仍明确交付。
+			receipts := []map[string]any{}
+			for _, item := range messages[batchStart+1:] {
+				if item.Role != "tool" {
+					continue
+				}
+				for _, call := range r.ToolCalls {
+					if call.ID != item.ToolCallID || call.Function.Name == "organize_context" {
+						continue
+					}
+					receipt := map[string]any{"name": call.Function.Name, "call_id": call.ID}
+					var stored map[string]any
+					if json.Unmarshal([]byte(item.Content), &stored) == nil {
+						receipt["tool_run_id"], receipt["status"] = stored["tool_run_id"], stored["status"]
+					}
+					if readOnlyTool(call.Function.Name) {
+						receipt["saved_result"] = "结果已保存，可按工具记录回读"
+					} else {
+						receipt["result"] = item.Content
+					}
+					receipts = append(receipts, receipt)
+				}
+			}
+			messages = []ChatMessage{currentSystem, {Role: "user", Content: asJSON(fresh)}, {Role: "user", Content: "你为自己留下的续接上下文：" + asJSON(organization)}}
+			if len(receipts) > 0 {
+				messages = append(messages, ChatMessage{Role: "user", Content: "整理同批已执行的行动回执：" + asJSON(receipts)})
+			}
 		}
 		if updateAfterTools != "" {
-			messages = append(messages, ChatMessage{Role: "user", Content: updateAfterTools})
+			messages = withScene(messages, ChatMessage{Role: "user", Content: updateAfterTools})
 			seen = max(seen, observedThrough(input))
 			updateAfterTools = ""
 		}
@@ -821,7 +868,7 @@ personal_focus 可更新自己的近期兴趣或打算，省略沿用，空串�
 				return Outcome{}, readErr
 			}
 			if len(arrived) > 0 {
-				messages = append(messages, ChatMessage{Role: "user", Content: "接续收到的聊天原文（author_id 标明说话者）：" + asJSON(arrived)})
+				messages = append(messages, ChatMessage{Role: "user", Content: "接续收到的聊天原文（author_id 标明说话者）：" + asJSON(withoutSteered(arrived, messages))})
 				seen = arrived[len(arrived)-1].Seq
 			}
 		}

@@ -15,6 +15,7 @@ type requestFailure struct {
 	Status     int
 	RetryAfter time.Duration
 	Temporary  bool
+	NotSent    bool // 仅在可证明连接未建立/请求尚未开始时释放预留。
 }
 
 func (e *requestFailure) Error() string {

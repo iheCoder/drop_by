@@ -9,14 +9,16 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 type ChatMessage struct {
 	ResponseItems []json.RawMessage `json:"response_items,omitempty"` // Responses 的推理与工具项目仅在本次行动中回传。
-	OutputTokens  int               `json:"-"`                        // 服务商报告的输出量；加密推理不能按 Base64 字节当作输入 token。
+	OutputTokens  int               `json:"output_tokens,omitempty"`  // 服务商报告的输出量；加密推理不能按 Base64 字节当作输入 token。
 	Role          string            `json:"role"`
 	Content       string            `json:"content"`
 	ToolCalls     []ToolCall        `json:"tool_calls,omitempty"`
@@ -290,6 +292,9 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 			defer m.Store.finishUsageCall(call)
 			response, err = m.responses(ctx, encoded)
 			if err != nil {
+				if releaseErr := m.releaseUnsent(call, err); releaseErr != nil {
+					return releaseErr
+				}
 				return err
 			}
 			if response.Usage.InputTokens+response.Usage.OutputTokens > 0 {
@@ -330,17 +335,22 @@ func requestJSON(ctx context.Context, client *http.Client, endpoint, key string,
 		copy.Transport = serviceTransport
 		client = &copy
 	}
+	if ctx.Err() != nil {
+		return &requestFailure{Stage: ctx.Err().Error(), NotSent: true}
+	}
+	var wroteHeaders atomic.Bool
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{WroteHeaders: func() { wroteHeaders.Store(true) }}))
 	r, e := client.Do(req)
 	if e != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
+		var op *net.OpError
+		var dns *net.DNSError
+		notSent := !wroteHeaders.Load() && ((errors.As(e, &op) && op.Op == "dial") || errors.As(e, &dns))
 		var ne net.Error
 		stage := "服务连接失败"
 		if errors.As(e, &ne) && ne.Timeout() {
 			stage = "等待服务响应超时"
 		}
-		return &requestFailure{Stage: stage, Temporary: true}
+		return &requestFailure{Stage: stage, Temporary: ctx.Err() == nil, NotSent: notSent}
 	}
 	defer r.Body.Close()
 	if r.StatusCode < 200 || r.StatusCode >= 300 {

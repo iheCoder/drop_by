@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // 工作上下文属于一个成员在一个场景中的连续理解；断点属于某次未完行动。
@@ -82,4 +83,68 @@ func sourceArguments(run ToolRun) string {
 		return string(run.Arguments)
 	}
 	return ""
+}
+
+// 每次只携带一份最新现场。旧现场中的实际交付原话留下，状态、索引和
+// 自动召回由最新现场替换；不触碰普通聊天、模型便笺及不透明协议项目。
+func refreshScene(history []ChatMessage) []ChatMessage {
+	result := make([]ChatMessage, 0, len(history))
+	for _, msg := range history {
+		var scene map[string]json.RawMessage
+		if msg.Role != "user" || len(msg.ResponseItems) > 0 || json.Unmarshal([]byte(msg.Content), &scene) != nil || scene["self"] == nil || scene["trigger"] == nil || scene["time"] == nil {
+			result = append(result, msg)
+			continue
+		}
+		var delivered []Message
+		_ = json.Unmarshal(scene["latest_messages"], &delivered)
+		if len(delivered) > 0 {
+			result = append(result, ChatMessage{Role: "user", Content: "已交付的聊天原文：" + asJSON(delivered)})
+		}
+	}
+	return result
+}
+
+// steering 可能先读到排在 BOT 消息后面的真人补充。连续游标不越过 BOT，
+// 但下一次普通交付不应再把已应用的同一条真人消息作为新输入。
+func withoutSteered(messages []Message, history []ChatMessage) []Message {
+	applied := map[string]bool{}
+	for _, item := range history {
+		const prefix = "真人追加的消息："
+		if item.Role != "user" || !strings.HasPrefix(item.Content, prefix) {
+			continue
+		}
+		var batch []Message
+		if json.Unmarshal([]byte(strings.TrimPrefix(item.Content, prefix)), &batch) == nil {
+			for _, m := range batch {
+				applied[m.ID] = true
+			}
+		}
+	}
+	result := make([]Message, 0, len(messages))
+	for _, m := range messages {
+		if !applied[m.ID] {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
+// 压缩是已完成的工作；在下一次网络请求之前将成果交还执行层落盘。
+type preparedContextKey struct{}
+type savePreparedContext func([]ChatMessage) error
+
+// 当前现场固定放在系统指令后，历史保持自身顺序；不会打断历史工具配对。
+func withScene(history []ChatMessage, scene ChatMessage) []ChatMessage {
+	history = refreshScene(history)
+	at := 0
+	for at < len(history) && (history[at].Role == "system" || history[at].Role == "developer") {
+		at++
+	}
+	result := append([]ChatMessage{}, history[:at]...)
+	result = append(result, scene)
+	result = append(result, history[at:]...)
+	if len(result) > 0 && result[len(result)-1].Role == "assistant" {
+		result = append(result, ChatMessage{Role: "user", Content: "本次行动的最新现场已更新，请继续自行决定如何参与。"})
+	}
+	return result
 }

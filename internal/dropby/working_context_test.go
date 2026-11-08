@@ -58,7 +58,7 @@ func TestUnreadBurstAndWorkingContextContinueAcrossActions(t *testing.T) {
 		var input struct {
 			Messages []Message `json:"latest_messages"`
 		}
-		if err := json.Unmarshal([]byte(ms[len(ms)-1].Content), &input); err != nil {
+		if err := json.Unmarshal([]byte(ms[1].Content), &input); err != nil {
 			t.Fatal(err)
 		}
 		if len(input.Messages) != 1 || !strings.Contains(input.Messages[0].Body, "第三十一条") {
@@ -95,7 +95,7 @@ func TestMemberOrganizesBeforeCapacityAndRetainsOriginals(t *testing.T) {
 			if !strings.Contains(asJSON(ms), "原文尾部") {
 				t.Error("主动读取正文被提前截断")
 			}
-			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("organize_context", map[string]any{"note": note, "keep_message_ids": []string{source.ID}}), toolCall("send_message", map[string]string{"message": "那就随便聊聊。"})}}, nil
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("read_tool_result", map[string]any{"id": "old_page", "length": 100000}), toolCall("organize_context", map[string]any{"note": note, "keep_message_ids": []string{source.ID}}), toolCall("send_message", map[string]string{"message": "那就随便聊聊。"})}}, nil
 		default:
 			if strings.Contains(asJSON(ms), strings.Repeat("旧节目资料", 50)) {
 				t.Error("主动整理后旧正文仍在请求里")

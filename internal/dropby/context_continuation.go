@@ -93,6 +93,9 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 		Usage  responseUsage     `json:"usage"`
 	}
 	if err = requestJSON(ctx, m.Client, m.Config.BaseURL+"/responses/compact", m.Config.APIKey, compactBody, &compacted); err != nil {
+		if releaseErr := m.releaseUnsent(call, err); releaseErr != nil {
+			return nil, 0, nil, releaseErr
+		}
 		return nil, 0, nil, fmt.Errorf("上下文压缩尚未完成：%w", err)
 	}
 	if compacted.Usage.InputTokens+compacted.Usage.OutputTokens > 0 {
@@ -118,7 +121,12 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 	}
 	// 原生输出整体保留，不能挑选其中几个项目。下一轮从这个窗口继续，避免每轮
 	// 都重新压缩原来的长历史、重复花费预算。
-	prepared := append(core, ChatMessage{Role: "assistant", ResponseItems: compacted.Output, OutputTokens: compacted.Usage.OutputTokens})
+	prepared := append(core, ChatMessage{Role: "user", ResponseItems: compacted.Output, OutputTokens: compacted.Usage.OutputTokens})
+	if save, ok := ctx.Value(preparedContextKey{}).(savePreparedContext); ok {
+		if err := save(prepared); err != nil {
+			return nil, 0, nil, err
+		}
+	}
 	raw, err = m.responseBody(prepared, defs, jsonOutput)
 	if err != nil {
 		return nil, 0, nil, err

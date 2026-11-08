@@ -302,3 +302,14 @@ func usageTrend(ctx context.Context, tx *sql.Tx, selected, end, today time.Time)
 	}
 	return buckets, rows.Err()
 }
+
+// 可证明没有发出的请求结算为零；超时/断线但发送结果不明仍保留 unknown。
+func (m *HTTPModel) releaseUnsent(call usageReservation, err error) error {
+	var failure *requestFailure
+	if errors.As(err, &failure) && failure.NotSent {
+		if e := m.Store.settleCall(call, 0, responseUsage{}, "not_sent"); e != nil {
+			return &modelAccountingError{e}
+		}
+	}
+	return nil
+}
