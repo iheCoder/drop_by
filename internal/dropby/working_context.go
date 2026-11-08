@@ -75,18 +75,32 @@ func (s *Store) organizeContext(c Conversation, m Member, raw string) (organized
 func refreshScene(history []ChatMessage) []ChatMessage {
 	result := make([]ChatMessage, 0, len(history))
 	for _, msg := range history {
-		var scene map[string]json.RawMessage
-		if msg.Role != "user" || len(msg.ResponseItems) > 0 || json.Unmarshal([]byte(msg.Content), &scene) != nil || scene["self"] == nil || scene["trigger"] == nil || scene["time"] == nil {
+		scene := sceneFields(msg)
+		if scene == nil {
 			result = append(result, msg)
 			continue
 		}
 		var delivered []Message
 		_ = json.Unmarshal(scene["latest_messages"], &delivered)
-		if len(delivered) > 0 {
-			result = append(result, ChatMessage{Role: "user", Content: "已交付的聊天原文：" + asJSON(delivered)})
-		}
+		result = appendDeliveredMessages(result, delivered)
 	}
 	return result
+}
+
+func sceneFields(item ChatMessage) map[string]json.RawMessage {
+	var scene map[string]json.RawMessage
+	if item.Role == "user" && len(item.ResponseItems) == 0 && strings.HasPrefix(strings.TrimSpace(item.Content), "{") &&
+		json.Unmarshal([]byte(item.Content), &scene) == nil && scene["self"] != nil && scene["trigger"] != nil && scene["time"] != nil {
+		return scene
+	}
+	return nil
+}
+
+func appendDeliveredMessages(history []ChatMessage, delivered []Message) []ChatMessage {
+	if len(delivered) == 0 {
+		return history
+	}
+	return append(history, ChatMessage{Role: "user", Content: "已交付的聊天原文：" + asJSON(delivered)})
 }
 
 // 按消息身份核对已交付内容，既包括 steering，也包括已确认的本人发送。
@@ -167,28 +181,46 @@ func completedHistory(history []ChatMessage) []ChatMessage {
 		if item.Role == "assistant" && len(item.ToolCalls) == 0 && json.Unmarshal([]byte(item.Content), &outcome) == nil && outcome["outcome"] != nil {
 			continue
 		}
-		if item.Role == "user" && len(item.ResponseItems) == 0 && strings.HasPrefix(item.Content, "本次行动的来由：") {
-			var cause struct {
-				Trigger Message `json:"trigger_message"`
-				Quoted  Message `json:"quoted_message"`
-			}
-			if json.Unmarshal([]byte(strings.TrimPrefix(item.Content, "本次行动的来由：")), &cause) == nil {
-				var originals []Message
-				for _, source := range []Message{cause.Quoted, cause.Trigger} {
-					if body, ok := known[source.ID]; source.ID != "" && (!ok || body != source.Body) {
-						originals = append(originals, source)
-						known[source.ID] = source.Body
-					}
-				}
-				if len(originals) > 0 {
-					result = append(result, ChatMessage{Role: "user", Content: "已交付的聊天原文：" + asJSON(originals)})
-				}
-				continue
-			}
+		if cause, originals := splitActionCause(item, known); cause != nil {
+			result = appendDeliveredMessages(result, originals)
+			continue
 		}
 		result = append(result, item)
 	}
 	return distinctMessageSources(result)
+}
+
+// 任务说明只在行动期间有效，其中的触发原话和引用则与普通聊天一样续接。
+// 首次发送和收尾使用同一份原话格式，避免行动结束时才改写可复用的历史。
+func splitActionCause(item ChatMessage, known map[string]string) (map[string]json.RawMessage, []Message) {
+	if item.Role != "user" || len(item.ResponseItems) > 0 || !strings.HasPrefix(item.Content, "本次行动的来由：") {
+		return nil, nil
+	}
+	var cause map[string]json.RawMessage
+	if json.Unmarshal([]byte(strings.TrimPrefix(item.Content, "本次行动的来由：")), &cause) != nil || cause == nil {
+		return nil, nil
+	}
+	var sources []Message
+	for _, field := range []string{"quoted_message", "trigger_message"} {
+		if raw, exists := cause[field]; exists {
+			var source Message
+			if json.Unmarshal(raw, &source) != nil {
+				return nil, nil
+			}
+			if source.ID != "" {
+				sources = append(sources, source)
+				delete(cause, field)
+			}
+		}
+	}
+	var originals []Message
+	for _, source := range sources {
+		if body, ok := known[source.ID]; !ok || body != source.Body {
+			originals = append(originals, source)
+			known[source.ID] = source.Body
+		}
+	}
+	return cause, originals
 }
 
 // 只解析程序交付的原话容器。普通文本、主动读取的工具材料和不透明压缩项目
@@ -204,8 +236,7 @@ func messageBlock(item ChatMessage) (string, []Message, bool) {
 			return prefix, messages, err == nil
 		}
 	}
-	var scene map[string]json.RawMessage
-	if json.Unmarshal([]byte(item.Content), &scene) == nil && scene["self"] != nil && scene["trigger"] != nil && scene["time"] != nil {
+	if scene := sceneFields(item); scene != nil {
 		var messages []Message
 		if json.Unmarshal(scene["latest_messages"], &messages) == nil {
 			return "", messages, true

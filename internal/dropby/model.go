@@ -458,19 +458,25 @@ func CompleteMember(ctx context.Context, model Model, m Member) (Member, error) 
 // 高推理工具链需携带供应商返回的推理项目，不能只把工具结果拼成聊天文本。
 // store=false + 加密推理项目让服务不依赖供应商保存会话；原始推理不显示给用户。
 func (m *HTTPModel) responseBody(messages []ChatMessage, defs []ToolDefinition, jsonOutput bool) ([]byte, error) {
+	messages, cacheEnd := memberRequestMessages(messages)
 	input := []any{}
-	for _, msg := range messages {
+	for i, msg := range messages {
 		if len(msg.ResponseItems) > 0 {
 			for _, item := range msg.ResponseItems {
 				input = append(input, item)
 			}
 			continue
 		}
+		var content any = msg.Content
+		if i == cacheEnd {
+			// 默认缓存仍可覆盖同一轮续接。额外标记历史末尾，使下一轮换掉临时说明时仍能复用历史。
+			content = []map[string]any{{"type": "input_text", "text": msg.Content, "prompt_cache_breakpoint": map[string]string{"mode": "explicit"}}}
+		}
 		if msg.Role == "tool" {
-			input = append(input, map[string]any{"type": "function_call_output", "call_id": msg.ToolCallID, "output": msg.Content})
+			input = append(input, map[string]any{"type": "function_call_output", "call_id": msg.ToolCallID, "output": content})
 			continue
 		}
-		input = append(input, map[string]any{"role": msg.Role, "content": msg.Content})
+		input = append(input, map[string]any{"role": msg.Role, "content": content})
 	}
 	body := map[string]any{"model": m.Config.Model, "input": input, "max_output_tokens": m.Config.MaxOutputTokens, "store": false, "include": []string{"reasoning.encrypted_content"}}
 	if m.Config.Reasoning != "" {
