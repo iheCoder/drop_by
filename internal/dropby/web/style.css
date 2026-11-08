@@ -144,17 +144,12 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: r
 .message-bubble { background: var(--surface); border: 1px solid #e7eaf0; border-radius: 4px 17px 17px 17px; padding: 13px 16px; font-size: 14px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; box-shadow: var(--shadow); }
 .message-bubble a { text-decoration: underline; text-underline-offset: 3px; }
 .message-bubble code { font-family: ui-monospace, SFMono-Regular, monospace; background: #eef1f6; border-radius: 4px; font-size: .9em; padding: 2px 4px; }
-.message-actions { display: flex; align-items: center; flex-wrap: wrap; margin-top: 3px; gap: 5px; }
-.message-actions button { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; border-radius: 7px; padding: 4px 6px; font-size: 11px; color: var(--muted); }
-.message-actions button:hover { background: #e9edf5; color: var(--ink); }
-.message-actions .icon { width: 13px; height: 13px; }
 .user-message { flex-direction: row-reverse; }
 .user-message > .avatar { margin-top: 22px; }
 .user-message .message-meta { justify-content: flex-end; margin-right: 3px; }
 .user-message .message-bubble { background: var(--blue); color: #fff; border: 1px solid transparent; border-radius: 17px 4px 17px 17px; box-shadow: none; }
 .user-message .message-bubble a { color: #fff; }
 .user-message .message-bubble code { background: rgb(255 255 255 / 15%); }
-.user-message .message-actions { justify-content: flex-end; }
 .quote { display: flex; flex-direction: column; width: 100%; min-height: 36px; text-align: left; border-left: 2px solid #b9c9e6; padding: 7px 10px; margin: 0 0 11px; background: #f4f6fa; border-radius: 2px 7px 7px 2px; color: var(--muted); font-size: 12px; white-space: normal; line-height: 1.6; }
 .quote strong { color: #4a638d; font-size: 11px; margin-bottom: 3px; }
 .quote:hover { background: #edf1f8; }
@@ -415,7 +410,6 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: r
   .message-meta { gap: 8px; }
   .message-bubble { font-size: 15px; padding: 11px 13px; line-height: 1.8; }
   .message-meta strong { font-size: 12px; }
-  .message-actions button { min-height: 34px; }
   .composer-wrap { padding: 0 12px max(12px, env(safe-area-inset-bottom)); }
   .composer { padding: 11px 11px 8px; border-radius: 16px; }
   .composer textarea { font-size: 16px; }

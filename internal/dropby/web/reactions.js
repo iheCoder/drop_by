@@ -57,7 +57,7 @@ function renderReactionRows() {
     row.innerHTML = markup;
     row.dataset.markup = markup;
     row.hidden = !markup;
-    if (focus) (findReactionChip(row, focus) || article.querySelector('[data-action=reaction-menu]')).focus({preventScroll:true});
+    if (focus) (findReactionChip(row, focus) || article.querySelector('.message-menu-trigger')).focus({preventScroll:true});
   }
   positionReactionPopover();
 }
@@ -71,7 +71,7 @@ function positionReactionPopover() {
   if (!pop.matches(':popover-open')) return;
   const {id, emoji} = reactionAnchor.dataset;
   const article = document.getElementById(`message-${id}`);
-  const trigger = article?.querySelector('[data-action=reaction-menu]');
+  const trigger = article?.querySelector('.message-menu-trigger');
   // 其他浏览器或成员更新计数时，沿用原消息上的锚点；最后一个回应消失才收起名单。
   if (!reactionAnchor.isConnected) reactionAnchor = (emoji ? findReactionChip(article, emoji) : trigger) || null;
   if (!reactionAnchor) {
@@ -106,13 +106,9 @@ function openReactionPopover(anchor) {
   if (alreadyOpen) return;
   reactionAnchor = anchor;
   const {id, emoji} = anchor.dataset;
-  pop.classList.toggle('emoji-popover', !emoji);
-  pop.setAttribute('aria-label', emoji ? '表情回应者' : '选择回应表情');
+  pop.setAttribute('aria-label', '表情回应者');
   delete pop.dataset.markup;
-  if (emoji) renderReactionRoster(pop, id, emoji);
-  else pop.innerHTML = (state.reaction_palette || []).map(face =>
-    `<button type="button" data-action="reaction-add" data-id="${id}" data-emoji="${escapeHTML(face.emoji)}" aria-label="${escapeHTML(face.label)}">${escapeHTML(face.emoji)}</button>`
-  ).join('');
+  renderReactionRoster(pop, id, emoji);
   pop.showPopover({source:anchor});
   positionReactionPopover();
   (pop.querySelector('button') || pop).focus({preventScroll:true});
@@ -134,6 +130,6 @@ document.addEventListener('click', event => {
   const target = event.target.closest('[data-action^=reaction-]');
   if (!target) return;
   const action = target.dataset.action;
-  if (action === 'reaction-menu' || action === 'reaction-roster') openReactionPopover(target);
+  if (action === 'reaction-roster') openReactionPopover(target);
   if (action === 'reaction-add' || action === 'reaction-remove') changeReaction(target, action === 'reaction-add');
 });

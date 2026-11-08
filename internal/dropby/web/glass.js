@@ -15,7 +15,8 @@ function positionFloating(pop, anchor) {
 }
 function closeTransient(restoreFocus=false) {
   let closed=false;
-  const focusTarget=$('reaction-popover').matches(':popover-open') ? reactionAnchor : $('start-popover').matches(':popover-open') ? startAnchor : $('emoji-popover').matches(':popover-open') ? document.querySelector('[data-action=emoji-menu]') : personAnchor;
+  const focusTarget=$('message-menu').matches(':popover-open') ? messageMenuTrigger : $('reaction-popover').matches(':popover-open') ? reactionAnchor : $('start-popover').matches(':popover-open') ? startAnchor : $('emoji-popover').matches(':popover-open') ? document.querySelector('[data-action=emoji-menu]') : personAnchor;
+  closed = closeMessageMenu();
   for (const id of ['person-popover','start-popover','emoji-popover','reaction-popover']) {
     const pop=$(id); if(pop?.matches(':popover-open')) { pop.hidePopover(); closed=true; }
   }
@@ -158,6 +159,7 @@ const chatObserver=new ResizeObserver(()=>{
     positionFloating($('start-popover'),startAnchor);
     positionFloating($('emoji-popover'),document.querySelector('[data-action=emoji-menu]'));
     positionReactionPopover();
+    positionMessageMenu();
   });
 });
 chatObserver.observe($('main'));
@@ -166,6 +168,7 @@ window.addEventListener('resize',()=>{
 });
 // 跟随消息头像的浮卡在滚动时继续锚定；头像离开视口就收起，避免悬空。
 $('chat-body').addEventListener('scroll',()=>{
+  positionMessageMenu();
   positionReactionPopover();
   if(!$('person-popover').matches(':popover-open') || !personAnchor?.closest('#messages')) return;
   const a=personAnchor.getBoundingClientRect(), b=$('chat-body').getBoundingClientRect();
