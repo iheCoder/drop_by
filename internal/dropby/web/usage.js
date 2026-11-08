@@ -2,7 +2,7 @@
 
 const usageWeekdays=['周日','周一','周二','周三','周四','周五','周六'];
 const usageGroups={member:'成员',purpose:'用途',matter:'事项'};
-const usagePurposes={chat:'日常交流',research:'研究与探索',compact:'上下文压缩',search:'网页搜索',read_page:'网页读取',control:'指令理解',preferences:'偏好设置',model:'模型调用'};
+const usagePurposes={chat:'日常交流',research:'研究与探索',personality:'人物整理',compact:'上下文压缩',search:'网页搜索',read_page:'网页读取',control:'指令理解',preferences:'偏好设置',model:'模型调用'};
 const usageOutcomes={incomplete:'模型未完成输出',tool_calls:'生成了工具调用',no_message:'未生成消息正文',generated_message:'生成了消息正文',released:'预留已释放',empty:'没有可用结果，本次免费'};
 const usagePageSize=2;
 let usageView;

@@ -255,6 +255,10 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: r
 .focus-sources { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 8px; }
 .focus-sources button { color: #4d6eaa; min-height: 32px; font-size: 11px; padding: 5px 0; }
 .profile-caption { font-size: 11px; color: var(--muted); line-height: 1.8; margin-top: 16px; }
+.profile-change { padding: 15px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.profile-change summary { cursor: pointer; line-height: 1.8; }
+.profile-change p { color: var(--muted); line-height: 1.8; }
+.profile-change button { margin-top: 14px; }
 .member-choice { display: flex; align-items: center; gap: 12px; padding: 12px 0; cursor: pointer; }
 .member-choice .copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .member-choice strong { font-size: 13px; font-weight: 600; }

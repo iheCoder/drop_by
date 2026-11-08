@@ -333,14 +333,28 @@ function renderAvatarPreview() {
   }
 }
 function newMember() {
-  showWorkspace('认识新朋友', '先有个名字，其他的边聊边认识。', `<form id="member-form">${avatarEditor()}<label class="field"><span>名字</span><input name="name" maxlength="24" required placeholder="怎么称呼这位朋友？" autocomplete="off"></label><div class="form-error" hidden role="alert"></div><button class="primary full-width" type="submit">开始聊天 ${icon('arrow-up')}</button></form>`, 'new-member');
+  showWorkspace('认识新朋友', '一个名字就可以开始，TA 会带着自己的特质来打招呼。', `<form id="member-form">${avatarEditor()}<label class="field"><span>名字</span><input name="name" maxlength="24" required placeholder="怎么称呼这位朋友？" autocomplete="off"></label><label class="field"><span>大致方向 · 可选</span><textarea name="direction" rows="2" placeholder="例如：喜欢简洁设计的设计师"></textarea><small class="field-hint">留空也可以。认识之后，随时能调整 TA 的特质。</small></label><div class="form-error" hidden role="alert"></div><button class="primary full-width" type="submit">开始聊天 ${icon('arrow-up')}</button></form>`, 'new-member');
   $('workspace-content').querySelector('input[name=name]').focus();
 }
 function editProfile(id) {
   const m = member(id); if (!m) return;
-  showWorkspace('编辑朋友', '', `<form id="profile-form" data-id="${m.id}">${avatarEditor(m)}<label class="field"><span>名字</span><input name="name" maxlength="24" required value="${escapeHTML(m.name)}" autocomplete="off"></label><label class="field"><span>特质与偏好</span><textarea name="profile" maxlength="3000" rows="4">${escapeHTML(m.profile)}</textarea><small class="field-hint">性格、兴趣、说话习惯，都可以用自己的话写。也可以在私聊里慢慢告诉 TA。</small></label><div class="form-error" hidden role="alert"></div><div class="panel-footer"><button class="secondary" type="button" data-action="close-workspace">取消</button><button class="primary" type="submit">保存修改</button></div></form>`, 'edit-profile');
+  showWorkspace('编辑朋友', '', `<form id="profile-form" data-id="${m.id}">${avatarEditor(m)}<label class="field"><span>名字</span><input name="name" maxlength="24" required value="${escapeHTML(m.name)}" autocomplete="off"></label><label class="field"><span>自我介绍与特质</span><textarea name="profile" rows="8">${escapeHTML(m.profile)}</textarea><small class="field-hint">这就是 TA 交流和行动时使用的人物说明。性格、兴趣、判断和相处方式，都可以直接调整。</small></label><div class="form-error" hidden role="alert"></div><div class="panel-footer"><button class="secondary" type="button" data-action="close-workspace">取消</button><button class="primary" type="submit">保存修改</button></div></form>`, 'edit-profile');
   // 只提交用户实际改过的字段，避免头像修改覆盖同时从聊天中学到的新偏好。
-  profileBaseline = {name:m.name.trim(),profile:m.profile.trim(),color:avatarColor,avatar:avatarData,avatar_icon:avatarIcon};
+  profileBaseline = {name:m.name.trim(),profile:m.profile.trim(),profile_revision:m.profile_revision || 0,color:avatarColor,avatar:avatarData,avatar_icon:avatarIcon};
+}
+
+// 历史按需读取。恢复先放回同一个编辑器，用户仍可修改，保存仍基于当前版本。
+async function profileHistory(id) {
+  const changes = await api(`/api/members/${id}/profile-history`);
+  const origins = {created:'初次相识',edit:'你编辑了特质',instruction:'聊天中调整',answer:'情景问答',reflection:'经历后的新认识',previous:'原有特质'};
+  showPanel('特质的变化', '', changes.length ? changes.map(change => `<details class="profile-change"><summary>${escapeHTML(origins[change.origin] || '特质更新')} · ${escapeHTML(dateLabel(change.created_at))}</summary><p>${escapeHTML(change.change_note)}</p><div class="profile-body">${escapeHTML(change.profile)}</div><button class="secondary" data-action="restore-profile" data-id="${id}" data-revision="${change.revision}">用这一版继续编辑</button></details>`).join('') : '<p class="empty-note">还没有特质变化。</p>', `profile-history:${id}`);
+}
+async function restoreProfile(id, revision) {
+  const changes = await api(`/api/members/${id}/profile-history`);
+  const change = changes.find(item => item.revision === Number(revision));
+  if (!change) return;
+  editProfile(id);
+  $('profile-form').elements.profile.value = change.profile;
 }
 async function openDirect(id) {
   const c = await post('/api/conversations', {name:'',kind:'direct',member_ids:[id]});
@@ -366,7 +380,7 @@ function focusBlock(id) {
 }
 function fullProfile(id) {
   const m = member(id); if (!m) return;
-  showPanel('朋友资料', '', `<div class="profile-head">${avatar(m)}<h3>${escapeHTML(m.name)}</h3><p>AI 朋友 · ${escapeHTML(dateLabel(m.created_at))} 相识</p></div><div class="profile-actions"><button class="primary" data-action="direct" data-id="${m.id}">${icon('message-circle')}单独聊聊</button><button class="secondary" data-action="edit-profile" data-id="${m.id}">${icon('pencil')}编辑</button></div>${focusBlock(id)}${capabilities(m)}<h3 class="section-label">特质与偏好</h3><div class="profile-body">${escapeHTML(m.profile)}</div><p class="profile-caption">你可以随时编辑，也可以在聊天里说「以后……」，让 TA 记住你的偏好。</p><div class="panel-nav"><button data-action="preference" data-id="${m.id}">${icon('circle-help')}聊一个偏好${icon('chevron-right')}</button></div>`, `profile:${id}`);
+  showPanel('朋友资料', '', `<div class="profile-head">${avatar(m)}<h3>${escapeHTML(m.name)}</h3><p>AI 朋友 · ${escapeHTML(dateLabel(m.created_at))} 相识</p></div><div class="profile-actions"><button class="primary" data-action="direct" data-id="${m.id}">${icon('message-circle')}单独聊聊</button><button class="secondary" data-action="edit-profile" data-id="${m.id}">${icon('pencil')}编辑</button></div>${focusBlock(id)}${capabilities(m)}<h3 class="section-label">自我介绍与特质</h3><div class="profile-body">${escapeHTML(m.profile)}</div><p class="profile-caption">这是 TA 当前的样子。你可以直接编辑，也可以通过情景问答一起调整；新的经历也可能带来变化。</p><div class="panel-nav"><button data-action="preference" data-id="${m.id}">${icon('circle-help')}用一个情景调整特质${icon('chevron-right')}</button><button data-action="profile-history" data-id="${m.id}">${icon('chevron-right')}看看特质的变化</button></div>`, `profile:${id}`);
   $('panel-content').dataset.profileSignature = JSON.stringify([m, roomData?.member_states?.find(s => s.member_id === id),state.personal_focus?.[id]]);
 }
 function roomDetails(scroll = true) {
@@ -449,6 +463,8 @@ document.addEventListener('click', async event => {
     if (action === 'open-room') await openRoom(id);
     if (action === 'profile') profile(id, button);
     if (action === 'edit-profile') editProfile(id);
+    if (action === 'profile-history') await profileHistory(id);
+    if (action === 'restore-profile') await restoreProfile(id, button.dataset.revision);
     if (action === 'close-panel') closePanel(true);
     if (action === 'activity') showActivity();
     if (action === 'artifacts') showArtifacts();
@@ -495,11 +511,12 @@ document.addEventListener('submit', async event => {
   try {
     const data = new FormData(form);
     if (form.id === 'member-form') {
-      const m = await post('/api/members', {name:data.get('name').trim(),color:avatarColor,avatar:avatarData,avatar_icon:avatarIcon});
+      const m = await post('/api/members', {name:data.get('name').trim(),direction:data.get('direction').trim(),color:avatarColor,avatar:avatarData,avatar_icon:avatarIcon});
       await openDirect(m.id); $('message-input').focus();
     } else if (form.id === 'profile-form') {
       const values = {name:data.get('name').trim(),profile:data.get('profile').trim(),color:avatarColor,avatar:avatarData,avatar_icon:avatarIcon};
       const changes = Object.fromEntries(Object.entries(values).filter(([key,value]) => value !== profileBaseline?.[key]));
+      if ('profile' in changes) changes.profile_revision = profileBaseline.profile_revision;
       if (Object.keys(changes).length) await api(`/api/members/${form.dataset.id}`, {method:'PATCH',body:JSON.stringify(changes)});
       await refresh(); if (form.isConnected) { closeWorkspace(true); toast('修改已保存。'); }
 
