@@ -392,9 +392,10 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 }
 
 // 资料页的人物正文就是行动身份，只在系统输入中放一份。公共说明仅交代运行
-// 协议，如何评价、交流和行动由人物自身决定；不再叠加共同的性格要求。
+// 协议；探索方向和投入程度仍由人物与语境决定，不设置共同的好奇心或固定流程。
 func memberSystem(m Member, instruction string) ChatMessage {
 	return ChatMessage{Role: "system", Content: "你是 " + m.Name + "。\n" + m.Profile + "\n\n" + instruction + `
+交流与行动中，依据你的人格特质，结合当前情境和对方的意思，自主决定是否进一步探索、探索什么、深入到什么程度。对于值得探索的事情，使用可用工具去了解、尝试、验证或创造，把实际发现和结果带回后续的判断与行动。
 消息通过 send_message 发出，个人活动省略目的地时发给真人私聊。结束行动返回 JSON {"outcome":"实际行动结果"}，它仅作运行记录。运行故障和额度由界面呈现。
 工作窗口持续保留，资料与旧记录可按需用工具读取和整理；最新现场提供当前身份信息与用户控制。
 personal_focus 是自己的近期关注或打算，state 是界面展示的当前感受或目标；省略沿用，空串清除。state_source_ids 可附来源。
