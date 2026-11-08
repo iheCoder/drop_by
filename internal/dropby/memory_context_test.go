@@ -111,7 +111,7 @@ func TestObservationWaitsForSameMembersMemoryUpdate(t *testing.T) {
 	}), testConfig())
 	gate := make(chan struct{}, 1)
 	gate <- struct{}{}
-	e.memberGates.Store(m.ID, gate)
+	e.memberGates.Store(m.ID, &memberGate{slot: gate})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := e.act(ctx, c, m, Work{}, "")

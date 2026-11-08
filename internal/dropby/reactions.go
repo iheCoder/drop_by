@@ -117,8 +117,21 @@ func (t *Toolbox) reactToMessage(ctx context.Context, c Conversation, m Member, 
 	if err := change.validate(); err != nil {
 		return change, err
 	}
+	// 目标消息决定聊天，而不是本次行动从哪里被唤醒。
+	var room string
+	if err := t.Store.db.QueryRow(`SELECT conversation_id FROM messages WHERE id=?`, change.MessageID).Scan(&room); err != nil {
+		return change, err
+	}
+	var err error
+	c, err = t.Store.accessibleConversation(m.ID, room)
+	if err != nil {
+		return change, err
+	}
+	if c.DiscussionPaused {
+		return change, fmt.Errorf("目标聊天已暂停发言")
+	}
 	var changed bool
-	err := t.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
+	err = t.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

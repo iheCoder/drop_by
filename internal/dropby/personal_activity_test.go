@@ -51,7 +51,7 @@ func TestPersonalExplorationSharingAndRecovery(t *testing.T) {
 		if calls == 1 {
 			var input map[string]any
 			json.Unmarshal([]byte(messages[1].Content), &input)
-			if input["latest_messages"] != nil || input["personal_focus"] == nil {
+			if len(input["latest_messages"].([]any)) != 0 || input["personal_focus"] == nil {
 				t.Error("个人活动仍以房间历史为主")
 			}
 			available := map[string]bool{}

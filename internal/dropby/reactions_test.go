@@ -147,7 +147,7 @@ func TestMessageReactionsOnOlderPage(t *testing.T) {
 	}
 	expectActors(snapshot())
 
-	// 换一个聊天的路径或消息 ID 都不能写入；成功的回应也不产生新工作或新序号。
+	// UI 路径必须匹配消息；成员工具可在自己参与的另一聊天回应。
 	other, err := s.CreateConversation("另一个群", "group", []string{m.ID}, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +157,7 @@ func TestMessageReactionsOnOlderPage(t *testing.T) {
 	if err := s.Publish(foreign, other.Revision); err != nil {
 		t.Fatal(err)
 	}
-	runTool(toolCall(reactionTool, map[string]any{"message_id": foreign.ID, "emoji": "👍", "present": true}), "failed")
+	runTool(toolCall(reactionTool, map[string]any{"message_id": foreign.ID, "emoji": "👍", "present": true}), "succeeded")
 	select {
 	case <-engineEvents:
 		t.Fatal("表情工具或用户回应向群聊引擎发布了消息事件")

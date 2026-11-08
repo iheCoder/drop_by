@@ -375,7 +375,7 @@ func requestJSON(ctx context.Context, client *http.Client, endpoint, key string,
 			return ctx.Err()
 		}
 		message := strings.ReplaceAll(detail.Error.Message, key, "[credential]")
-		return &requestFailure{Detail: message, Stage: "服务请求失败", Status: r.StatusCode, RetryAfter: wait, Temporary: r.StatusCode == 429 || r.StatusCode == 408 || r.StatusCode == 500 || r.StatusCode == 502 || r.StatusCode == 503 || r.StatusCode == 504}
+		return &requestFailure{Detail: message, Stage: "服务请求失败", Status: r.StatusCode, RetryAfter: wait, Temporary: r.StatusCode == 429 || r.StatusCode == 408 || r.StatusCode >= 500}
 	}
 	b, e := io.ReadAll(r.Body)
 	if e != nil {

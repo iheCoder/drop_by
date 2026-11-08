@@ -3,7 +3,6 @@ package dropby
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -103,10 +102,14 @@ func TestToolCallReplayUsesRecordedResult(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatal("同一次调用重复发消息")
 	}
-	// 不确定的执行记录不能被当成失败并直接重做。
+	// 问题卡现在能用消息身份核对已发布结果，回执丢失也不重复发布。
 	s.db.Exec("UPDATE tool_runs SET status='running'")
-	if _, err = box.Execute(context.Background(), c, m, w, call); !errors.Is(err, errUncertainTool) {
+	if _, err = box.Execute(context.Background(), c, m, w, call); err != nil {
 		t.Fatal(err)
+	}
+	msgs, _ = s.Messages(c.ID, 0, 20)
+	if len(msgs) != 1 {
+		t.Fatal("问题卡恢复重复发布")
 	}
 	// 相反，未落盘的只读查询可安全再读，不套用写操作的未知结果保护。
 	read := toolCall("read_history", map[string]string{"query": ""})

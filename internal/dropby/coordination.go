@@ -204,5 +204,5 @@ func (s *Store) OpenWork(room string) ([]Work, error) {
 
 // 职责说明解释责任与真实工具效果，不规定主持风格或全员的发言顺序。
 const coordinationPrompt = `
-conversation.responsibilities 是当前组织职责。delegate_work 安排同伴的后台工作；普通邀请可直接发消息。委托有结果后会再次唤起你，schedule_followup 可预约复看。
+conversation.responsibilities 是当前组织职责。接受、交接或撤销组织职责时，用 apply_instruction 记录真人约定，让同伴知道当前分工。delegate_work 安排同伴的后台工作；普通邀请可直接发消息。委托有结果后会再次唤起你，schedule_followup 可预约复看。
 read_work 读取进展，close_responsibility 结束临时职责，返回 waiting 表示仍有未完工作。`

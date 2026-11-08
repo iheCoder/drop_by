@@ -364,6 +364,12 @@ func (s *Store) AddUserMessage(m Message, interval time.Duration) error {
 	// 极明确的停止在接收消息的事务中立即生效，不等待模型、预算或后台轮询。
 	// 这也让正在执行的研究在看到新修订后无法发布旧结果。
 	discussion, research := explicitStop(m.Body)
+	// 真人重新接话恢复讨论，研究暂停保持原样；无需为这一既有行为调用模型。
+	if !discussion {
+		if _, e = tx.Exec(`UPDATE conversations SET discussion_paused=0 WHERE id=?`, m.ConversationID); e != nil {
+			return e
+		}
+	}
 	if discussion || research {
 		if _, e = tx.Exec(`UPDATE conversations SET revision=revision+1 WHERE id=?`, m.ConversationID); e != nil {
 			return e

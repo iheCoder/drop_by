@@ -31,7 +31,7 @@ func definition(name, desc string, properties map[string]any, required ...string
 func textField(desc string) any { return map[string]string{"type": "string", "description": desc} }
 
 func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition {
-	defs := []ToolDefinition{
+	defs := []ToolDefinition{instructionDefinition(),
 		definition("organize_context", "整理本人在当前场景的工作上下文。用续接便笺和选中的完整原文替换旧窗口，随后继续行动；不删除历史、不修改人物或任务状态。省略引用则不保留旧原文；同批新工具结果仍正常交付。", map[string]any{"note": textField("接下来仍有用的理解、分歧、更正或未完打算，自由撰写"), "keep_message_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "需要保留原话的消息 ID，可来自本人参与的其他聊天"}, "keep_tool_run_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "需要继续保留完整结果的可见工具记录 ID"}}, "note"),
 		definition("send_message", "发送消息后可继续行动。可发到自己所在的聊天；个人活动省略目的地时发给真人私聊。", map[string]any{"conversation_id": textField("目的聊天 ID，普通聊天省略则发在当前聊天"), "message": textField("自己的消息"), "reply_to": textField("可选的目的聊天消息 ID"), "evidence": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "可选成果 tool_run ID"}, "notify": map[string]any{"type": "boolean", "description": "额外系统通知，默认 false"}}, "message"),
 		definition("read_tool_result", "查找或读取本人可访问的工具记录。省略 id 可按 query 检索或浏览索引，提供 id 按需读取正文。", map[string]any{"id": textField("真实 tool_run ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}, "id"),
@@ -67,13 +67,13 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 	if t.Store.CanDelegate(c, m, w) {
 		defs = append(defs, definition("delegate_work", "依据当前真实约定，委托同群成员完成一项具体工作。coordinate=true 可请对方组织这个子事项，不扩大原授权。写明预期结果、边界及选择理由；完成或遇到问题后会获得复看机会。", map[string]any{"member_id": textField("本群另一成员ID"), "instruction": textField("具体任务、预期结果和边界"), "reason": textField("为什么需要这件事、为什么选择这位成员"), "coordinate": map[string]any{"type": "boolean", "description": "是否委托对方组织这项子工作；默认自己完成具体产出"}}, "member_id", "instruction"))
 	}
-	if !c.DiscussionPaused && c.ID != "" {
+	{ // 交流能力属于成员；目标房间在执行时检查。
 		faces := make([]string, 0, len(reactionPalette))
 		for _, face := range reactionPalette {
 			faces = append(faces, face.Emoji)
 		}
 		defs = append(defs, definition(reactionTool, "用表情回应当前聊天的一条消息，或撤回自己的回应。回应显示在原消息下，不发送新消息。可只回应表情，也可以继续交流。", map[string]any{
-			"message_id": textField("当前聊天的实际消息 ID"),
+			"message_id": textField("本人参与聊天中的实际消息 ID"),
 			"emoji":      map[string]any{"type": "string", "enum": faces},
 			"present":    map[string]any{"type": "boolean", "description": "true 添加自己的回应；false 撤回自己的回应"},
 		}, "message_id", "emoji", "present"))
@@ -96,7 +96,7 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 	for i := range defs {
 		props := defs[i].Function.Parameters.(map[string]any)["properties"].(map[string]any)
 		name := defs[i].Function.Name
-		if name == "read_history" || name == "read_work" || name == "read_artifact" || name == "read_tool_result" || name == "read_memory" || name == "search_memory" || name == "remember" {
+		if name == "read_history" || name == "read_work" || name == "read_artifact" || name == "read_tool_result" || name == "read_memory" || name == "search_memory" || name == "remember" || name == "ask_question" {
 			props["conversation_id"] = textField("可选，自己参与的聊天 ID；省略使用当前场景")
 		}
 
@@ -129,6 +129,17 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work, call ToolCall) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
+	}
+	// 停止是实际工作状态；同批后面的旧操作也不能越过停止。
+	if w.ID != "" {
+		var status string
+		err := t.Store.db.QueryRow(`SELECT status FROM work WHERE id=?`, w.ID).Scan(&status)
+		if err != nil && err != sql.ErrNoRows {
+			return "", err
+		}
+		if status == "stopped" || status == "superseded" {
+			return "", errActionStopped
+		}
 	}
 	if err := t.Store.checkMembership(c, m.ID); err != nil {
 		return "", err
@@ -165,7 +176,7 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	readErr := t.Store.db.QueryRow("SELECT status,result FROM tool_runs WHERE id=?", runID).Scan(&oldStatus, &oldResult)
 	if readErr == nil {
 		if oldStatus == "running" {
-			if !readOnlyTool(call.Function.Name) && call.Function.Name != "send_message" && call.Function.Name != reactionTool {
+			if !readOnlyTool(call.Function.Name) && call.Function.Name != "send_message" && call.Function.Name != reactionTool && call.Function.Name != "ask_question" {
 				return "", errUncertainTool
 			}
 			resuming = true
@@ -281,7 +292,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		}
 	}
 	var err error
-	if args.ConversationID != "" && (call.Function.Name == "read_history" || call.Function.Name == "read_work" || call.Function.Name == "read_artifact" || call.Function.Name == "read_tool_result" || call.Function.Name == "read_memory" || call.Function.Name == "search_memory" || call.Function.Name == "remember") {
+	if args.ConversationID != "" && (call.Function.Name == "read_history" || call.Function.Name == "read_work" || call.Function.Name == "read_artifact" || call.Function.Name == "read_tool_result" || call.Function.Name == "read_memory" || call.Function.Name == "search_memory" || call.Function.Name == "remember" || call.Function.Name == "ask_question") {
 		c, err = t.Store.accessibleConversation(m.ID, args.ConversationID)
 		if err != nil {
 			return nil, err
@@ -289,6 +300,8 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 	}
 
 	switch call.Function.Name {
+	case "apply_instruction":
+		return t.applyInstruction(ctx, c, m, w, call)
 	case "organize_context":
 		return t.Store.organizeContext(c, m, call.Function.Arguments)
 	case "send_message":
@@ -320,7 +333,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 	case "cancel_work":
 		return t.Store.CancelOwnWork(c, m, args.ID)
 	case "ask_question":
-		return t.Store.AskQuestion(c, m, Question{Text: args.Text, Options: args.Options}, args.Text, false)
+		return t.sendQuestion(ctx, c, m, w, call, args.Text, args.Options)
 	case "read_tool_result":
 		if args.ID == "" {
 			return t.toolIndex(c.ID, m.ID, args.Query, args.Offset, args.Limit)

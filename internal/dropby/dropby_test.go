@@ -136,7 +136,12 @@ func TestScopedCorrectionChangesOnlyRelatedWork(t *testing.T) {
 	})
 	e := NewEngine(s, model, testConfig())
 	w := Work{Instruction: "其实是红色，另一件不用找了", SourceID: "correction"}
-	if err := e.applyControl(context.Background(), c, w); err != nil {
+	var control Control
+	response, _ := e.Model.Complete(context.Background(), nil, nil, true)
+	if err := parseJSON(response.Content, &control); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.applyControl(context.Background(), c, w, control); err != nil {
 		t.Fatal(err)
 	}
 	jobs, _ := s.Works(c.ID)

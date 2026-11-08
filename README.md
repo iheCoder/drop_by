@@ -39,7 +39,7 @@ nohup ./bin/dropby >data/server.log 2>&1 &
 
 ## 模型、工具和费用
 
-默认用 `gpt-6.1-terra` 进行日常交流与行动，用 `gpt-6.1-sol` 进行个人探索、研究和控制理解。不再设置独立的参与分类或表达审核模型；两者均通过 Responses API 调用，默认读取 `OPENAI_API_KEY`，地址为 `https://api.openai.com/v1`。搜索与网页读取仍独立使用 `DEEPSEEK_API_KEY`，其费用不属于 OpenAI 赠送额度。密钥只保留在进程环境，不写入 SQLite、不传给浏览器、不写日志。没有模型配置时仍可创建和编辑成员、查看聊天，相识问题不依赖模型；生成回应和理解自然语言偏好需要模型配置。没有搜索配置时不会宣称已经联网探索。
+默认用 `gpt-6.1-terra` 进行日常交流与行动，用 `gpt-6.1-sol` 进行个人探索和研究。不再设置独立的参与分类或表达审核模型；两者均通过 Responses API 调用，默认读取 `OPENAI_API_KEY`，地址为 `https://api.openai.com/v1`。搜索与网页读取仍独立使用 `DEEPSEEK_API_KEY`，其费用不属于 OpenAI 赠送额度。密钥只保留在进程环境，不写入 SQLite、不传给浏览器、不写日志。没有模型配置时仍可创建和编辑成员、查看聊天，相识问题不依赖模型；生成回应和理解自然语言偏好需要模型配置。没有搜索配置时不会宣称已经联网探索。
 
 可用环境变量见 [.env.example](.env.example)。程序**不自动加载 `.env` 文件**，请由启动环境设置变量。当前生成接口只使用 Responses API。`DROPBY_BASE_URL` 与 `DROPBY_API_KEY` 指向正在使用的网关，交流与探索模型分别配置；搜索服务独立配置。
 
@@ -49,7 +49,7 @@ nohup ./bin/dropby >data/server.log 2>&1 &
 | --- | --- | --- |
 | `DROPBY_ADDR` | `127.0.0.1:8090` | 只允许本机回环监听 |
 | `DROPBY_DATA_DIR` | `data` | 数据目录；每个目录独立 |
-| `DROPBY_MODEL` | `gpt-6.1-sol` | 个人探索、研究和控制理解的主模型 |
+| `DROPBY_MODEL` | `gpt-6.1-sol` | 个人探索和研究的主模型 |
 | `DROPBY_CHAT_MODEL` | `gpt-6.1-terra` | 普通发言，包括后续接话 |
 | `DROPBY_WEEKLY_BUDGET_USD` | `20` | 每周估算费用总上限 |
 | `DROPBY_CONTEXT_TOKEN_BUDGET` | `100000` | 完整输入的保守 token 上界与输出预留总容量，不是精确 tokenizer |
@@ -124,3 +124,5 @@ go build ./cmd/dropby
 产品范围依据 [drop_by 产品需求说明 v0.1](docs/demand/drop_by%20产品需求说明%20v0.1.md)。
 
 执行边界与故障续接见 [执行机制简化](docs/execution-simplification.md)。消息、工具往返和后续委托不再按次数配额截断；旧的相应环境变量不再生效。
+
+主动性执行、共享职责入口和网络恢复的本次变化与边界见 [主动性与恢复调整](docs/initiative-recovery.md)。

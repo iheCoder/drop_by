@@ -354,7 +354,12 @@ func TestExplicitResumeGetsNewExecutionRootWithoutOrdinaryReset(t *testing.T) {
 	e := NewEngine(s, modelFunc(func(_ context.Context, _ []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		return jsonReply(Control{Discussion: "keep", Research: "keep", ResumeIDs: []string{old.ID}}), nil
 	}), testConfig())
-	if err := e.applyControl(context.Background(), c, trigger); err != nil {
+	var control Control
+	response, _ := e.Model.Complete(context.Background(), nil, nil, true)
+	if err := parseJSON(response.Content, &control); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.applyControl(context.Background(), c, trigger, control); err != nil {
 		t.Fatal(err)
 	}
 	resumed, err := scanWork(s.db.QueryRow(`SELECT `+workColumns+` FROM work WHERE id=?`, old.ID))

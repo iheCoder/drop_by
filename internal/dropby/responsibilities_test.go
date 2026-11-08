@@ -21,7 +21,7 @@ func responsibilityStep(t *testing.T, s *Store, c Conversation, text string, con
 	e := NewEngine(s, modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
 		return jsonReply(control), nil
 	}), testConfig())
-	if err := e.applyControl(context.Background(), c, w); err != nil {
+	if err := e.applyControl(context.Background(), c, w, control); err != nil {
 		t.Fatal(err)
 	}
 	c, _ = s.Conversation(c.ID)

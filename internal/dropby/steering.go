@@ -11,6 +11,7 @@ import (
 )
 
 type steeringKey struct{}
+type personalSinceKey struct{}
 type steeringInput struct {
 	Events  <-chan string
 	Room    string
@@ -21,13 +22,20 @@ type steeringInput struct {
 // 只将真人追加内容送入 steering。事件只是唤醒提示，SQLite 才是可靠来源，
 // 因而连接失败或通知合并都不会消耗未读位置；同伴发言仍在普通行动边界接续。
 func (e *Engine) completeMemberModel(ctx context.Context, c Conversation, seen *int64, messages *[]ChatMessage, defs []ToolDefinition) (ChatMessage, error) {
-	if !e.Config.MidTurnSteering || c.ID == "" {
+	if !e.Config.MidTurnSteering {
 		return completeModel(ctx, e.Model, messages, defs, true)
 	}
 	events, unsubscribe := e.Hub.Subscribe()
 	defer unsubscribe()
 	input := &steeringInput{Applied: map[string]bool{}, Events: events, Room: c.ID, Read: func() ([]Message, error) {
-		all, err := e.Store.messagesAfter(c.ID, *seen, 0, -1)
+		var all []Message
+		var err error
+		if c.ID == "" {
+			since, _ := ctx.Value(personalSinceKey{}).(string)
+			all, err = e.Store.personalMessages(c.MemberIDs[0], *seen, since)
+		} else {
+			all, err = e.Store.messagesAfter(c.ID, *seen, 0, -1)
+		}
 		var human []Message
 		for _, msg := range all {
 			if msg.AuthorID == "user" {
@@ -38,7 +46,14 @@ func (e *Engine) completeMemberModel(ctx context.Context, c Conversation, seen *
 	}}
 	reply, err := completeModel(context.WithValue(ctx, steeringKey{}, input), e.Model, messages, defs, true)
 	if err == nil {
-		arrived, readErr := e.Store.messagesAfter(c.ID, *seen, 0, -1)
+		var arrived []Message
+		var readErr error
+		if c.ID == "" {
+			since, _ := ctx.Value(personalSinceKey{}).(string)
+			arrived, readErr = e.Store.personalMessages(c.MemberIDs[0], *seen, since)
+		} else {
+			arrived, readErr = e.Store.messagesAfter(c.ID, *seen, 0, -1)
+		}
 		if readErr != nil {
 			return reply, readErr
 		}
@@ -183,14 +198,14 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 		case <-ctx.Done():
 			return modelResult{}, ctx.Err()
 		case room := <-input.Events:
-			if room == input.Room {
+			if input.Room == "" || room == input.Room {
 				if err := steer(); err != nil {
 					return modelResult{}, err
 				}
 			}
 		case got := <-incoming:
 			if got.Err != nil {
-				return modelResult{}, fmt.Errorf("Responses WebSocket 中断，未读消息保留：%w", got.Err)
+				return modelResult{}, &requestFailure{Stage: "Responses WebSocket 中断，未读消息保留", Cause: got.Err, Temporary: ctx.Err() == nil}
 			}
 			ev := got.Event
 			switch ev.Type {

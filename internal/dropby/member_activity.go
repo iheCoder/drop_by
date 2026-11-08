@@ -29,7 +29,7 @@ func (e *Engine) converse(ctx context.Context, c Conversation, w Work) error {
 		err    error
 	}
 	completed := make(chan result, len(c.MemberIDs))
-	busy, failed, started := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	busy, failed, started := map[string]bool{}, map[string]int64{}, map[string]bool{}
 	seen := map[string]int64{}
 	for _, id := range c.MemberIDs {
 		last, _, err := e.Store.observation(c.ID, id)
@@ -118,7 +118,7 @@ func (e *Engine) converse(ctx context.Context, c Conversation, w Work) error {
 			start(id)
 		}
 	}
-	var failures error
+	failures := map[string]error{}
 	for len(busy) > 0 {
 		select {
 		case <-ctx.Done():
@@ -127,8 +127,19 @@ func (e *Engine) converse(ctx context.Context, c Conversation, w Work) error {
 			delete(busy, r.member)
 			seen[r.member] = max(seen[r.member], r.seen)
 			if r.err != nil {
-				failed[r.member] = true
-				failures = errors.Join(failures, r.err)
+				// 只记下失败时已到达的位置；之后的新消息仍可触发本人。
+				var latest int64
+				if err := e.Store.db.QueryRow(`SELECT coalesce(max(seq),0) FROM messages WHERE conversation_id=? AND author_id<>?`, c.ID, r.member).Scan(&latest); err != nil {
+					return err
+				}
+				if cp, err := e.Store.loadAction(w.ID, r.member); err == nil {
+					latest = cp.Seen
+				}
+				failed[r.member] = latest
+				failures[r.member] = r.err
+			}
+			if r.err == nil {
+				delete(failures, r.member)
 			}
 		case room := <-events:
 			if room != c.ID {
@@ -138,19 +149,23 @@ func (e *Engine) converse(ctx context.Context, c Conversation, w Work) error {
 		// 新收到别人的话会唤醒已结束的行动；自己的消息不自动唤醒自己。
 		// 本人可以在同一行动中通过 send_message 继续说，不必靠自发事件续命。
 		for _, id := range c.MemberIDs {
-			if busy[id] || failed[id] {
+			if busy[id] {
 				continue
 			}
 			var latest int64
 			if err := e.Store.db.QueryRow(`SELECT coalesce(max(seq),0) FROM messages WHERE conversation_id=? AND author_id<>?`, c.ID, id).Scan(&latest); err != nil {
 				return err
 			}
-			if latest > seen[id] {
+			if latest > max(seen[id], failed[id]) {
 				start(id)
 			}
 		}
 	}
-	return failures
+	var failure error
+	for _, err := range failures {
+		failure = errors.Join(failure, err)
+	}
+	return failure
 }
 
 func (e *Engine) memberAction(ctx context.Context, c Conversation, m Member, w Work) (int64, error) {
@@ -176,8 +191,13 @@ func (e *Engine) memberAction(ctx context.Context, c Conversation, m Member, w W
 		instruction = "结合当前情况继续自己的这项行动。"
 	}
 	out, err := e.actLocked(ctx, c, m, w, instruction)
+	if errors.Is(err, errActionStopped) {
+		return out.seen, nil
+	}
 	if err != nil {
-		_ = e.recordMemberAction(w, m.ID, "error", err.Error())
+		if !errors.Is(err, errActionYield) {
+			_ = e.recordMemberAction(w, m.ID, "error", err.Error())
+		}
 		return out.seen, err
 	}
 	target := c

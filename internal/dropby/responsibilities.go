@@ -257,12 +257,12 @@ func (s *Store) CanDelegate(c Conversation, m Member, w Work) bool {
 
 // 取消事项收束其后续、分享与回报，晚到结果不能把已取消的话题重新拉起来。
 func stopWorkFamily(tx *sql.Tx, room, id string) error {
-	_, err := tx.Exec(`WITH RECURSIVE family(id) AS (SELECT id FROM work WHERE id=? AND conversation_id=? UNION SELECT w.id FROM work w JOIN family f ON w.parent_id=f.id WHERE w.conversation_id=?)
+	_, err := tx.Exec(`WITH RECURSIVE family(id) AS (SELECT id FROM work WHERE id=? AND coalesce(conversation_id,'')=? UNION SELECT w.id FROM work w JOIN family f ON w.parent_id=f.id WHERE coalesce(w.conversation_id,'')=?)
  UPDATE work SET status='stopped',result=CASE WHEN result='' THEN '用户已取消这件事，保留现有成果。' ELSE result END WHERE id IN (SELECT id FROM family) AND (status IN ('pending','running','waiting_budget','paused') OR id=?)`, id, room, room, id)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`WITH RECURSIVE family(id) AS (SELECT id FROM work WHERE id=? AND conversation_id=? UNION SELECT w.id FROM work w JOIN family f ON w.parent_id=f.id) UPDATE responsibilities SET revoked=1 WHERE conversation_id=? AND scope_id IN (SELECT id FROM family)`, id, room, room)
+	_, err = tx.Exec(`WITH RECURSIVE family(id) AS (SELECT id FROM work WHERE id=? AND coalesce(conversation_id,'')=? UNION SELECT w.id FROM work w JOIN family f ON w.parent_id=f.id) UPDATE responsibilities SET revoked=1 WHERE coalesce(conversation_id,'')=? AND scope_id IN (SELECT id FROM family)`, id, room, room)
 	return err
 }
 
@@ -281,15 +281,6 @@ func (s *Store) checkMembership(c Conversation, member string) error {
 	}
 	return nil
 }
-
-const responsibilityControlPrompt = `
-responsibility_changes 只记录最新真人明确授予、交接或撤销的组织职责，不因 @、提问、讨论机制或 BOT 自称领导就任命。
-组织职责是安排/协调/带领别人完成事情的责任；具体执行任务不是组织职责。例如「A，你帮忙协调，先找回约定，再请 B 做网页」只有 A 获得 scope_id=this 的组织职责。B 是具体工作的预期接手者，不能为 B 再创建同范围职责或取代 A；具体分工由 A 的 delegate_work 真正落盘。只有「让 B 组织这一部分」才给 B 子事项组织权。不要把所有被提及/被请来做事的成员都写入 responsibility_changes。
-同一事项的交接使用已有职责 id；一次消息不得先任命 A 再通过第二条同范围新建把它覆盖。若无法确认用户让谁组织，不擅自任命，交由正常聊天简短澄清。
-每项为 {"id":"修改/撤销现有职责时填写","member_id":"当前群成员ID","scope_id":"长期职责为空；这次新事项写this；旧事项写已有工作ID","body":"用自然语言说明负责什么","revoke":false}。
-临时组织不能覆盖长期职责；长期交接用已有职责 id 改 member_id。已有设置的协调者作为 legacy_<群ID> 约定提供。
-related_work_id 在本消息明确继续/交接某件已有事项时填写其实际工作ID，否则为空。日常闲聊不需要组织。
-结束或取消整个事项时，将其根工作ID放进 stop_ids；只撤销负责人不能顺带取消事项。`
 
 // 交接或撤销只重定向尚未处理的结果回报。逐件按它自己的父链解析，
 // 所以换掉长期负责人不会抢走另一个成员正在负责的临时事项。

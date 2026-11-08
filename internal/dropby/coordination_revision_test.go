@@ -92,20 +92,12 @@ func TestCoordinatorChangeDuringControlKeepsUnprocessedPreference(t *testing.T) 
 	var calls atomic.Int32
 	cfg := testConfig()
 	e := NewEngine(s, modelFunc(func(_ context.Context, messages []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		if strings.HasPrefix(messages[0].Content, "你只解释") {
+		if strings.Contains(messages[0].Content, members[0].ID) && calls.Load() < 2 {
 			if calls.Add(1) == 1 {
 				close(started)
 				<-release
-			} else {
-				var input struct {
-					IdentityUpdated bool `json:"identity_updated_since_trigger"`
-				}
-				json.Unmarshal([]byte(messages[1].Content), &input)
-				if input.IdentityUpdated {
-					return ChatMessage{}, errors.New("coordinator edit was mistaken for a newer profile edit")
-				}
 			}
-			return jsonReply(Control{Discussion: "keep", Research: "keep", PreferenceUpdates: []PreferenceUpdate{{MemberID: members[0].ID, Profile: "愿意核对来源，也喜欢幽默地表达", SourceID: msg.ID}}}), nil
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("apply_instruction", map[string]any{"source_id": msg.ID, "preference_updates": []PreferenceUpdate{{MemberID: members[0].ID, Profile: "愿意核对来源，也喜欢幽默地表达", SourceID: msg.ID}}})}}, nil
 		}
 		var input struct {
 			Self Member `json:"self"`
@@ -164,13 +156,13 @@ func TestProfileEditBeforeBudgetFailureKeepsLaterPreference(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	e := NewEngine(s, modelFunc(func(_ context.Context, messages []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
-		if strings.HasPrefix(messages[0].Content, "你只解释") {
+		if calls.Load() < 2 {
 			if calls.Add(1) == 1 {
 				close(started)
 				<-release
 				return ChatMessage{}, ErrBudget
 			}
-			return jsonReply(Control{PreferenceUpdates: []PreferenceUpdate{{MemberID: m.ID, Profile: "严肃地表达", SourceID: msg.ID}}}), nil
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("apply_instruction", map[string]any{"source_id": msg.ID, "preference_updates": []PreferenceUpdate{{MemberID: m.ID, Profile: "严肃地表达", SourceID: msg.ID}}})}}, nil
 		}
 		return jsonReply(Outcome{Outcome: "这次先安静听"}), nil
 	}), testConfig())

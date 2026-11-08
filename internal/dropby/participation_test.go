@@ -410,12 +410,19 @@ func TestProfileEditRetriesButOrdinaryHumanDoesNotReplaceRunningChat(t *testing.
 				if err := json.Unmarshal([]byte(ms[1].Content), &input); err != nil {
 					return ChatMessage{}, err
 				}
-				if acts.Add(1) == 1 {
+				step := acts.Add(1)
+				if change == "profile_then_budget" && step == 2 {
+					return ChatMessage{}, ErrBudget
+				}
+				if step == 1 {
 					close(started)
 					<-release // 故意模拟无法立即取消的网络返回，最后仍须通过修订检查。
 					return jsonReply(Outcome{Message: "这是一份已经过时的旧人物回复。"}), nil
 				}
-				return jsonReply(Outcome{Message: input.Self.Profile + "；" + ms[1].Content}), nil
+				if !strings.Contains(asJSON(ms), firstHuman.Body) {
+					t.Error("恢复丢失原问题")
+				}
+				return jsonReply(Outcome{Message: input.Self.Profile + "；" + firstHuman.Body}), nil
 			}), cfg)
 			e.dispatch(context.Background())
 			select {
@@ -544,7 +551,12 @@ func TestBudgetResumeStillAppliesUnprocessedHumanPreference(t *testing.T) {
 	e := NewEngine(s, modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
 		return jsonReply(Control{PreferenceUpdates: []PreferenceUpdate{{MemberID: m.ID, Profile: "喜欢自然幽默地交流", SourceID: msg.ID}}}), nil
 	}), testConfig())
-	if err := e.applyControl(context.Background(), c, w); err != nil {
+	var control Control
+	response, _ := e.Model.Complete(context.Background(), nil, nil, true)
+	if err := parseJSON(response.Content, &control); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.applyControl(context.Background(), c, w, control); err != nil {
 		t.Fatal(err)
 	}
 	saved, err := s.Member(m.ID)
