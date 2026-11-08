@@ -79,15 +79,15 @@ function accountUsage() {
   const usage=state.usage || {}, total=Number(state.weekly_budget_micros || 0), used=Number(usage.cost_micros || 0);
   const reserved=Number(usage.unsettled_micros || 0);
   const reset=budgetResetLabel();
-  return `<div class="account-usage-heading"><h2>本周额度</h2><span>${state.budget_blocked?'暂时不足':'可用'}</span></div><p class="account-balance"><strong>${usageMoney(Math.max(0,total-used),2)}</strong><span>剩余 / ${usageMoney(total,2)}</span></p><progress value="${Math.min(used,total)}" max="${total || 1}" aria-label="本周已占用额度"></progress><p class="account-usage-note">已花约 ${usageMoney(used-reserved)}${reserved ? ` · 暂占额度 ${usageMoney(reserved)}` : ''}${reset ? `<br>${escapeHTML(reset)} 重置` : ''}</p><button id="account-usage-entry" type="button" class="usage-entry" data-action="usage-open">额度分析 ${icon('chevron-right')}</button>`;
+  return `<div class="account-usage-heading"><h2>本周额度</h2><span>${state.budget_blocked?'暂时不足':'可用'}</span></div><p class="account-balance"><strong>${usageMoney(Math.max(0,total-used),2)}</strong><span>剩余 / ${usageMoney(total,2)}</span></p><progress value="${Math.min(used,total)}" max="${total || 1}" aria-label="本周已占用额度"></progress><p class="account-usage-note">已花约 ${usageMoney(used-reserved)}${reserved ? ` · 暂占额度 ${usageMoney(reserved)}` : ''}${reset ? `<br>${escapeHTML(reset)} 重置` : ''}</p><button id="account-usage-entry" type="button" class="usage-entry" data-action="usage-open">额度分析 ${icon('chevron-right')}</button><button id="account-budget-entry" type="button" class="usage-entry" data-action="edit-budget">调整每周限额 ${icon('chevron-right')}</button>`;
 }
 function updateAccountUsage() {
   const section=$('account-usage'); if(!section) return;
   const signature=JSON.stringify([state.usage,state.budget_blocked,state.weekly_budget_micros]);
   if(section.dataset.signature===signature) return;
-  const focused=document.activeElement===$('account-usage-entry');
+  const focused=document.activeElement?.id;
   section.innerHTML=accountUsage(); section.dataset.signature=signature;
-  if (focused) $('account-usage-entry').focus({preventScroll:true});
+  if (focused==='account-usage-entry' || focused==='account-budget-entry') $(focused)?.focus({preventScroll:true});
 }
 function account() {
   const p=state.profile || {name:'你'};
@@ -97,16 +97,166 @@ function editAccount() {
   showWorkspace('编辑我的资料', '', `<form id="account-form">${avatarEditor(state.profile)}<label class="field"><span>名字</span><input name="name" required maxlength="24" value="${escapeHTML(state.profile?.name || '你')}" autocomplete="nickname"></label><div class="form-error" hidden role="alert"></div><div class="workspace-footer"><button class="secondary" type="button" data-action="account">取消</button><button class="primary" type="submit">保存资料</button></div></form>`, 'account-edit');
 }
 
+// 每周额度用固定档位的滚轮选择。拖动、轻扫、点相邻档、滚轮和方向键都只改预览；
+// 取消回到个人中心，保存才写入。减弱动态效果时直接落在档位上，不做惯性。
+function budgetStops() {
+  return (state.weekly_budget_options || []).map(Number).filter(amount => amount > 0);
+}
+function budgetStopIndex(micros, stops) {
+  let best=0, dist=Infinity;
+  stops.forEach((stop, index) => { const gap=Math.abs(stop-micros); if (gap<dist) { dist=gap; best=index; } });
+  return best;
+}
+function budgetDollars(micros) { return '$'+micros/1e6; }
+function budgetMeta() {
+  const usage=state.usage || {}, reserved=Number(usage.unsettled_micros || 0);
+  const reset=budgetResetLabel();
+  return `已花约 ${usageMoney(Number(usage.cost_micros || 0)-reserved)}${reset ? ` · ${reset} 重置` : ''}`;
+}
+function budgetConsequence(micros) {
+  const left=micros-Number(state.usage?.cost_micros || 0);
+  if (left<=0) return '这周不再开始新的';
+  // 整档余额跟滚轮一样不带小数；花掉的零头仍按账本显示。
+  return `这周还剩 ${left%1e6===0 ? budgetDollars(left) : usageMoney(left)}`;
+}
+function budgetNote() {
+  const current=Number(state.weekly_budget_micros || 0), stops=budgetStops();
+  if (state.budget_source==='temporary') return '现在按临时上限计算。保存之后，每周都用你选的这一档。';
+  if (stops.length && !stops.includes(current)) return '当前上限不在这些档位上。保存之后，改成你选的这一档。';
+  return '';
+}
+function updateBudgetPreview() {
+  const form=$('budget-form'); if (!form) return;
+  const meta=form.querySelector('.budget-meta'), result=$('budget-result'), wheel=$('budget-wheel');
+  if (!meta || !result || !wheel) return;
+  meta.textContent=budgetMeta();
+  result.textContent=budgetConsequence(Number(wheel.getAttribute('aria-valuenow'))*1e6);
+}
+function editBudget() {
+  const stops=budgetStops();
+  if (!stops.length) {
+    showWorkspace('每周额度', '', `<p class="budget-note">还不能调整每周额度。</p><div class="workspace-footer"><button class="secondary" type="button" data-action="account">返回</button></div>`, 'budget');
+    return;
+  }
+  const index=budgetStopIndex(Number(state.weekly_budget_micros || 0), stops);
+  const note=budgetNote();
+  showWorkspace('每周额度', '', `<form id="budget-form" class="budget-sheet"><p class="budget-meta">${escapeHTML(budgetMeta())}</p><div id="budget-wheel" class="budget-wheel" role="slider" tabindex="0" aria-orientation="vertical" aria-label="每周额度" aria-valuemin="${stops[0]/1e6}" aria-valuemax="${stops.at(-1)/1e6}" aria-valuenow="${stops[index]/1e6}" aria-valuetext="${stops[index]/1e6} 美元"><div class="budget-wheel-band" aria-hidden="true"></div><div class="budget-wheel-window"><div id="budget-wheel-track" class="budget-wheel-track">${stops.map((amount, i)=>`<div class="budget-wheel-item" data-stop="${i}" aria-hidden="true">${budgetDollars(amount)}</div>`).join('')}</div></div></div><p id="budget-result" class="budget-result" aria-live="polite">${escapeHTML(budgetConsequence(stops[index]))}</p>${note ? `<p class="budget-note">${escapeHTML(note)}</p>` : ''}<div class="form-error" hidden role="alert"></div><div class="workspace-footer"><button class="secondary" type="button" data-action="account">取消</button><button class="primary" type="submit">保存</button></div></form>`, 'budget');
+  mountBudgetWheel(stops, index);
+  $('budget-wheel').focus({preventScroll:true});
+}
+function mountBudgetWheel(stops, start) {
+  const wheel=$('budget-wheel'), track=$('budget-wheel-track'), items=[...track.children];
+  const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const save=wheel.closest('form').querySelector('button[type=submit]');
+  let index=start, offset=0, drag=null, frame=0, notch=0;
+  const row=()=>items[0].offsetHeight || 44;
+  const clamp=value=>Math.min(stops.length-1, Math.max(0, value));
+  function paint() {
+    const height=row();
+    items.forEach((item, i)=>{
+      const dist=Math.abs(i*height+offset)/height;
+      item.style.transform=`scale(${Math.max(.4, 1-dist*.58)})`;
+      item.style.opacity=String(Math.max(.16, .45**dist));
+      item.style.color=dist<.45 ? 'var(--ink)' : 'var(--muted)';
+      item.style.fontWeight=dist<.4 ? '600' : '500';
+    });
+  }
+  function sync(next) {
+    const selected=stops[next];
+    $('budget-result').textContent=budgetConsequence(selected);
+    wheel.setAttribute('aria-valuenow', String(selected/1e6));
+    wheel.setAttribute('aria-valuetext', `${selected/1e6} 美元`);
+    save.disabled=state.budget_source==='custom' && selected===Number(state.weekly_budget_micros);
+  }
+  function place(next, animate) {
+    next=clamp(next);
+    offset=-next*row();
+    track.style.transition=animate && !reduced ? 'transform .22s cubic-bezier(.22,.85,.3,1)' : 'none';
+    track.style.transform=`translateY(${offset}px)`;
+    paint();
+    index=next;
+    sync(next);
+  }
+  function readOffset() {
+    const y=new DOMMatrix(getComputedStyle(track).transform).m42;
+    return Number.isFinite(y) ? y : offset;
+  }
+  place(index, false);
+  wheel.addEventListener('pointerdown', event=>{
+    if (event.button!==0) return;
+    cancelAnimationFrame(frame); frame=0;
+    wheel.classList.add('is-dragging');
+    offset=readOffset();
+    track.style.transition='none';
+    track.style.transform=`translateY(${offset}px)`;
+    drag={pointer:event.pointerId, y:event.clientY, origin:offset, moved:false, velocity:0, lastY:event.clientY, lastT:event.timeStamp};
+    wheel.setPointerCapture(event.pointerId);
+  });
+  wheel.addEventListener('pointermove', event=>{
+    if (!drag || event.pointerId!==drag.pointer) return;
+    const dy=event.clientY-drag.y;
+    if (Math.abs(dy)>8) drag.moved=true;
+    const dt=Math.max(event.timeStamp-drag.lastT, 16);
+    drag.velocity=(event.clientY-drag.lastY)/dt;
+    drag.lastY=event.clientY; drag.lastT=event.timeStamp;
+    const min=-(stops.length-1)*row();
+    let next=drag.origin+dy;
+    if (next>0) next*=.32; else if (next<min) next=min+(next-min)*.32;
+    offset=next;
+    track.style.transform=`translateY(${offset}px)`;
+    if (!frame) frame=requestAnimationFrame(()=>{ frame=0; paint(); const landed=clamp(Math.round(-offset/row())); if (landed!==index) { index=landed; sync(landed); } });
+  }, {passive:false});
+  function finish(event) {
+    if (!drag || event.pointerId!==drag.pointer) return;
+    const moved=drag.moved, velocity=drag.velocity;
+    drag=null;
+    wheel.classList.remove('is-dragging');
+    cancelAnimationFrame(frame); frame=0;
+    if (!moved) {
+      const item=document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-stop]');
+      if (item) place(Number(item.dataset.stop), !reduced);
+      else place(index, !reduced);
+      return;
+    }
+    const height=row();
+    const flick=!reduced && Math.abs(velocity)>.35 ? Math.max(-2*height, Math.min(2*height, velocity*120)) : 0;
+    place(Math.round(-(offset+flick)/height), !reduced);
+  }
+  wheel.addEventListener('pointerup', finish);
+  wheel.addEventListener('pointercancel', finish);
+  wheel.addEventListener('keydown', event=>{
+    const step=event.key==='ArrowDown' || event.key==='PageDown' ? 1 : event.key==='ArrowUp' || event.key==='PageUp' ? -1 : 0;
+    if (event.key==='Home' || event.key==='End') { event.preventDefault(); place(event.key==='Home' ? 0 : stops.length-1, !reduced); return; }
+    if (!step) return;
+    event.preventDefault();
+    place(index+step, !reduced);
+  });
+  wheel.addEventListener('wheel', event=>{
+    event.preventDefault();
+    notch+=event.deltaY;
+    if (Math.abs(notch)<36) return;
+    const step=Math.max(-1, Math.min(1, Math.trunc(notch/36)));
+    notch-=step*36;
+    place(index+step, !reduced);
+  }, {passive:false});
+}
+
 // 资料保存使用表单提交，不自动把勾选或照片预览写入数据库。取消可完整撤回。
 document.addEventListener('submit', async event=>{
   const form=event.target;
-  if (!['create-group-form','edit-group-form','account-form'].includes(form.id)) return;
-  event.preventDefault(); if (avatarLoading) return;
+  if (!['create-group-form','edit-group-form','account-form','budget-form'].includes(form.id)) return;
+  event.preventDefault(); if (form.id!=='budget-form' && avatarLoading) return;
   const data=new FormData(form), reset=pending(form,'正在保存…');
   try {
     if (form.id==='account-form') {
       state.profile=await api('/api/profile',{method:'PATCH',body:JSON.stringify({name:data.get('name').trim(),avatar:avatarData,avatar_icon:avatarIcon,color:avatarColor})});
       renderMyProfile(); if (roomData) renderMessages(false); if (form.isConnected) account(); toast('资料已保存。'); return;
+    }
+    if (form.id==='budget-form') {
+      const usd=Number($('budget-wheel')?.getAttribute('aria-valuenow'));
+      await api('/api/budget',{method:'PATCH',body:JSON.stringify({weekly_budget_usd:usd})});
+      if (!form.isConnected) { await refresh(); toast('每周额度已保存。'); return; }
+      await refresh(); account(); toast('每周额度已保存。'); return;
     }
     const editing=form.id==='edit-group-form';
     const ids=[...groupSelection];
@@ -129,6 +279,7 @@ document.addEventListener('click',event=>{
     case 'edit-group': editGroup(); break;
     case 'account': account(); break;
     case 'edit-account': editAccount(); break;
+    case 'edit-budget': editBudget(); break;
     case 'notifications': requestNotifications(); break;
     case 'close-workspace': closeWorkspace(true); break;
     case 'reset-group-avatar': avatarRequest++; avatarData=''; avatarLoading=false; renderAvatarPreview(); target.closest('form').querySelector('button[type=submit]').disabled=false; break;

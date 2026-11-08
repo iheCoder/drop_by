@@ -14,6 +14,7 @@
 }
 .usage-entry:hover { color:var(--ink); }
 .usage-entry .icon { width:16px; height:16px; }
+.account-usage .usage-entry + .usage-entry { margin-top:0; }
 
 .usage-analysis { color:var(--ink); font-variant-numeric:tabular-nums; }
 .usage-analysis h2,.usage-analysis h3,.usage-analysis p,.usage-analysis dl,.usage-analysis dd { margin:0; }

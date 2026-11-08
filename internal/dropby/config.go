@@ -124,8 +124,8 @@ func env(key, fallback string) string {
 	return fallback
 }
 
-// weeklyBudgetAt 只改变获准的预算上限，不修改账目或重置既有消费。
-// 传入时刻让请求记账、界面和等待恢复使用一致的到期规则。
+// weeklyBudgetAt 是用户还没有保存自己的每周档位时的上限。
+// 临时调额只在到期前生效，之后回到配置里的每周金额；两者都不改写账本。
 func (c Config) weeklyBudgetAt(at time.Time) int64 {
 	if c.TemporaryBudgetMicros > 0 && at.Before(c.TemporaryBudgetUntil) {
 		return c.TemporaryBudgetMicros

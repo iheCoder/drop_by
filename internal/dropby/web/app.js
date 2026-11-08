@@ -116,6 +116,7 @@ async function refresh() {
     const banner = !state.model_ready ? '聊天服务暂未连接，仍可以查看记录和编辑朋友资料。' : state.budget_blocked ? '可用额度暂时不足，进展已保留。恢复后会继续，也可以在个人中心查看。' : !state.search_ready ? '网页探索暂未接通，聊天和本地创作仍可使用。' : '';
     $('service-banner').textContent = banner; $('service-banner').hidden = !banner;
     if (workspaceView === 'account') updateAccountUsage();
+    if (workspaceView === 'budget') updateBudgetPreview();
     if (workspaceView === 'usage') refreshUsageAnalysis();
     if (!selected || !state.conversations.some(c => c.id === selected)) selected = state.conversations[0]?.id || '';
     if (selected) await loadConversation(selected, true); else renderWelcome();

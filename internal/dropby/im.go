@@ -1,9 +1,12 @@
 package dropby
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -19,6 +22,10 @@ type UserProfile struct {
 func (s *Store) initIM() error {
 	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS user_profile(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL)`)
 	if err != nil {
+		return err
+	}
+	// 每周限额是用户自己的选择，和资料分开保存。空着表示还没选，沿用配置。
+	if _, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS user_settings(id INTEGER PRIMARY KEY CHECK(id=1), weekly_budget_micros INTEGER)`); err != nil {
 		return err
 	}
 	for _, column := range []struct{ table, name, definition string }{{"conversations", "avatar", "TEXT NOT NULL DEFAULT ''"}, {"work", "budget_required", "INTEGER NOT NULL DEFAULT 0"}} {
@@ -169,15 +176,119 @@ func (a *API) updateGroup(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, c)
 }
 
+// 滚轮上的每周档位。界面和保存都只用这一组，避免各处再写一套金额。
+func weeklyBudgetStops() []int64 {
+	return []int64{10_000_000, 20_000_000, 30_000_000, 50_000_000, 80_000_000, 100_000_000}
+}
+
+func weeklyStop(micros int64) bool {
+	for _, stop := range weeklyBudgetStops() {
+		if stop == micros {
+			return true
+		}
+	}
+	return false
+}
+
+type queryRower interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func savedWeeklyBudget(q queryRower) (int64, bool, error) {
+	var micros sql.NullInt64
+	err := q.QueryRow(`SELECT weekly_budget_micros FROM user_settings WHERE id=1`).Scan(&micros)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !micros.Valid) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if !weeklyStop(micros.Int64) {
+		return 0, false, fmt.Errorf("已保存的每周限额无效")
+	}
+	return micros.Int64, true, nil
+}
+
+// budgetLimit 在执行时读取已保存的档位。内存里的配置副本不能单独当上限，
+// 否则保存之后仍在跑的请求还会用启动时的金额。用户选过的档位同时盖过环境默认和临时上限。
+func budgetLimit(q queryRower, cfg Config, at time.Time) (int64, string, error) {
+	saved, ok, err := savedWeeklyBudget(q)
+	if err != nil {
+		return 0, "", err
+	}
+	if ok {
+		return saved, "custom", nil
+	}
+	limit := cfg.weeklyBudgetAt(at)
+	if cfg.TemporaryBudgetMicros > 0 && at.Before(cfg.TemporaryBudgetUntil) && limit == cfg.TemporaryBudgetMicros {
+		return limit, "temporary", nil
+	}
+	return limit, "default", nil
+}
+
+func parseWeeklyBudgetUSD(raw json.RawMessage) (int64, error) {
+	reject := fmt.Errorf("请从 10、20、30、50、80、100 美元里选一档")
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || raw[0] < '0' || raw[0] > '9' {
+		return 0, reject
+	}
+	var amount float64
+	if err := json.Unmarshal(raw, &amount); err != nil || math.IsNaN(amount) || math.IsInf(amount, 0) || amount != math.Trunc(amount) {
+		return 0, reject
+	}
+	micros := int64(amount) * 1_000_000
+	if !weeklyStop(micros) {
+		return 0, reject
+	}
+	return micros, nil
+}
+
+func (s *Store) setWeeklyBudget(micros int64) error {
+	if !weeklyStop(micros) {
+		return fmt.Errorf("请从 10、20、30、50、80、100 美元里选一档")
+	}
+	_, err := s.db.Exec(`INSERT INTO user_settings(id,weekly_budget_micros) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET weekly_budget_micros=excluded.weekly_budget_micros`, micros)
+	return err
+}
+
+func (a *API) updateBudget(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		WeeklyBudgetUSD json.RawMessage `json:"weekly_budget_usd"`
+	}
+	if !readBody(w, r, &in) {
+		return
+	}
+	micros, err := parseWeeklyBudgetUSD(in.WeeklyBudgetUSD)
+	if err != nil {
+		respond(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	if err = a.engine.Store.setWeeklyBudget(micros); err != nil {
+		a.fail(w, err)
+		return
+	}
+	// 调高后，原先因为放不下而等待的工作可以马上再试；调低不改已经记下的消费。
+	if err = a.engine.Store.recheckBudgetWait(a.engine.Config); err != nil {
+		a.fail(w, err)
+		return
+	}
+	a.engine.Hub.Publish("")
+	respond(w, 200, map[string]any{"weekly_budget_micros": micros, "budget_source": "custom"})
+}
+
 // 额度是当前账户状态。已恢复的等待不会继续制造群消息，也不能因一次大预留
 // 把剩余可用额度误称为零；预留释放或跨周时重新检查可以恢复的实际工作。
-func (s *Store) budgetBlocked(cfg Config, usage Usage) bool {
-	if usage.CostMicros >= cfg.weeklyBudgetAt(time.Now()) {
-		return true
+func (s *Store) budgetBlocked(cfg Config, usage Usage) (bool, error) {
+	limit, _, err := budgetLimit(s.db, cfg, time.Now())
+	if err != nil {
+		return false, err
+	}
+	if usage.CostMicros >= limit {
+		return true, nil
 	}
 	var blocked int
-	_ = s.db.QueryRow(`SELECT count(*) FROM work WHERE status='waiting_budget' AND autonomous=0 AND budget_required>?`, cfg.weeklyBudgetAt(time.Now())-usage.CostMicros).Scan(&blocked)
-	return blocked > 0
+	err = s.db.QueryRow(`SELECT count(*) FROM work WHERE status='waiting_budget' AND autonomous=0 AND budget_required>?`, limit-usage.CostMicros).Scan(&blocked)
+	return blocked > 0, err
 }
 
 func (s *Store) recheckBudgetWait(cfg Config) error {
@@ -185,6 +296,10 @@ func (s *Store) recheckBudgetWait(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE work SET status='pending',due_at=? WHERE status='waiting_budget' AND budget_required>0 AND budget_required<=?`, time.Now().UnixMilli(), max(int64(0), cfg.weeklyBudgetAt(time.Now())-u.CostMicros))
+	limit, _, err := budgetLimit(s.db, cfg, time.Now())
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE work SET status='pending',due_at=? WHERE status='waiting_budget' AND budget_required>0 AND budget_required<=?`, time.Now().UnixMilli(), max(int64(0), limit-u.CostMicros))
 	return err
 }

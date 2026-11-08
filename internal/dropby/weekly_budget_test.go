@@ -2,7 +2,9 @@ package dropby
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -146,5 +148,192 @@ func TestWeeklyConfigDefaultsAndExplicitLegacyMigration(t *testing.T) {
 	cfg, err = LoadConfig()
 	if err != nil || cfg.WeeklyBudgetMicros != 20_000_000 {
 		t.Fatalf("明确新配置应优先于残留旧配置: %v", err)
+	}
+}
+
+func TestParseWeeklyBudgetUSD(t *testing.T) {
+	for _, dollars := range []string{"10", "20", "30", "50", "80", "100", "20.0"} {
+		got, err := parseWeeklyBudgetUSD(json.RawMessage(dollars))
+		if err != nil || got != int64(mustInt(dollars))*1_000_000 && dollars != "20.0" {
+			t.Fatalf("%s: got %d err=%v", dollars, got, err)
+		}
+		if dollars == "20.0" && (err != nil || got != 20_000_000) {
+			t.Fatalf("整数档位的小数写法应接受: %d %v", got, err)
+		}
+	}
+	for _, raw := range []string{"12.5", "25", "0", "1000", "20.5", `"20"`, "null", "", "-10"} {
+		if _, err := parseWeeklyBudgetUSD(json.RawMessage(raw)); err == nil || !strings.Contains(err.Error(), "选一档") {
+			t.Fatalf("%s 应拒绝: %v", raw, err)
+		}
+	}
+}
+
+func mustInt(raw string) int64 {
+	if raw == "20.0" {
+		return 20
+	}
+	var n int64
+	for _, c := range raw {
+		n = n*10 + int64(c-'0')
+	}
+	return n
+}
+
+func TestUserWeeklyBudgetReplacesConfiguredLimit(t *testing.T) {
+	// 临时上限只在用户还没选定档位时生效。选定之后按那一档预留，已经花掉的账不改写。
+	s, c, m := fixture(t)
+	cfg := testConfig()
+	cfg.WeeklyBudgetMicros = 20_000_000
+	cfg.TemporaryBudgetMicros = 80_000_000
+	cfg.TemporaryBudgetUntil = time.Now().Add(time.Hour)
+	limit, source, err := budgetLimit(s.db, cfg, time.Now())
+	if err != nil || limit != 80_000_000 || source != "temporary" {
+		t.Fatalf("未保存时应沿用临时上限: %d %s %v", limit, source, err)
+	}
+	if _, err = s.Reserve(cfg, 18_000_000); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.setWeeklyBudget(30_000_000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Reserve(cfg, 10_000_000); err != nil {
+		t.Fatalf("30 美元档位下还应剩 12 美元: %v", err)
+	}
+	if _, err = s.Reserve(cfg, 3_000_000); !errors.Is(err, ErrBudget) || !strings.Contains(err.Error(), "$2.000") || strings.Contains(err.Error(), "已用完") {
+		t.Fatalf("应说明还剩 2 美元，而不是已经用完: %v", err)
+	}
+	var spent int64
+	if err = s.db.QueryRow(`SELECT coalesce(sum(cost_micros),0) FROM usage`).Scan(&spent); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.setWeeklyBudget(10_000_000); err != nil {
+		t.Fatal(err)
+	}
+	var after int64
+	if err = s.db.QueryRow(`SELECT coalesce(sum(cost_micros),0) FROM usage`).Scan(&after); err != nil || after != spent || spent != 28_000_000 {
+		t.Fatalf("调低档位不应改写账本: before=%d after=%d err=%v", spent, after, err)
+	}
+	if _, err = s.Reserve(cfg, 1); !errors.Is(err, ErrBudget) || !strings.Contains(err.Error(), "已用完") {
+		t.Fatalf("已花 28 美元、档位 10 美元时应视为用完: %v", err)
+	}
+
+	waiting := func(required int64) Work {
+		t.Helper()
+		job := addWork(t, s, c, m, "research")
+		if claimed, err := s.Claim(job.ID); err != nil || !claimed {
+			t.Fatal(err)
+		}
+		job.BudgetRequired = required
+		if err := s.Finish(job, "waiting_budget", "额度暂时不足", nextBudgetWeek()); err != nil {
+			t.Fatal(err)
+		}
+		return job
+	}
+	small := waiting(5_000_000)
+	large := waiting(23_000_000)
+	if err = s.recheckBudgetWait(cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range []Work{small, large} {
+		got, err := s.ReadWork(c.ID, job.ID)
+		if err != nil || got.Status != "waiting_budget" {
+			t.Fatalf("剩余为零时不应恢复等待中的工作: %+v %v", got, err)
+		}
+	}
+	if err = s.setWeeklyBudget(50_000_000); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.recheckBudgetWait(cfg); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := s.ReadWork(c.ID, small.ID)
+	if err != nil || resumed.Status != "pending" {
+		t.Fatalf("调高到放得下的档位后应恢复: %+v %v", resumed, err)
+	}
+	held, err := s.ReadWork(c.ID, large.ID)
+	if err != nil || held.Status != "waiting_budget" {
+		t.Fatalf("仍然放不下的工作应继续等待: %+v %v", held, err)
+	}
+}
+
+func TestSavedWeeklyBudgetSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.WeeklyBudgetMicros = 20_000_000
+	cfg.TemporaryBudgetMicros = 80_000_000
+	cfg.TemporaryBudgetUntil = time.Now().Add(time.Hour)
+	if err = s.setWeeklyBudget(50_000_000); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reopened.Close() })
+	limit, source, err := budgetLimit(reopened.db, cfg, time.Now())
+	if err != nil || limit != 50_000_000 || source != "custom" {
+		t.Fatalf("重启后仍应使用保存的档位，而不是临时上限: %d %s %v", limit, source, err)
+	}
+	if _, err = reopened.Reserve(cfg, 40_000_000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = reopened.Reserve(cfg, 20_000_000); !errors.Is(err, ErrBudget) {
+		t.Fatalf("50 美元档位不应放进 60 美元: %v", err)
+	}
+}
+
+func TestWeeklyBudgetStopsInState(t *testing.T) {
+	s, _, _ := fixture(t)
+	cfg := testConfig()
+	cfg.WeeklyBudgetMicros = 20_000_000
+	cfg.TemporaryBudgetMicros = 80_000_000
+	cfg.TemporaryBudgetUntil = time.Now().Add(time.Hour)
+	h := NewHandler(NewEngine(s, nil, cfg))
+	before := preferenceRequest(h, "GET", "/api/state", map[string]any{})
+	if before.Code != 200 {
+		t.Fatal(before.Body.String())
+	}
+	var state struct {
+		WeeklyBudgetMicros  int64   `json:"weekly_budget_micros"`
+		BudgetSource        string  `json:"budget_source"`
+		WeeklyBudgetOptions []int64 `json:"weekly_budget_options"`
+	}
+	if err := json.Unmarshal(before.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.WeeklyBudgetMicros != 80_000_000 || state.BudgetSource != "temporary" || len(state.WeeklyBudgetOptions) != 6 || state.WeeklyBudgetOptions[0] != 10_000_000 || state.WeeklyBudgetOptions[5] != 100_000_000 {
+		t.Fatalf("状态应给出临时上限和滚轮档位: %+v", state)
+	}
+	rejected := preferenceRequest(h, "PATCH", "/api/budget", map[string]any{"weekly_budget_usd": 12.5})
+	if rejected.Code != http.StatusBadRequest || !strings.Contains(rejected.Body.String(), "选一档") {
+		t.Fatalf("滚轮以外的金额应拒绝: %d %s", rejected.Code, rejected.Body.String())
+	}
+	saved := preferenceRequest(h, "PATCH", "/api/budget", map[string]any{"weekly_budget_usd": 50})
+	if saved.Code != 200 || !strings.Contains(saved.Body.String(), `"budget_source":"custom"`) || !strings.Contains(saved.Body.String(), `"weekly_budget_micros":50000000`) {
+		t.Fatalf("保存档位失败: %d %s", saved.Code, saved.Body.String())
+	}
+	profile := preferenceRequest(h, "PATCH", "/api/profile", map[string]any{"name": "你", "avatar": "", "avatar_icon": "orbit", "color": "blue"})
+	if profile.Code != 200 {
+		t.Fatal(profile.Body.String())
+	}
+	after := preferenceRequest(h, "GET", "/api/state", map[string]any{})
+	if err := json.Unmarshal(after.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if after.Code != 200 || state.WeeklyBudgetMicros != 50_000_000 || state.BudgetSource != "custom" {
+		t.Fatalf("修改资料不应清掉每周档位: %d %+v", after.Code, state)
+	}
+	if _, err := s.db.Exec(`UPDATE user_settings SET weekly_budget_micros=123 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := budgetLimit(s.db, cfg, time.Now()); err == nil || !strings.Contains(err.Error(), "已保存的每周限额无效") {
+		t.Fatalf("损坏的档位不能当成一个新上限: %v", err)
 	}
 }

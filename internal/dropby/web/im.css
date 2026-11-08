@@ -58,6 +58,39 @@
 .account-usage progress::-webkit-progress-bar { background:#e3e7ef; }
 .account-usage progress::-webkit-progress-value { background:var(--blue); border-radius:6px; }
 .account-usage-note { font-size:12px; color:var(--muted); line-height:1.8; }
+
+/* The weekly amount is chosen on a wheel inside the same account dialog.
+   The band is the existing selection wash; other stops fade with distance. */
+.budget-sheet { text-align:center; font-variant-numeric:tabular-nums; }
+.budget-meta { margin:2px 0 0; color:var(--muted); font-size:13px; line-height:1.6; }
+.budget-wheel {
+  --budget-row:64px; position:relative; height:calc(var(--budget-row) * 3); margin:14px 0 0;
+  touch-action:none; user-select:none; cursor:grab;
+}
+.budget-wheel.is-dragging { cursor:grabbing; }
+.budget-wheel:focus-visible { outline:2px solid var(--blue); outline-offset:4px; border-radius:18px; }
+.budget-wheel-band {
+  position:absolute; left:0; right:0; top:50%; height:var(--budget-row); transform:translateY(-50%);
+  border-radius:18px; background:var(--blue-soft); pointer-events:none;
+}
+.budget-wheel-window {
+  position:relative; z-index:1; height:100%; overflow:hidden;
+  mask-image:linear-gradient(to bottom, transparent, #000 14%, #000 86%, transparent);
+  -webkit-mask-image:linear-gradient(to bottom, transparent, #000 14%, #000 86%, transparent);
+}
+.budget-wheel-track { padding:var(--budget-row) 0; }
+.budget-wheel-item {
+  height:var(--budget-row); display:grid; place-items:center; font-size:40px; font-weight:600;
+  letter-spacing:-0.04em; line-height:1; font-variant-numeric:tabular-nums; color:var(--ink);
+  transition:transform .22s cubic-bezier(.22,.85,.3,1), opacity .22s cubic-bezier(.22,.85,.3,1), color .22s ease;
+}
+.budget-wheel.is-dragging .budget-wheel-item { transition:none; }
+.budget-result { margin:16px 0 0; font-size:15px; line-height:1.5; color:var(--ink); }
+.budget-note { margin:8px auto 0; max-width:28em; font-size:12px; line-height:1.7; color:var(--muted); }
+.budget-sheet .workspace-footer { margin-top:22px; }
+@media (prefers-reduced-motion: reduce) {
+  .budget-wheel-track, .budget-wheel-item { transition:none; }
+}
 .account-setting { margin-top:28px; padding-top:22px; border-top:1px solid var(--line); }
 .account-setting > span { display:flex; gap:10px; align-items:center; font-size:14px; }
 .account-setting p { color:var(--muted); font-size:13px; line-height:1.8; }

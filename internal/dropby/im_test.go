@@ -110,7 +110,7 @@ func TestQuotaIsCurrentStateAndRestoredWorkBecomesRunnable(t *testing.T) {
 		t.Fatal(err)
 	}
 	usage, _ := s.Usage()
-	if !s.budgetBlocked(cfg, usage) {
+	if blocked, err := s.budgetBlocked(cfg, usage); err != nil || !blocked {
 		t.Fatal("当前请求确实无法预留，应显示受限提示")
 	}
 	// 在途请求结算释放余额，不能继续等到下周，也不能让旧聊天提示冒充现状。
@@ -118,7 +118,7 @@ func TestQuotaIsCurrentStateAndRestoredWorkBecomesRunnable(t *testing.T) {
 		t.Fatal(err)
 	}
 	usage, _ = s.Usage()
-	if s.budgetBlocked(cfg, usage) {
+	if blocked, err := s.budgetBlocked(cfg, usage); err != nil || blocked {
 		t.Fatal("额度恢复后仍显示受限")
 	}
 	if err := s.recheckBudgetWait(cfg); err != nil {

@@ -146,11 +146,16 @@ func (s *Store) reserveBudget(ctx context.Context, c Config, cost int64, at time
 		return reservation, err
 	}
 
+	// 在同一笔预留事务里读上限，避免保存新档位时这次预留还看着旧配置。
+	limit, _, err := budgetLimit(tx, c, at)
+	if err != nil {
+		return reservation, err
+	}
 	// 只有一个总额度；预留不足与已用完分别反馈。
 	reset := end.Format("1月2日 15:04 MST")
-	remaining := max(int64(0), c.weeklyBudgetAt(at)-total)
+	remaining := max(int64(0), limit-total)
 	if remaining == 0 {
-		return reservation, &budgetRejection{required: cost, message: fmt.Sprintf("本周 $%.2f 运行预算已用完，未完工作已保留，%s 恢复。", float64(c.weeklyBudgetAt(at))/1e6, reset)}
+		return reservation, &budgetRejection{required: cost, message: fmt.Sprintf("本周 $%.2f 运行预算已用完，未完工作已保留，%s 恢复。", float64(limit)/1e6, reset)}
 	}
 	if cost > remaining {
 		return reservation, &budgetRejection{required: cost, message: fmt.Sprintf("本周可用预算还剩 $%.3f，本次调用需预留 $%.3f，暂时无法开始；未完工作已保留，%s 恢复周额度。", float64(remaining)/1e6, float64(cost)/1e6, reset)}

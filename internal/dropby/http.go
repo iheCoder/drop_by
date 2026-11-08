@@ -32,6 +32,7 @@ func NewHandler(engine *Engine) http.Handler {
 	mux.HandleFunc("GET /api/state", a.state)
 	mux.HandleFunc("GET /api/usage", a.usageDetails)
 	mux.HandleFunc("PATCH /api/profile", a.userProfile)
+	mux.HandleFunc("PATCH /api/budget", a.updateBudget)
 	mux.HandleFunc("PATCH /api/conversations/{id}", a.updateGroup)
 	mux.HandleFunc("POST /api/member-questions", a.questions)
 	mux.HandleFunc("POST /api/members", a.createMember)
@@ -158,7 +159,17 @@ func (a *API) state(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	respond(w, 200, map[string]any{"profile": profile, "personal_focus": focus, "budget_blocked": a.engine.Store.budgetBlocked(a.engine.Config, usage), "members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "chat_model": a.engine.Config.ChatModel, "weekly_budget_micros": a.engine.Config.weeklyBudgetAt(time.Now()), "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes()), "reaction_palette": reactionPalette})
+	limit, source, err := budgetLimit(a.engine.Store.db, a.engine.Config, time.Now())
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	blocked, err := a.engine.Store.budgetBlocked(a.engine.Config, usage)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	respond(w, 200, map[string]any{"profile": profile, "personal_focus": focus, "budget_blocked": blocked, "members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "chat_model": a.engine.Config.ChatModel, "weekly_budget_micros": limit, "budget_source": source, "weekly_budget_options": weeklyBudgetStops(), "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes()), "reaction_palette": reactionPalette})
 }
 func (a *API) questions(w http.ResponseWriter, r *http.Request) {
 	var in struct {
