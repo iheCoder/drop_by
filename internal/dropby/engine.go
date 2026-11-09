@@ -494,6 +494,8 @@ type Outcome struct {
 type memberGate struct {
 	slot    chan struct{}
 	waiting atomic.Int32
+	// 与成员行动共用串行锁。按场景保存上次请求的缓存观察，成员之间互不影响。
+	requestCaches map[string]*memberCacheState
 }
 
 var errActionYield = errors.New("行动已保存，接续新消息")
@@ -534,6 +536,12 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 	ctx = context.WithValue(ctx, modelRoleKey{}, role)
 	ctx = withUsageCall(ctx, workUsage(purpose, m.ID, c, w))
 	ctx = context.WithValue(ctx, personalSinceKey{}, w.CreatedAt)
+	if c.Kind == "personal" && w.Kind == "explore" && w.ID != "" {
+		ctx = e.withMemberCache(ctx, m.ID, c.ID, w.ID)
+	} else if c.Kind == "direct" && purpose == "chat" {
+		// 私聊只对照原本就会发生的请求，用于定位短间隔仍整段重写的原因。
+		ctx = e.withMemberCache(ctx, m.ID, c.ID, "")
+	}
 
 	// 等待期间可能有人修改了这位成员的偏好，执行时读取当前身份。
 	var err error

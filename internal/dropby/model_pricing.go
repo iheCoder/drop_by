@@ -41,9 +41,10 @@ func (p modelPrice) reserveMicros(input, output int) int64 {
 }
 
 type responseUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	InputDetails struct {
+	longCacheRequested bool
+	InputTokens        int `json:"input_tokens"`
+	OutputTokens       int `json:"output_tokens"`
+	InputDetails       struct {
 		CachedTokens     int `json:"cached_tokens"`
 		CacheWriteTokens int `json:"cache_write_tokens"`
 		WriteDetails     *struct {
@@ -61,16 +62,23 @@ func (u responseUsage) costMicros(p modelPrice) (int64, error) {
 	if u.InputTokens < 0 || u.OutputTokens < 0 || cached < 0 || written < 0 || cached > u.InputTokens || written > u.InputTokens-cached {
 		return 0, fmt.Errorf("模型返回的 token 用量不一致，保留本次预算预留")
 	}
-	// 网关未返回保留时长细分时，按本应用未指定扩展保留的默认 30 分钟写入计价。
+	// 有长标记却缺少时长细分时，按可能的最高写入价格保守结算。
 	short, long := written, 0
 	if detail := u.InputDetails.WriteDetails; detail != nil {
 		short, long = detail.ThirtyMinutes, detail.TwelveHours
 		if short < 0 || long < 0 || short > written || long != written-short {
 			return 0, fmt.Errorf("缓存写入用量不一致，保留本次预算预留")
 		}
+	} else if u.longCacheRequested {
+		short, long = 0, written
 	}
 	p = p.forInput(u.InputTokens)
 	// 缓存读取、写入和普通输入互斥。输出总量已含 reasoning tokens，不能再加一次。
 	nanos := int64(u.InputTokens-cached-written)*p.input + int64(cached)*p.cachedInput + int64(short)*(p.input*5/4) + int64(long)*(p.input*5/2) + int64(u.OutputTokens)*p.output
 	return (nanos + 999) / 1000, nil
+}
+
+func (m *HTTPModel) responseCost(usage responseUsage, price modelPrice) (int64, error) {
+	usage.longCacheRequested = m.longCacheRequested
+	return usage.costMicros(price)
 }

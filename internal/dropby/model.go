@@ -60,9 +60,10 @@ type modelAccountingError struct{ error }
 func (e *modelAccountingError) Unwrap() error { return e.error }
 
 type HTTPModel struct {
-	Config Config
-	Store  *Store
-	Client *http.Client
+	Config             Config
+	Store              *Store
+	Client             *http.Client
+	longCacheRequested bool // 仅本次请求的副本使用，用于没有时长明细时的保守计价。
 }
 
 type Usage struct {
@@ -197,9 +198,11 @@ func (s *Store) weeklyUsageAt(at time.Time) (Usage, error) {
 
 // 模型边界只保留当前 Responses 的结果，不再转换成旧 choices 协议。
 type modelResult struct {
-	Message    ChatMessage
-	Usage      responseUsage
-	Incomplete bool
+	ID              string
+	Message         ChatMessage
+	Usage           responseUsage
+	Incomplete      bool
+	CacheDiagnostic *cacheDiagnostic
 }
 
 // 只描述供应商响应的形态。生成正文并不等同于发布，非成员调用也不猜测内部决策。
@@ -277,9 +280,23 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 		if e == nil && chain != nil {
 			*chain = prepared
 		}
+		if e == nil {
+			messages = prepared
+		}
 	}
 	if e != nil {
 		return ChatMessage{}, e
+	}
+	// 容量检查结束后才观察实际会发送的请求。若压缩过，比较的是整理后的内容。
+	cache, _ := ctx.Value(memberCacheKey{}).(memberCacheScope)
+	var cacheRequest memberCacheRequest
+	if cache.state != nil {
+		cacheRequest = memberCacheRequest{next: *cache.state, workID: cache.workID, at: time.Now()}
+		encoded, e = m.responseBodyWithCache(messages, defs, jsonOutput, &cacheRequest)
+		if e != nil {
+			return ChatMessage{}, e
+		}
+		m.longCacheRequested = cacheRequest.longWrite
 	}
 	reserve := price.reserveMicros(inputEstimate, m.Config.MaxOutputTokens)
 	var response modelResult
@@ -303,7 +320,7 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 				return err
 			}
 			if response.Usage.InputTokens+response.Usage.OutputTokens > 0 {
-				actual, err := response.Usage.costMicros(price)
+				actual, err := m.responseCost(response.Usage, price)
 				if err != nil {
 					return err
 				}
@@ -322,6 +339,10 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	}
 	if strings.TrimSpace(response.Message.Content) == "" && len(response.Message.ToolCalls) == 0 {
 		return ChatMessage{}, fmt.Errorf("模型返回了空内容，本次没有生成消息")
+	}
+	if cache.state != nil {
+		cacheRequest.record(ctx, m.Config.Model, response)
+		*cache.state = cacheRequest.next
 	}
 	response.Message.OutputTokens = response.Usage.OutputTokens
 	return response.Message, nil
@@ -458,8 +479,13 @@ func CompleteMember(ctx context.Context, model Model, m Member) (Member, error) 
 // 高推理工具链需携带供应商返回的推理项目，不能只把工具结果拼成聊天文本。
 // store=false + 加密推理项目让服务不依赖供应商保存会话；原始推理不显示给用户。
 func (m *HTTPModel) responseBody(messages []ChatMessage, defs []ToolDefinition, jsonOutput bool) ([]byte, error) {
+	return m.responseBodyWithCache(messages, defs, jsonOutput, nil)
+}
+
+func (m *HTTPModel) responseBodyWithCache(messages []ChatMessage, defs []ToolDefinition, jsonOutput bool, cache *memberCacheRequest) ([]byte, error) {
 	messages, cacheEnd := memberRequestMessages(messages)
 	input := []any{}
+	shortEnd := -1
 	for i, msg := range messages {
 		if len(msg.ResponseItems) > 0 {
 			for _, item := range msg.ResponseItems {
@@ -467,18 +493,16 @@ func (m *HTTPModel) responseBody(messages []ChatMessage, defs []ToolDefinition, 
 			}
 			continue
 		}
-		var content any = msg.Content
 		if i == cacheEnd {
-			// 默认缓存仍可覆盖同一轮续接。额外标记历史末尾，使下一轮换掉临时说明时仍能复用历史。
-			content = []map[string]any{{"type": "input_text", "text": msg.Content, "prompt_cache_breakpoint": map[string]string{"mode": "explicit"}}}
+			shortEnd = len(input)
 		}
 		if msg.Role == "tool" {
-			input = append(input, map[string]any{"type": "function_call_output", "call_id": msg.ToolCallID, "output": content})
+			input = append(input, map[string]any{"type": "function_call_output", "call_id": msg.ToolCallID, "output": msg.Content})
 			continue
 		}
-		input = append(input, map[string]any{"role": msg.Role, "content": content})
+		input = append(input, map[string]any{"role": msg.Role, "content": msg.Content})
 	}
-	body := map[string]any{"model": m.Config.Model, "input": input, "max_output_tokens": m.Config.MaxOutputTokens, "store": false, "include": []string{"reasoning.encrypted_content"}}
+	body := map[string]any{"model": m.Config.Model, "max_output_tokens": m.Config.MaxOutputTokens, "store": false, "include": []string{"reasoning.encrypted_content"}}
 	if m.Config.Reasoning != "" {
 		body["reasoning"] = map[string]string{"effort": m.Config.Reasoning}
 	}
@@ -492,7 +516,40 @@ func (m *HTTPModel) responseBody(messages []ChatMessage, defs []ToolDefinition, 
 	if jsonOutput {
 		body["text"] = map[string]any{"format": map[string]string{"type": "json_object"}}
 	}
+
+	longEnd := -1
+	if cache != nil {
+		var err error
+		longEnd, err = cache.longBoundary(body, input, shortEnd)
+		if err != nil {
+			return nil, err
+		}
+		if cache.next.model == m.Config.Model && cache.next.responseID != "" {
+			body["prompt_cache_options"] = map[string]string{"comparison_response_id": cache.next.responseID}
+		}
+	}
+	// 默认缓存仍可覆盖同一轮续接。长线与短线重合时，一个 12 小时标记即可。
+	if shortEnd >= 0 && shortEnd != longEnd {
+		markResponseCache(input[shortEnd], "")
+	}
+	if longEnd >= 0 {
+		markResponseCache(input[longEnd], "12h")
+	}
+	body["input"] = input
 	return json.Marshal(body)
+}
+
+func markResponseCache(raw any, ttl string) {
+	item := raw.(map[string]any)
+	field := "content"
+	if item["type"] == "function_call_output" {
+		field = "output"
+	}
+	marker := map[string]string{"mode": "explicit"}
+	if ttl != "" {
+		marker["ttl"] = ttl
+	}
+	item[field] = []map[string]any{{"type": "input_text", "text": item[field], "prompt_cache_breakpoint": marker}}
 }
 func (m *HTTPModel) responses(ctx context.Context, raw []byte) (modelResult, error) {
 	var err error
@@ -508,6 +565,7 @@ type responseEnvelope struct {
 	Status            string            `json:"status"`
 	Output            []json.RawMessage `json:"output"`
 	Usage             responseUsage     `json:"usage"`
+	CacheDiagnostic   *cacheDiagnostic  `json:"prompt_cache_diagnostics"`
 	IncompleteDetails struct {
 		Reason string `json:"reason"`
 	} `json:"incomplete_details"`
@@ -515,8 +573,7 @@ type responseEnvelope struct {
 
 func decodeResponse(out responseEnvelope) (modelResult, error) {
 	var err error
-	result := modelResult{}
-	result.Usage = out.Usage
+	result := modelResult{ID: out.ID, Usage: out.Usage, CacheDiagnostic: out.CacheDiagnostic}
 	msg := ChatMessage{Role: "assistant", ResponseItems: out.Output}
 	finalText, unphasedText := "", ""
 	hasFinal := false

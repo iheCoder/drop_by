@@ -237,7 +237,7 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 				}
 				result.Message.OutputTokens = result.Usage.OutputTokens
 				if result.Usage.InputTokens+result.Usage.OutputTokens > 0 {
-					actual, err := result.Usage.costMicros(price)
+					actual, err := m.responseCost(result.Usage, price)
 					if err != nil {
 						return modelResult{}, err
 					}
