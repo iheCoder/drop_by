@@ -198,7 +198,7 @@ func TestPersonalRelationshipRecallUsesCorrection(t *testing.T) {
 		t.Fatal(err)
 	}
 	input, _ = e.personalContext(m, Work{})
-	updated, readErr := s.readMemory(m.ID, "", first.Memory.ID, nil)
+	updated, readErr := s.readMemory(m.ID, "", first.Memory.ID, nil, false)
 	if readErr != nil || input["relationships"] != nil || strings.Contains(asJSON(input), "总想用选择题") || !strings.Contains(asJSON(updated), "开放探索时先一起发散") {
 		t.Fatal("个人活动仍使用旧标签")
 	}

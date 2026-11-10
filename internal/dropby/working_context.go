@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -35,6 +36,16 @@ type organizedContext struct {
 	Note     string    `json:"note"`
 	Messages []Message `json:"messages"`
 	ToolRuns []ToolRun `json:"tool_runs"`
+}
+
+const actionCausePrefix = "本次行动的来由："
+const organizedContextPrefix = "你为自己留下的续接上下文："
+const organizedReceiptsPrefix = "整理同批已执行的行动回执："
+
+type organizedReceipt struct {
+	Name   string `json:"name"`
+	CallID string `json:"call_id"`
+	Result string `json:"result"`
 }
 
 func (s *Store) organizeContext(c Conversation, m Member, raw string) (organizedContext, error) {
@@ -82,7 +93,10 @@ func refreshScene(history []ChatMessage) []ChatMessage {
 		}
 		var delivered []Message
 		_ = json.Unmarshal(scene["latest_messages"], &delivered)
-		result = appendDeliveredMessages(result, delivered)
+		if len(delivered) > 0 {
+			result = appendDeliveredMessages(result, delivered)
+			result[len(result)-1].PendingDelivery = msg.PendingDelivery
+		}
 	}
 	return result
 }
@@ -167,7 +181,45 @@ func (e *Engine) actionInput(c Conversation, w Work, delivered []Message, histor
 		}
 	}
 	input["trigger"] = trigger
-	return ChatMessage{Role: "user", Content: "本次行动的来由：" + asJSON(input)}, nil
+	return ChatMessage{Role: "user", Content: actionCausePrefix + asJSON(input)}, nil
+}
+
+// 整理期间，真人刚触发的这次交流仍在进行。把实际请求和已发送的
+// 回执单列到本次行动，成员无需把问题抄进便笺来保证续接。
+// completedHistory 收尾时移除此块，下一轮只带成员自己选的内容。
+func (s *Store) organizedChatAction(w Work, member string, selected []Message) (ChatMessage, error) {
+	if w.Kind != "chat" || w.SourceID == "" || w.Instruction == "" {
+		return ChatMessage{}, nil
+	}
+	current := map[string]any{"work_id": w.ID, "request_message_id": w.SourceID}
+	if !slices.ContainsFunc(selected, func(message Message) bool {
+		return message.ID == w.SourceID && message.Body == w.Instruction
+	}) {
+		current["initial_user_request"] = w.Instruction
+	}
+	rows, err := s.db.Query(`SELECT CASE WHEN json_valid(result) THEN json_extract(result,'$.message_id') END FROM tool_runs
+ WHERE work_id=? AND member_id=? AND status='succeeded' AND name IN ('send_message','send_private') ORDER BY rowid`, w.ID, member)
+	if err != nil {
+		return ChatMessage{}, err
+	}
+	defer rows.Close()
+	var sent []string
+	for rows.Next() {
+		var id sql.NullString
+		if err := rows.Scan(&id); err != nil {
+			return ChatMessage{}, err
+		}
+		if id.Valid && id.String != "" {
+			sent = append(sent, id.String)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return ChatMessage{}, err
+	}
+	if len(sent) > 0 {
+		current["already_sent_message_ids"] = sent
+	}
+	return ChatMessage{Role: "user", Content: actionCausePrefix + asJSON(current), PendingDelivery: true}, nil
 }
 
 // 已完成的 outcome 属于运行记录；不把“本轮安静”等决定续接为下一轮状态。
@@ -193,11 +245,11 @@ func completedHistory(history []ChatMessage) []ChatMessage {
 // 任务说明只在行动期间有效，其中的触发原话和引用则与普通聊天一样续接。
 // 首次发送和收尾使用同一份原话格式，避免行动结束时才改写可复用的历史。
 func splitActionCause(item ChatMessage, known map[string]string) (map[string]json.RawMessage, []Message) {
-	if item.Role != "user" || len(item.ResponseItems) > 0 || !strings.HasPrefix(item.Content, "本次行动的来由：") {
+	if item.Role != "user" || len(item.ResponseItems) > 0 || !strings.HasPrefix(item.Content, actionCausePrefix) {
 		return nil, nil
 	}
 	var cause map[string]json.RawMessage
-	if json.Unmarshal([]byte(strings.TrimPrefix(item.Content, "本次行动的来由：")), &cause) != nil || cause == nil {
+	if json.Unmarshal([]byte(strings.TrimPrefix(item.Content, actionCausePrefix)), &cause) != nil || cause == nil {
 		return nil, nil
 	}
 	var sources []Message
@@ -364,7 +416,7 @@ func restoreSceneOrder(history []ChatMessage) []ChatMessage {
 	}
 	causes := 0
 	for _, item := range flat[end:] {
-		if item.Role == "user" && len(item.ResponseItems) == 0 && strings.HasPrefix(item.Content, "本次行动的来由：") {
+		if item.Role == "user" && len(item.ResponseItems) == 0 && strings.HasPrefix(item.Content, actionCausePrefix) {
 			causes++
 		}
 	}
@@ -384,7 +436,7 @@ func restoreSceneOrder(history []ChatMessage) []ChatMessage {
 		next--
 	}
 	for _, item := range flat[end:] {
-		if item.Role == "user" && len(item.ResponseItems) == 0 && strings.HasPrefix(item.Content, "本次行动的来由：") {
+		if item.Role == "user" && len(item.ResponseItems) == 0 && strings.HasPrefix(item.Content, actionCausePrefix) {
 			result = append(result, flat[next])
 			next--
 		}

@@ -32,10 +32,18 @@ func textField(desc string) any { return map[string]string{"type": "string", "de
 
 func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition {
 	defs := []ToolDefinition{instructionDefinition(),
-		definition("organize_context", "整理本人在当前场景的工作上下文。用续接便笺和选中的完整原文替换旧窗口，随后继续行动；不删除历史、不修改人物或任务状态。省略引用则不保留旧原文；同批新工具结果仍正常交付。", map[string]any{"note": textField("接下来仍有用的理解、分歧、更正或未完打算，自由撰写"), "keep_message_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "需要保留原话的消息 ID，可来自本人参与的其他聊天"}, "keep_tool_run_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "需要继续保留完整结果的可见工具记录 ID"}}, "note"),
+		definition("organize_context", "更新给下次的工作窗口。按你的特质和眼下关注重新挑选，换题时把无关旧事留在历史。新便笺和所选原话替换旧窗口，同批新结果照常交付。", map[string]any{
+			"note":              textField("写给接下来的自己，留下会影响后续的个人判断、有效约定或未完线索。已完结且无关的事项直接省略，可为空。"),
+			"keep_message_ids":  map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "措辞会影响理解时保留原话，可选本人参与聊天中的消息 ID"},
+			"keep_tool_run_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "仍需在窗口中使用的工具结果 ID，可以选一次分段读取的结果"},
+		}, "note"),
 		definition("send_message", "发送消息后可继续行动。可发到自己所在的聊天；个人活动省略目的地时发给真人私聊。", map[string]any{"conversation_id": textField("目的聊天 ID，普通聊天省略则发在当前聊天"), "message": textField("自己的消息"), "reply_to": textField("可选的目的聊天消息 ID"), "evidence": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "可选成果 tool_run ID"}, "notify": map[string]any{"type": "boolean", "description": "额外系统通知，默认 false"}}, "message"),
 		definition("read_tool_result", "查找或读取本人可访问的工具记录。省略 id 可按 query 检索或浏览索引，提供 id 按需读取正文。", map[string]any{"id": textField("真实 tool_run ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}, "id"),
-		definition("read_memory", "读取个人记忆及来源；默认最新版本，revision 可指定历史版本。", map[string]any{"id": textField("已有记忆 ID"), "revision": map[string]any{"type": "integer", "minimum": 0, "description": "通常省略；回查历史版本时才填写"}}, "id"),
+		definition("read_memory", "读取个人记忆全文和来源清单。按来源 ID 用 read_history、read_tool_result 或 read_work 核对原文。", map[string]any{
+			"id":                    textField("已有记忆 ID"),
+			"revision":              map[string]any{"type": "integer", "minimum": 0, "description": "省略读取最新版本"},
+			"include_source_bodies": map[string]any{"type": "boolean", "description": "同时展开所有来源的完整正文，默认 false"},
+		}, "id"),
 		definition("remember", "保存个人经历或想法。更新用原 id 和 revision；body 为空时删除。", map[string]any{
 			"id": textField("更新已有笔记的 ID；新建省略"), "revision": map[string]any{"type": "integer", "minimum": 0, "description": "更新/删除时填写读到的 revision；发生冲突先重新读取"},
 			"scope":       map[string]any{"type": "string", "enum": []string{"conversation", "member"}, "description": "新建默认 conversation，更新默认沿用；member 属于本人，conversation 标明来源场景"},
@@ -272,6 +280,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		Version        int      `json:"version"`
 		Refresh        bool     `json:"refresh"`
 		Revision       *int     `json:"revision"`
+		SourceBodies   bool     `json:"include_source_bodies"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
 		return nil, fmt.Errorf("工具参数格式不正确")
@@ -364,7 +373,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		end := args.Offset + min(args.Length, len(chars)-args.Offset)
 		return map[string]any{"tool_run_id": args.ID, "name": run.Name, "arguments": json.RawMessage(originalArguments), "created_at": run.CreatedAt, "content": string(chars[args.Offset:end]), "next_offset": end, "has_more": end < len(chars)}, nil
 	case "read_memory":
-		return t.Store.readMemory(m.ID, c.ID, args.ID, args.Revision)
+		return t.Store.readMemory(m.ID, c.ID, args.ID, args.Revision, args.SourceBodies)
 	case "search", "read_page":
 		// 原生参数完整传给供应商；refresh 只控制本地缓存。
 		var body map[string]any

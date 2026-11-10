@@ -2,6 +2,7 @@ package dropby
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 // 只保存正在执行的成员行动，不新增角色生命周期。它解决实际故障：工具已保存、
@@ -25,6 +26,23 @@ func (s *Store) loadAction(work, member string) (actionCheckpoint, error) {
 		return cp, err
 	}
 	err = json.Unmarshal([]byte(raw), &cp.Messages)
+	if err == nil {
+		// 老断点没有交付标记。末尾在最近响应之后的输入可能还没送达，
+		// 恢复时保护这一段。已完成的工作窗口不走这个分支。
+		initial := len(cp.Messages) > 0 && strings.HasPrefix(cp.Messages[len(cp.Messages)-1].Content, actionCausePrefix)
+		for i := len(cp.Messages) - 1; i >= 0; i-- {
+			item := &cp.Messages[i]
+			if item.PendingDelivery || len(item.ResponseItems) > 0 || (item.Role != "user" && item.Role != "tool") {
+				break
+			}
+			item.PendingDelivery = true
+			// 首次请求的现场和来由在旧工作窗口之后。即使此前几轮都
+			// 保持安静，也可以从已读的旧内容里腾空间。
+			if initial && sceneFields(*item) != nil {
+				break
+			}
+		}
+	}
 	return cp, err
 }
 func (s *Store) saveAction(cp actionCheckpoint) error {

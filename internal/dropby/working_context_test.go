@@ -113,6 +113,9 @@ func TestMemberOrganizesBeforeCapacityAndRetainsOriginals(t *testing.T) {
 			if !strings.Contains(asJSON(ms), note) || !strings.Contains(asJSON(ms), source.ID) {
 				t.Error("整理丢失分歧或原话")
 			}
+			if strings.Count(asJSON(ms), note) != 1 || !strings.Contains(asJSON(ms), "organize_context") || !strings.Contains(asJSON(ms), w.ID) {
+				t.Error("续接应确认本次整理成功，并且只交付一份便笺")
+			}
 			// 整批完成后以回执交付，不能留下孤立工具协议或重复执行发言。
 			var calls, results int
 			for _, msg := range ms {
@@ -145,6 +148,63 @@ func TestMemberOrganizesBeforeCapacityAndRetainsOriginals(t *testing.T) {
 	messages, _ := s.Messages(c.ID, 0, -1)
 	if len(messages) != 2 {
 		t.Fatal("同批消息被丢失或重复")
+	}
+}
+
+// 普通聊天先整理或先发言都可以。即使新便笺是空的，当前请求仍能继续，
+// 已发消息有真实回执。行动完成后，请求不会被强制加入下一轮。
+func TestOrganizedChatKeepsCurrentRequestUntilCompletion(t *testing.T) {
+	for _, sentBefore := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sent_before_%t", sentBefore), func(t *testing.T) {
+			s, c, m := fixture(t)
+			request := userMessage(c, "给这个刚发现的计时器起个名字。")
+			if err := s.Publish(request, c.Revision); err != nil {
+				t.Fatal(err)
+			}
+			c, err := s.Conversation(c.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := addWork(t, s, c, m, "chat")
+			w.SourceID, w.Instruction = request.ID, request.Body
+			calls := 0
+			sent := false
+			send := func() ChatMessage {
+				sent = true
+				return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("send_message", map[string]string{"message": "时间胶囊！"})}}
+			}
+			e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+				calls++
+				if calls == 1 && sentBefore {
+					return send(), nil
+				}
+				if calls == 1 || calls == 2 && sentBefore {
+					return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("organize_context", map[string]string{"note": ""})}}, nil
+				}
+				raw := asJSON(ms)
+				if strings.Count(raw, request.Body) != 1 {
+					t.Error("当前请求应保留一份，独立于空便笺")
+				}
+				if sentBefore && !strings.Contains(raw, "already_sent_message_ids") {
+					t.Error("整理丢失本次已发消息的回执")
+				}
+				if !sent {
+					return send(), nil
+				}
+				return jsonReply(Outcome{}), nil
+			}), testConfig())
+			if _, err := e.memberAction(context.Background(), c, m, w); err != nil {
+				t.Fatal(err)
+			}
+			window, err := s.loadWorkingContext(c.ID, m.ID)
+			if err != nil || strings.Contains(asJSON(window.Messages), request.Body) {
+				t.Fatalf("本次请求进入了之后的工作窗口: %v", err)
+			}
+			var published int
+			if err := s.db.QueryRow("SELECT count(*) FROM messages WHERE author_id=? AND body='时间胶囊！'", m.ID).Scan(&published); err != nil || published != 1 {
+				t.Fatalf("应发布一条实际发言，得到 %d: %v", published, err)
+			}
+		})
 	}
 }
 

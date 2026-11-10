@@ -55,27 +55,28 @@ func (s *Store) memory(member, room, id string) (Memory, error) {
 	return m, err
 }
 
-// MemoryEvidence 保留作者、来源会话与实际原文，避免将他人的转述改写为自己
-// 的亲历。本人参与过的其他聊天原文可回读，是否分享由成员判断。
+// 读记忆先提供可定位的来源。成员核对时可以选择单条来源的阅读范围，
+// 或显式展开原文。保留归属和状态，区分别人的说法、自己的经历和工作回执。
 type MemoryEvidence struct {
 	ID             string `json:"id"`
 	ConversationID string `json:"conversation_id"`
 	AuthorID       string `json:"author_id"`
 	Kind           string `json:"kind"`
+	CreatedAt      string `json:"created_at"`
 	Body           string `json:"body,omitempty"`
 }
 
-func (s *Store) memoryEvidence(member, room string, ids, inherited []string) ([]MemoryEvidence, error) {
+func (s *Store) memoryEvidence(member string, ids []string, includeBodies bool) ([]MemoryEvidence, error) {
 	result := []MemoryEvidence{}
 	for _, id := range ids {
 		e := MemoryEvidence{ID: id}
-		err := s.db.QueryRow(`SELECT conversation_id,author_id,body FROM messages WHERE id=?`, id).
-			Scan(&e.ConversationID, &e.AuthorID, &e.Body)
+		err := s.db.QueryRow(`SELECT conversation_id,author_id,created_at,CASE WHEN ? THEN body ELSE '' END FROM messages WHERE id=?`, includeBodies, id).
+			Scan(&e.ConversationID, &e.AuthorID, &e.CreatedAt, &e.Body)
 		e.Kind = "message"
 		if errors.Is(err, sql.ErrNoRows) {
 			var name, status string
-			err = s.db.QueryRow(`SELECT conversation_id,member_id,name,result,status FROM tool_runs WHERE id=?`, id).
-				Scan(&e.ConversationID, &e.AuthorID, &name, &e.Body, &status)
+			err = s.db.QueryRow(`SELECT conversation_id,member_id,created_at,name,status,CASE WHEN ? THEN result ELSE '' END FROM tool_runs WHERE id=?`, includeBodies, id).
+				Scan(&e.ConversationID, &e.AuthorID, &e.CreatedAt, &name, &status, &e.Body)
 			e.Kind = "tool:" + name
 			// 失败和旧笔记也可以成为反思的来源；保留真实种类与状态，
 			// 不由代码替成员判断该材料能支持什么结论。
@@ -88,8 +89,8 @@ func (s *Store) memoryEvidence(member, room string, ids, inherited []string) ([]
 		}
 		if errors.Is(err, sql.ErrNoRows) {
 			// 无真人触发的自主工作也有真实来由，但工作计划不能证明已经完成。
-			err = s.db.QueryRow(`SELECT coalesce(conversation_id,''),member_id,instruction || char(10) || '实际状态：' || status || char(10) || result FROM work WHERE id=? AND member_id=?`, id, member).
-				Scan(&e.ConversationID, &e.AuthorID, &e.Body)
+			err = s.db.QueryRow(`SELECT coalesce(conversation_id,''),member_id,created_at,CASE WHEN ? THEN instruction || char(10) || '实际状态：' || status || char(10) || result ELSE '' END FROM work WHERE id=? AND member_id=?`, includeBodies, id, member).
+				Scan(&e.ConversationID, &e.AuthorID, &e.CreatedAt, &e.Body)
 			e.Kind = "work"
 		}
 		if errors.Is(err, sql.ErrNoRows) {
@@ -111,7 +112,7 @@ func (s *Store) memoryEvidence(member, room string, ids, inherited []string) ([]
 	return result, nil
 }
 
-func (s *Store) readMemory(member, room, id string, revision *int) (any, error) {
+func (s *Store) readMemory(member, room, id string, revision *int, includeBodies bool) (any, error) {
 	m, err := s.memory(member, room, id)
 	if err != nil {
 		return nil, err
@@ -126,7 +127,7 @@ func (s *Store) readMemory(member, room, id string, revision *int) (any, error) 
 			return nil, err
 		}
 	}
-	evidence, err := s.memoryEvidence(member, room, m.SourceIDs, m.SourceIDs)
+	evidence, err := s.memoryEvidence(member, m.SourceIDs, includeBodies)
 	if err != nil && m.Revision != 0 {
 		return nil, err
 	}
@@ -190,7 +191,7 @@ func (t *Toolbox) remember(ctx context.Context, c Conversation, m Member, w Work
 		if len(next.SourceIDs) == 0 {
 			return nil, fmt.Errorf("经历需引用真实消息或行动来源")
 		}
-		_, err := t.Store.memoryEvidence(m.ID, c.ID, next.SourceIDs, previous.SourceIDs)
+		_, err := t.Store.memoryEvidence(m.ID, next.SourceIDs, false)
 		if err != nil {
 			return nil, err
 		}

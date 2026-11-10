@@ -27,7 +27,7 @@ func TestMemberCarriesKnownContextAcrossRooms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	view, err := s.readMemory(m.ID, private.ID, note.(map[string]any)["memory_id"].(string), nil)
+	view, err := s.readMemory(m.ID, private.ID, note.(map[string]any)["memory_id"].(string), nil, true)
 	if err != nil || !strings.Contains(asJSON(view), "末尾更正") {
 		t.Fatalf("跨场景记忆及依据: %v %v", view, err)
 	}

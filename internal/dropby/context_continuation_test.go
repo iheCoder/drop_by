@@ -73,8 +73,8 @@ func TestNativeCompactionPreservesCoreProtocolAndContinuesFromReturnedWindow(t *
 			}
 		case "/responses/compact":
 			compactCalls++
-			if strings.Contains(body, profile) || !strings.Contains(body, "刚交付的原话") {
-				t.Error("压缩应处理原话，当前人格单独精确保留")
+			if strings.Contains(body, profile) || !strings.Contains(body, "刚交付的原话") || strings.Contains(body, `"instructions":`) {
+				t.Error("压缩应处理已交付的原话，当前人格单独保留，沿用供应商默认续接")
 			}
 			if !strings.Contains(body, "saved_call") || !strings.Contains(body, "saved_artifact") || !strings.Contains(body, "已保存的完整作品") {
 				t.Error("压缩输入必须包含完整调用和已保存结果")
@@ -106,11 +106,11 @@ func TestNativeCompactionPreservesCoreProtocolAndContinuesFromReturnedWindow(t *
 	if _, err := completeModel(context.Background(), model, &chain, nil, false); err != nil {
 		t.Fatal(err)
 	}
-	if len(chain) != 3 || chain[0].Content != "身份与当前目标必须保留\n"+profile || strings.Contains(chain[1].Content, profile) || strings.Contains(chain[1].Content, "刚交付的原话") || len(chain[2].ResponseItems) != 2 {
+	if len(chain) != 3 || chain[0].Content != "身份与当前目标必须保留\n"+profile || len(chain[1].ResponseItems) != 2 || strings.Contains(chain[2].Content, "刚交付的原话") {
 		t.Fatalf("行动层没有继承整个压缩窗口: %+v", chain)
 	}
 	for i := range returned {
-		if string(chain[2].ResponseItems[i]) != string(returned[i]) {
+		if string(chain[1].ResponseItems[i]) != string(returned[i]) {
 			t.Error("原生输出被挑选或改写")
 		}
 	}
@@ -183,7 +183,11 @@ func TestLiveResponsesCountCompactAndContinue(t *testing.T) {
 	defer cancel()
 	chain := largeArtifactChain()
 	chain[0].Content = "这是接口兼容性测试。你是记录员，目标是保留已经完成的作品证据。只返回 JSON，不调用工具。"
-	chain[1].Content = "已有作品无需再做。请在 JSON 的 artifact_id 和 version 字段中写出已保存的真实 ID 和版本。"
+	chain[1].Content = "已有作品无需再做。请在 JSON 中写出已保存的 artifact_id、version，以及刚读回的 tail。"
+	// 旧作品需要原生压缩，刚回来的页尾则应在下一次真实生成里原样可见。
+	chain = append(chain,
+		ChatMessage{Role: "assistant", ResponseItems: []json.RawMessage{json.RawMessage(`{"type":"function_call","call_id":"latest_read","name":"read_tool_result","arguments":"{\"id\":\"latest\"}"}`)}},
+		ChatMessage{Role: "tool", ToolCallID: "latest_read", Content: `{"tool_run_id":"latest","status":"succeeded","result":{"tail":"版次核对完毕-39"}}`, PendingDelivery: true})
 	defer func() {
 		u, _ := s.Usage()
 		t.Logf("真实压缩验收：估算 $%.4f，生成/压缩 %d 次，输入 %d，输出 %d", float64(u.CostMicros)/1e6, u.Calls, u.InputTokens, u.OutputTokens)
@@ -195,11 +199,12 @@ func TestLiveResponsesCountCompactAndContinue(t *testing.T) {
 	var value struct {
 		ID      string `json:"artifact_id"`
 		Version int    `json:"version"`
+		Tail    string `json:"tail"`
 	}
 	if err := parseJSON(result.Content, &value); err != nil {
 		t.Fatal(err)
 	}
-	if value.ID != "saved_artifact" || value.Version != 1 {
+	if value.ID != "saved_artifact" || value.Version != 1 || value.Tail != "版次核对完毕-39" {
 		t.Fatalf("实际压缩丢失保存依据：%+v", value)
 	}
 	compacted := false
@@ -216,5 +221,5 @@ func TestLiveResponsesCountCompactAndContinue(t *testing.T) {
 	if !compacted {
 		t.Fatal("实际请求没有经过原生压缩")
 	}
-	t.Log("真实 API 完成输入计数、原生压缩、继续生成，保留已保存作品 ID 与版本")
+	t.Log("真实 API 完成计数、原生压缩和续接，保留已保存作品的 ID、版本与新读取的页尾")
 }

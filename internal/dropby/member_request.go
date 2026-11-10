@@ -26,12 +26,18 @@ func memberRequestMessages(messages []ChatMessage) ([]ChatMessage, int) {
 		if fields := sceneFields(item); fields != nil {
 			var originals []Message
 			_ = json.Unmarshal(fields["latest_messages"], &originals)
-			history = appendDeliveredMessages(history, originals)
+			if len(originals) > 0 {
+				history = appendDeliveredMessages(history, originals)
+				history[len(history)-1].PendingDelivery = item.PendingDelivery
+			}
 			continue
 		}
 		if fields, originals := splitActionCause(item, known); fields != nil {
 			cause = fields
-			history = appendDeliveredMessages(history, originals)
+			if len(originals) > 0 {
+				history = appendDeliveredMessages(history, originals)
+				history[len(history)-1].PendingDelivery = item.PendingDelivery
+			}
 			continue
 		}
 		history = append(history, item)
@@ -62,7 +68,7 @@ func memberRequestMessages(messages []ChatMessage) ([]ChatMessage, int) {
 	}
 	history = append(history, ChatMessage{Role: "user", Content: asJSON(scene)})
 	if cause != nil {
-		history = append(history, ChatMessage{Role: "user", Content: "本次行动的来由：" + asJSON(cause)})
+		history = append(history, ChatMessage{Role: "user", Content: actionCausePrefix + asJSON(cause)})
 	}
 	return history, cacheEnd
 }

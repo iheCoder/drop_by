@@ -17,12 +17,13 @@ import (
 )
 
 type ChatMessage struct {
-	ResponseItems []json.RawMessage `json:"response_items,omitempty"` // Responses 的推理与工具项目仅在本次行动中回传。
-	OutputTokens  int               `json:"output_tokens,omitempty"`  // 服务商报告的输出量；加密推理不能按 Base64 字节当作输入 token。
-	Role          string            `json:"role"`
-	Content       string            `json:"content"`
-	ToolCalls     []ToolCall        `json:"tool_calls,omitempty"`
-	ToolCallID    string            `json:"tool_call_id,omitempty"`
+	ResponseItems   []json.RawMessage `json:"response_items,omitempty"` // Responses 的推理与工具项目仅在本次行动中回传。
+	OutputTokens    int               `json:"output_tokens,omitempty"`  // 服务商报告的输出量；加密推理不能按 Base64 字节当作输入 token。
+	Role            string            `json:"role"`
+	Content         string            `json:"content"`
+	ToolCalls       []ToolCall        `json:"tool_calls,omitempty"`
+	ToolCallID      string            `json:"tool_call_id,omitempty"`
+	PendingDelivery bool              `json:"pending_delivery,omitempty"` // 已进入断点、尚未交给正常生成的原话或工具回执。
 }
 type ToolCall struct {
 	ID       string `json:"id"`
@@ -417,7 +418,7 @@ func requestJSON(ctx context.Context, client *http.Client, endpoint, key string,
 }
 
 func modelJSON(ctx context.Context, m Model, system string, input any, out any) error {
-	r, e := m.Complete(ctx, []ChatMessage{{Role: "system", Content: system + "\n只返回 JSON 对象。"}, {Role: "user", Content: asJSON(input)}}, nil, true)
+	r, e := m.Complete(ctx, []ChatMessage{{Role: "system", Content: system + "\n只返回 JSON 对象。"}, {Role: "user", Content: asJSON(input), PendingDelivery: true}}, nil, true)
 	if e != nil {
 		return e
 	}

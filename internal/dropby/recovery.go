@@ -24,7 +24,7 @@ func (e *Engine) resumeReceipts(messages []ChatMessage, w Work, m Member) ([]Cha
 	}
 	last := messages[len(messages)-1]
 	if len(last.ToolCalls) == 0 {
-		return append(messages[:len(messages)-1], ChatMessage{Role: "user", Content: "上次尚未完成发布的内容：" + last.Content}), nil
+		return append(messages[:len(messages)-1], ChatMessage{Role: "user", Content: "上次尚未完成发布的内容：" + last.Content, PendingDelivery: true}), nil
 	}
 	for _, call := range last.ToolCalls {
 		var status, result string
@@ -47,7 +47,7 @@ func (e *Engine) resumeReceipts(messages []ChatMessage, w Work, m Member) ([]Cha
 		} else {
 			result = fmt.Sprintf(`{"tool_run_id":%q,"status":%q,"result":%s}`, id, status, result)
 		}
-		messages = append(messages, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result})
+		messages = append(messages, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result, PendingDelivery: true})
 	}
 	return messages, nil
 }

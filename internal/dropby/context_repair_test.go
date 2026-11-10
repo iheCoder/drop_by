@@ -34,6 +34,31 @@ func TestRefreshScenePreservesDeliveredMessages(t *testing.T) {
 	}
 }
 
+// 升级前的首轮断点可能接着一串安静结束的行动，因而没有 assistant。
+// 恢复要分清已经读过的旧原话和这次还没送出的现场。
+func TestLegacyFirstRequestCheckpointSeparatesOldAndUnseenMessages(t *testing.T) {
+	s, c, m := fixture(t)
+	work := addWork(t, s, c, m, "chat")
+	messages := appendDeliveredMessages(nil, []Message{{ID: "old", ConversationID: c.ID, Body: "已结束的旧话题"}})
+	scene := asJSON(map[string]any{
+		"self": m.ID, "trigger": work.ID, "time": now(),
+		"latest_messages": []Message{{ID: "new", ConversationID: c.ID, Body: "最新原话"}},
+	})
+	messages = append(messages, ChatMessage{Role: "user", Content: scene},
+		ChatMessage{Role: "user", Content: actionCausePrefix + asJSON(map[string]any{"trigger": work})})
+	if err := s.saveAction(actionCheckpoint{ID: "legacy", WorkID: work.ID, MemberID: m.ID, Messages: messages}); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := s.loadAction(work.ID, m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, old, next := splitCompactionWindow(checkpoint.Messages)
+	if len(old) != 1 || !strings.Contains(old[0].Content, "已结束的旧话题") || !strings.Contains(asJSON(next), "最新原话") {
+		t.Fatalf("历史和待交付内容没有区分: %v / %v", old, next)
+	}
+}
+
 // 压缩成功后即使紧接着的计数故障，落盘回调已经收到可恢复窗口。
 func TestCompactionSavedBeforeFollowupNetworkFailure(t *testing.T) {
 	s, _, _ := fixture(t)

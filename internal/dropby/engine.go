@@ -3,10 +3,10 @@ package dropby
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -397,7 +397,7 @@ func memberSystem(m Member, instruction string) ChatMessage {
 	return ChatMessage{Role: "system", Content: "你是 " + m.Name + "。\n" + m.Profile + "\n\n" + instruction + `
 交流与行动中，依据你的人格特质，结合当前情境和对方的意思，自主决定是否进一步探索、探索什么、深入到什么程度。对于值得探索的事情，使用可用工具去了解、尝试、验证或创造，把实际发现和结果带回后续的判断与行动。
 消息通过 send_message 发出，个人活动省略目的地时发给真人私聊。结束行动返回 JSON {"outcome":"实际行动结果"}，它仅作运行记录。运行故障和额度由界面呈现。
-工作窗口持续保留，资料与旧记录可按需用工具读取和整理；最新现场提供当前身份信息与用户控制。
+工作窗口会延续。需要更新续接内容时，用 organize_context。旧记录可按需回读，以最新现场为准。
 personal_focus 是自己的近期关注或打算，state 是界面展示的当前感受或目标；省略沿用，空串清除。state_source_ids 可附来源。
 conversation.responsibilities 是当前组织职责，按真人约定用 apply_instruction 记录；工作安排、进展与结束通过相应工具处理。`}
 }
@@ -583,7 +583,7 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 	if err := e.Store.db.QueryRow(`SELECT coalesce(max(rowid),0) FROM tool_runs WHERE work_id=?`, w.ID).Scan(&toolStart); err != nil {
 		return Outcome{}, err
 	}
-	messages := []ChatMessage{memberSystem(m, instruction), {Role: "user", Content: asJSON(input)}}
+	messages := []ChatMessage{memberSystem(m, instruction), {Role: "user", Content: asJSON(input), PendingDelivery: true}}
 	if original, ok := input["latest_messages"].([]Message); ok {
 		history := window.Messages
 		if loadErr == nil {
@@ -635,6 +635,7 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 		if err != nil {
 			return Outcome{}, err
 		}
+		cause.PendingDelivery = true
 		messages = append(messages, cause)
 		cp = actionCheckpoint{ID: newID("msg"), WorkID: w.ID, MemberID: m.ID, Seen: seen}
 	}
@@ -683,6 +684,10 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 			r, err = e.completeMemberModel(modelCtx, c, &seen, &messages, defs)
 			if err != nil {
 				return Outcome{}, err
+			}
+			// 只有正常生成成功，待交付内容才可以在后续轮次进入旧历史。
+			for i := range messages {
+				messages[i].PendingDelivery = false
 			}
 			messages = append(messages, r)
 			cp.Messages, cp.Seen = messages, seen
@@ -742,6 +747,7 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 		}
 		batchStart := len(messages) - 1
 		var organization *organizedContext
+		var organizationReceipt organizedReceipt
 		for _, call := range r.ToolCalls {
 			result, err := e.Tools.Execute(ctx, c, m, w, call)
 			if errors.Is(err, errActionStopped) || errors.Is(err, ErrBudget) || errors.Is(err, ErrStale) || errors.Is(err, context.Canceled) {
@@ -750,7 +756,7 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 			if err != nil {
 				result = asJSON(map[string]string{"error": err.Error(), "status": "failed"})
 			}
-			messages = append(messages, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result})
+			messages = append(messages, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result, PendingDelivery: true})
 			if call.Function.Name == "apply_instruction" && err == nil && c.ID != "" {
 				c, err = e.Store.Conversation(c.ID)
 				if err != nil {
@@ -779,11 +785,16 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 			}
 			if call.Function.Name == "organize_context" {
 				var receipt struct {
+					ID     string           `json:"tool_run_id"`
 					Status string           `json:"status"`
 					Result organizedContext `json:"result"`
 				}
 				if parseJSON(result, &receipt) == nil && receipt.Status == "succeeded" {
 					organization = &receipt.Result
+					// 回执确认这次替换已执行。便笺正文只交付一份。
+					organizationReceipt = organizedReceipt{Name: call.Function.Name, CallID: call.ID, Result: asJSON(map[string]string{
+						"tool_run_id": receipt.ID, "status": receipt.Status, "work_id": w.ID,
+					})}
 				}
 			}
 		}
@@ -796,8 +807,22 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 				fresh[key] = value
 			}
 			fresh["latest_messages"], fresh["new_message_ids"] = []Message{}, []string{}
+			chatAction, err := e.Store.organizedChatAction(w, m.ID, organization.Messages)
+			if err != nil {
+				return Outcome{}, err
+			}
+			if chatAction.Content != "" {
+				// 当前真人请求已经在本次行动或所选原话中，去掉现场快照的副本。
+				incoming, _ := input["latest_messages"].([]Message)
+				if room, ok := fresh["conversation"].(Conversation); ok && slices.ContainsFunc(incoming, func(message Message) bool {
+					return message.ID == w.SourceID && message.Seq == room.LastSeq && message.Body == room.LastMessage && message.Body == w.Instruction
+				}) {
+					room.LastMessage = ""
+					fresh["conversation"] = room
+				}
+			}
 			// 同批结果是模型尚未见过的新输入，完整交付实际读取范围和写入回执。
-			receipts := []map[string]any{}
+			receipts := []organizedReceipt{organizationReceipt}
 			for _, item := range messages[batchStart+1:] {
 				if item.Role != "tool" {
 					continue
@@ -806,23 +831,18 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 					if call.ID != item.ToolCallID || call.Function.Name == "organize_context" {
 						continue
 					}
-					receipt := map[string]any{"name": call.Function.Name, "call_id": call.ID}
-					var stored map[string]any
-					if json.Unmarshal([]byte(item.Content), &stored) == nil {
-						receipt["tool_run_id"], receipt["status"] = stored["tool_run_id"], stored["status"]
-					}
-					receipt["result"] = item.Content
-					receipts = append(receipts, receipt)
+					receipts = append(receipts, organizedReceipt{Name: call.Function.Name, CallID: call.ID, Result: item.Content})
 				}
 			}
-			messages = []ChatMessage{currentSystem, {Role: "user", Content: asJSON(fresh)}, {Role: "user", Content: "你为自己留下的续接上下文：" + asJSON(organization)}}
-			if len(receipts) > 0 {
-				messages = append(messages, ChatMessage{Role: "user", Content: "整理同批已执行的行动回执：" + asJSON(receipts)})
+			messages = []ChatMessage{currentSystem, {Role: "user", Content: asJSON(fresh)}, {Role: "user", Content: organizedContextPrefix + asJSON(organization), PendingDelivery: true}}
+			messages = append(messages, ChatMessage{Role: "user", Content: organizedReceiptsPrefix + asJSON(receipts), PendingDelivery: true})
+			if chatAction.Content != "" {
+				messages = append(messages, chatAction)
 			}
 		}
 
 		if updateAfterTools != "" {
-			messages = withScene(messages, ChatMessage{Role: "user", Content: updateAfterTools})
+			messages = withScene(messages, ChatMessage{Role: "user", Content: updateAfterTools, PendingDelivery: true})
 			updateAfterTools = ""
 		}
 		// 普通消息在下一次模型请求前增量交付，不撤回本轮已形成的工具调用或发言。
@@ -842,7 +862,7 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 				// 本人已发送的原文无需再作为一条新输入回流。
 				fresh := withoutDelivered(withoutDelivered(arrived, deliveredBeforeOrganization), messages)
 				if len(fresh) > 0 {
-					messages = append(messages, ChatMessage{Role: "user", Content: "接续收到的聊天原文（author_id 标明说话者）：" + asJSON(fresh)})
+					messages = append(messages, ChatMessage{Role: "user", Content: "接续收到的聊天原文（author_id 标明说话者）：" + asJSON(fresh), PendingDelivery: true})
 				}
 				seen = arrived[len(arrived)-1].Seq
 			}

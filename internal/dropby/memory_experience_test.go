@@ -10,6 +10,49 @@ import (
 	"time"
 )
 
+// 回放倒水声：记忆只是一个短判断，两条来源却接近原故障中的十万字符。
+// 从真实工具入口读旧版，检查普通回执、原样展开和选一条来源读到尾部。
+func TestPouringWaterMemoryReplayReadsSourcesOnDemand(t *testing.T) {
+	s, room, member := fixture(t)
+	work := addWork(t, s, room, member, "research")
+	box := &Toolbox{Store: s, Hub: NewHub()}
+	search := strings.Repeat("声学研究检索的网页正文。", 6500) + "搜索原始尾注"
+	page := strings.Repeat("录音与测量条件。", 4500) + "原文区分现象和解释"
+	for id, body := range map[string]string{"sound_search": search, "sound_page": page} {
+		run := ToolRun{ID: id, WorkID: work.ID, ConversationID: room.ID, MemberID: member.ID, Name: "read_page",
+			Arguments: json.RawMessage(`{"url":"https://example.test/sound"}`), Result: body, Status: "succeeded", CreatedAt: now()}
+		if err := s.RecordTool(run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := saveTestExperience(t, box, room, member, work, memoryWrite{
+		Body: "我记得特定装置下可以从倒水声判断冷热。具体物理机制还没弄明白。", SourceIDs: []string{"sound_search", "sound_page"},
+	})
+	saveTestExperience(t, box, room, member, work, memoryWrite{
+		ID: original.ID, Revision: &original.Revision, Body: "后续补充：原始研究里的听辨和机制是两回事。", SourceIDs: []string{"sound_page"},
+	})
+	args := map[string]any{"id": original.ID, "revision": original.Revision}
+	call := toolCall("read_memory", args)
+	short, err := box.Execute(context.Background(), room, member, work, call)
+	if err != nil || !strings.Contains(short, original.Body) || !strings.Contains(short, `"historical":true`) ||
+		!strings.Contains(short, "sound_search") || !strings.Contains(short, "sound_page") || !strings.Contains(short, "tool:read_page:succeeded") ||
+		!strings.Contains(short, "created_at") || strings.Contains(short, "搜索原始尾注") || strings.Contains(short, "后续补充") {
+		t.Fatalf("旧版记忆应返回全文和准确来源清单: %s, %v", short, err)
+	}
+	args["include_source_bodies"] = true
+	full, err := box.Execute(context.Background(), room, member, work, toolCall("read_memory", args))
+	if err != nil || !strings.Contains(full, search) || !strings.Contains(full, page) {
+		t.Fatalf("显式展开丢失了某条原始来源: %v", err)
+	}
+	segment, err := box.Execute(context.Background(), room, member, work, toolCall("read_tool_result", map[string]any{
+		"id": "sound_page", "offset": len([]rune(page)) - len([]rune("原文区分现象和解释")), "length": 80,
+	}))
+	if err != nil || !strings.Contains(segment, `"content":"原文区分现象和解释"`) || !strings.Contains(segment, `"has_more":false`) {
+		t.Fatalf("来源原文尾部不能按需定位: %s, %v", segment, err)
+	}
+	t.Logf("同一记忆的默认回执 %d 字符，显式展开 %d 字符；两个原始来源和旧版本均可回读", len([]rune(short)), len([]rune(full)))
+}
+
 func saveTestExperience(t *testing.T, box *Toolbox, c Conversation, m Member, w Work, args memoryWrite) Memory {
 	t.Helper()
 	result, err := box.remember(context.Background(), c, m, w, args)
@@ -50,7 +93,7 @@ func TestPersonalExperienceRevisionAndEvidence(t *testing.T) {
 	if current.Body != updated.Body || other.Body != mb.Body {
 		t.Fatal("纠正未生效或改变了同伴的个人理解")
 	}
-	old, err := s.readMemory(a.ID, c.ID, ma.ID, &ma.Revision)
+	old, err := s.readMemory(a.ID, c.ID, ma.ID, &ma.Revision, false)
 	if err != nil || old.(map[string]any)["historical"] != true || !strings.Contains(asJSON(old), ma.Body) {
 		t.Fatalf("不能明确回查旧版本：%v %v", old, err)
 	}
@@ -61,7 +104,7 @@ func TestPersonalExperienceRevisionAndEvidence(t *testing.T) {
 	if _, err := box.remember(context.Background(), c, a, w, memoryWrite{ID: ma.ID, Revision: &ma.Revision, Body: "过期写入"}); err == nil {
 		t.Fatal("旧版本覆盖了刚完成的纠正")
 	}
-	if _, err := s.readMemory(b.ID, c.ID, ma.ID, nil); err == nil {
+	if _, err := s.readMemory(b.ID, c.ID, ma.ID, nil, false); err == nil {
 		t.Fatal("同伴读到了另一个人的内部判断")
 	}
 	profile, _ := s.Member(a.ID)
@@ -93,7 +136,7 @@ func TestMemoryEvidenceScopeAndGrounding(t *testing.T) {
 		t.Fatalf("应允许引用自己的旧笔记并保留来源种类: %v", err)
 	}
 	note := saveTestExperience(t, box, c, a, w, memoryWrite{Scope: "member", Body: "同伴提出先看退出入口，我愿意下次遇到类似交互时找他一起看。只是这类合作的初步认识。", SourceIDs: []string{peer.ID}})
-	view, err := s.readMemory(a.ID, private.ID, note.ID, nil)
+	view, err := s.readMemory(a.ID, private.ID, note.ID, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +228,7 @@ func TestCorrectionBeforeSilenceAndNoStaleToolReplay(t *testing.T) {
 		t.Fatalf("安静时纠正没有完成：%+v", result)
 	}
 	input, err := e.contextFor(c, m, w)
-	updated, readErr := s.readMemory(m.ID, c.ID, old.ID, nil)
+	updated, readErr := s.readMemory(m.ID, c.ID, old.ID, nil, false)
 	if err != nil || readErr != nil || input["memory"] != nil || strings.Contains(asJSON(input), old.Body) || !strings.Contains(asJSON(updated), "点击触发小动画") {
 		t.Fatalf("下次行动丢失新理解或重放了旧标签：%v", err)
 	}
@@ -221,7 +264,7 @@ func TestLegacyMemoryUpgradeAndDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	view, err := s.readMemory(m.ID, c.ID, updated.ID, &note.Revision)
+	view, err := s.readMemory(m.ID, c.ID, updated.ID, &note.Revision, false)
 	if err != nil || !strings.Contains(asJSON(view), "旧理解") {
 		t.Fatalf("升级丢失了原始版本：%v", err)
 	}
@@ -235,7 +278,7 @@ func TestLegacyMemoryUpgradeAndDeletion(t *testing.T) {
 	if err := s.db.QueryRow(`SELECT count(*) FROM messages WHERE id=?`, msg.ID).Scan(&count); err != nil || count != 1 {
 		t.Fatal("删除笔记误删了原始聊天")
 	}
-	if _, err := s.readMemory(m.ID, c.ID, note.ID, &note.Revision); err == nil || err == sql.ErrNoRows {
+	if _, err := s.readMemory(m.ID, c.ID, note.ID, &note.Revision, false); err == nil || err == sql.ErrNoRows {
 		t.Fatal("删除后仍能读到旧版本，或泄露底层错误")
 	}
 }
