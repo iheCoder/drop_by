@@ -318,7 +318,7 @@ func (a *API) preferences(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusConflict, map[string]string{"error": "人物说明刚刚已修改，请基于最新说明继续聊偏好"})
 		return
 	}
-	changed, err := setMemberProfile(tx, &current, m.Profile, "answer", "回答「"+in.Question.Text+"」："+in.Answer, nil)
+	changed, err := setMemberProfile(tx, &current, m.Profile, m.DomainProfiles, "answer", "回答「"+in.Question.Text+"」："+in.Answer, nil)
 	if err != nil {
 		a.fail(w, err)
 		return

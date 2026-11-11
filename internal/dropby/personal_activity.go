@@ -192,7 +192,7 @@ func (e *Engine) personalContext(m Member, w Work) (map[string]any, error) {
 		}
 	}
 	// 个人活动同样不自动加载旧经历、工具索引和工作正文，按需使用已有读取工具。
-	return map[string]any{"time": now(), "local_time": time.Now().Format(time.RFC3339), "self": map[string]any{"id": m.ID, "name": m.Name, "profile_revision": m.ProfileRevision, "tools": m.Tools}, "personal_focus": PersonalActivity{Body: a.Body, UpdatedAt: a.UpdatedAt}, "people": people, "conversations": destinations, "trigger": map[string]string{"id": w.ID, "kind": w.Kind}}, nil
+	return map[string]any{"time": now(), "local_time": time.Now().Format(time.RFC3339), "self": memberIdentity(m), "personal_focus": PersonalActivity{Body: a.Body, UpdatedAt: a.UpdatedAt}, "people": people, "conversations": destinations, "trigger": map[string]string{"id": w.ID, "kind": w.Kind}}, nil
 }
 
 func (s *Store) personalToolRuns(member string) ([]ToolRun, error) {

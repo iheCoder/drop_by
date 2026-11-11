@@ -41,11 +41,15 @@ INSERT INTO profile_reflections VALUES(?,0,0);`, m.ID, source.ID, m.ID); err != 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = setMemberProfile(tx, &m, "我重视鲜活的细节，也有自己的判断。", "reflection", "旧版产生的版本", []string{source.ID}); err != nil {
+	if _, err = setMemberProfile(tx, &m, "我重视鲜活的细节，也有自己的判断。", m.DomainProfiles, "reflection", "旧版产生的版本", []string{source.ID}); err != nil {
 		tx.Rollback()
 		t.Fatal(err)
 	}
 	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	// 旧数据库的人物历史只有正文。移除新列后走真实启动迁移，再读原有快照。
+	if _, err := s.db.Exec(`ALTER TABLE profile_versions DROP COLUMN domain_profiles`); err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Dir(s.lock.Name())
@@ -64,7 +68,7 @@ INSERT INTO profile_reflections VALUES(?,0,0);`, m.ID, source.ID, m.ID); err != 
 		t.Fatal("升级擅自重写了已有特质", err, current)
 	}
 	versions, err := reopened.profileHistory(m.ID)
-	if err != nil || len(versions) != 2 || versions[0].Origin != "reflection" {
+	if err != nil || len(versions) != 2 || versions[0].Origin != "reflection" || len(versions[0].DomainProfiles) != 0 {
 		t.Fatal("历史版本丢失", err, versions)
 	}
 	var stopped, done, tables int
@@ -151,7 +155,7 @@ func TestProfileChangeReconsidersUnexecutedCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := setMemberProfile(tx, &m, "我现在喜欢热烈地交流。", "edit", "用户明确修改", nil); err != nil {
+	if _, err := setMemberProfile(tx, &m, "我现在喜欢热烈地交流。", m.DomainProfiles, "edit", "用户明确修改", nil); err != nil {
 		tx.Rollback()
 		t.Fatal(err)
 	}

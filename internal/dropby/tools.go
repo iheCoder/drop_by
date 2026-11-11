@@ -32,6 +32,7 @@ func textField(desc string) any { return map[string]string{"type": "string", "de
 
 func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition {
 	defs := []ToolDefinition{instructionDefinition(),
+		definition("read_domain_profile", "按 self.domain_names 中的名称读取本人的领域画像全文和版本。", map[string]any{"domain": textField("要读取的领域名称")}, "domain"),
 		definition("organize_context", "更新给下次的工作窗口。按你的特质和眼下关注重新挑选，换题时把无关旧事留在历史。新便笺和所选原话替换旧窗口，同批新结果照常交付。", map[string]any{
 			"note":              textField("写给接下来的自己，留下会影响后续的个人判断、有效约定或未完线索。已完结且无关的事项直接省略，可为空。"),
 			"keep_message_ids":  map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "措辞会影响理解时保留原话，可选本人参与聊天中的消息 ID"},
@@ -257,6 +258,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		ID             string   `json:"id"`
 		Scope          string   `json:"scope"`
 		Body           string   `json:"body"`
+		Domain         string   `json:"domain"`
 		Query          string   `json:"query"`
 		URL            string   `json:"url"`
 		Title          string   `json:"title"`
@@ -311,6 +313,22 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 	switch call.Function.Name {
 	case "apply_instruction":
 		return t.applyInstruction(ctx, c, m, w, call)
+	case "read_domain_profile":
+		member, err := t.Store.Member(m.ID)
+		if err != nil {
+			return nil, err
+		}
+		// 一个行动使用同一版身份。编辑后回到最新现场，再决定要读哪项画像。
+		if member.ProfileRevision != m.ProfileRevision {
+			return nil, ErrStale
+		}
+		domain := strings.TrimSpace(args.Domain)
+		for _, profile := range member.DomainProfiles {
+			if profile.Domain == domain {
+				return map[string]any{"domain": profile.Domain, "profile": profile.Profile, "profile_revision": member.ProfileRevision}, nil
+			}
+		}
+		return nil, fmt.Errorf("没有名为 %q 的领域画像，可查看 self.domain_names", domain)
 	case "organize_context":
 		return t.Store.organizeContext(c, m, call.Function.Arguments)
 	case "send_message":
@@ -604,7 +622,7 @@ func decode(s string, out any) { _ = json.Unmarshal([]byte(s), out) }
 // 这些现有工具只读取数据；结果未落盘的读取可以重做。写入/发送不走这条路径。
 func readOnlyTool(name string) bool {
 	switch name {
-	case "organize_context", "search", "read_page", "read_conversation", "read_history", "read_memory", "search_memory", "read_work", "read_artifact", "read_tool_result":
+	case "organize_context", "search", "read_page", "read_conversation", "read_history", "read_memory", "search_memory", "read_work", "read_artifact", "read_tool_result", "read_domain_profile":
 		return true
 	}
 	return false

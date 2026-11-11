@@ -466,11 +466,16 @@ func CompleteMember(ctx context.Context, model Model, m Member) (Member, error) 
 	ctx = withUsageCall(ctx, usageCall{purpose: "preferences", member: m.ID})
 	var out profileUpdate
 	// 创建方向和旧问答只是历史。修改以当前说明和这次回答为准，工具配置不参与。
-	input := map[string]any{"name": m.Name, "current_profile": m.Profile, "questions": m.Questions, "answers": m.Answers}
+	input := map[string]any{"name": m.Name, "current_profile": m.Profile, "current_domain_profiles": m.DomainProfiles, "questions": m.Questions, "answers": m.Answers}
 	e := modelJSON(ctx, model, profileEditingPrompt+"\n"+profileAnswerPrompt, input, &out)
 	if e != nil {
 		return m, e
 	}
+	domains, err := applyDomainProfileUpdates(m.DomainProfiles, out.DomainProfileUpdates)
+	if err != nil {
+		return m, err
+	}
+	m.DomainProfiles = domains
 	if out.Profile != nil {
 		m.Profile = strings.TrimSpace(*out.Profile)
 	}

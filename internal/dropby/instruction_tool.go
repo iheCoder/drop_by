@@ -10,8 +10,12 @@ import (
 // 指令由正在参与的成员理解。这个工具只负责落实明确的共享变化，普通聊天无需调用。
 // 复用既有 Control 写入路径，避免另一份协调状态或另一轮模型审批。
 func instructionDefinition() ToolDefinition {
-	array := func(props map[string]any) any {
-		return map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": props, "additionalProperties": false}}
+	array := func(props map[string]any, required ...string) any {
+		items := map[string]any{"type": "object", "properties": props, "additionalProperties": false}
+		if len(required) > 0 {
+			items["required"] = required
+		}
+		return map[string]any{"type": "array", "items": items}
 	}
 	ids := map[string]any{"type": "array", "items": map[string]string{"type": "string"}}
 	return definition("apply_instruction", "落实真人明确提出的暂停、继续、工作调整、人物设定或组织职责。普通聊天无需调用。source_id 引用实际真人消息；只填写需要改变的部分。职责可长期或限于一件事，撤销职责不等于取消工作。", map[string]any{
@@ -23,10 +27,15 @@ func instructionDefinition() ToolDefinition {
 		"responsibility_changes": array(map[string]any{"id": textField("修改或撤销已有职责时填写"), "member_id": textField("承担职责的成员"), "scope_id": textField("空串为长期；this 为本次事项；也可用已有工作 ID"), "body": textField("职责内容"), "revoke": map[string]string{"type": "boolean"}}),
 		"preference_updates": array(map[string]any{
 			"member_id":         textField("成员 ID"),
-			"profile":           textField("用户明确修改特质或回答角色设置问题时，直接给出调整后的完整人物说明；保留其他特点。含义不清的举例保持原有抽象程度。仅与用户相处的长期约定用 remember，本次要求留在当前交流"),
+			"profile":           textField("真人明确修改通用性情时，给出调整后的完整人格正文。按原意和力度落实，保留其他特点。随口举例保留原有范围。仅与用户相处的长期约定用 remember，本次要求留在当前交流"),
 			"source_id":         textField("同一真人消息 ID"),
-			"expected_revision": map[string]any{"type": "integer", "description": "目标成员当前人物说明的版本；修改自己时取 self.profile_revision，未取得时省略"},
+			"expected_revision": map[string]any{"type": "integer", "description": "目标成员当前人物设定的版本。修改自己时取 self.profile_revision，未取得时省略"},
 			"change_note":       textField("简述这次修改了什么"),
+			"domain_profile_updates": array(map[string]any{
+				"domain":  textField("真人明确设置的领域。修改已有画像时使用实际领域名"),
+				"profile": textField("真人明确修改该领域时，结合 read_domain_profile 读到的现有全文提交完整画像。按真人给出的力度落实，保留仍成立的具体偏好。删除时省略"),
+				"remove":  map[string]any{"type": "boolean", "description": "真人明确移除这一项画像时填写 true"},
+			}, "domain"),
 		}),
 	}, "source_id")
 }

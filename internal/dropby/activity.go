@@ -124,6 +124,7 @@ var actionTitles = map[string]string{
 	"schedule_exploration": "安排探索", "schedule_followup": "留个后续", "ask_question": "提出问题",
 	"send_message": "发送消息", "read_conversation": "看看聊天近况", "send_private": "发起私聊", "read_history": "回顾聊天", "read_artifact": "查看成果",
 	"read_work": "查看进展", "read_tool_result": "核对材料", "read_memory": "回顾经历", "search_memory": "寻找经历",
+	"read_domain_profile": "查看领域画像",
 }
 
 func (s *Store) actionSummary(run ToolRun) (ActivitySummary, error) {

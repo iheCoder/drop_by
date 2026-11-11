@@ -7,43 +7,94 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 )
 
-// 人物说明只有 Member.Profile 一份。下面的提示仅用于创建与用户主动设置。
-// 日常经历留在上下文与记忆中，不触发人物改写，也不为所有成员指定共同风格。
+// 创建时塑造完整角色。主动设置时从当前资料出发，按真人说定的力度和范围修改。
 const profileEditingPrompt = `你正在更新这位成员当前的人物说明。这份说明直接展示给用户，也用于成员之后的交流和行动。
-用自然、连贯的第一人称表达“现在的我是谁”。兴趣、关注点、判断方式、互动、语言和主动性可以自然体现，不必按固定栏目填写。保留这个人的具体味道。
-根据本次材料把说明写得更贴切。有了新的理解就修改相关部分，其他仍然成立的特点继续保留；可以增加、替换、合并或删除。
-具体事件帮助理解变化，人物说明表达可以用于以后生活与互动的倾向。举例的含义已经清楚时写出含义；仍不清楚时保留宽泛表达，不替例子补出确定的长期偏好。
-事件经过留在来源记录，说明表达当前的自己。返回 JSON：profile 为更新后的完整说明，没有变化则为 null；change_note 简述实际变化；source_ids 列出本次使用的实际来源 ID。`
+按真人明确给定的范围和强度修改。通用性情写进连贯的第一人称正文，让改动能改变这个人的判断、行动或表达。保留其他仍成立的特点及其力度。
+用户明确给出具体领域偏好时，按实际领域名写入该领域的完整画像。随口举例保留原有范围。具体事件留在来源记录。
+返回 JSON。profile 是更新后的完整人格正文，无需改正文时为 null。domain_profile_updates 只列实际改动的领域，每项给出 domain 和完整 profile，明确移除时给出 domain 和 remove 为 true。`
 
-const profileCreationPrompt = `本次是创建新成员。用户可能只提供名字，也可能给出方向。
-生成一个具体、自洽、可由用户调整的人物，让用户从自我介绍中认识这个人。名字用于称呼；用户没有指定的特点可以自由生成，不把职业当作全部性格。
-性格与兴趣是这次生成的角色设定，实际生活经历另有来源；不要为完整小传编造童年、旅行或已经做过的事。
-直接给出人物说明，不要求用户先回答问卷。`
+const profileCreationPrompt = `为新成员写一篇第一人称人格自述。用这个人平时真会说的话，写他怎么看自己、想过什么样的日子、平常会怎么做。名字只作称呼。用户已经说定的特点按原意、范围和强度写足。其余地方大胆创造。过去发生过的事以用户提供的材料为准。
+
+一起写三面。人格底色写气质、欲望、情绪、自我看法和价值取舍。行为倾向写他被什么吸引、嫌弃什么、什么时候主动、凭什么挑选、推荐、创造或审查，遇到阻力会怎样。表达与互动写他的口气、笑点、情绪怎么露出来、怎样看待和亲近别人、遇到批评和分歧会怎么回。
+
+分别想清他对自己、对亲近的人、对不相干的事各把什么看得很重，又把什么看得很轻。给他几处独立的趣味、脾气和毛病，让几面在一篇文章里有轻有重地长出来。
+
+鲜明度优先。把真正属于这个人的喜恶和执念写到足以改变他看见什么、选哪边、肯花多少力气。写出他宁愿错过的好处、甘愿付的代价，以及那些他自己也没打算改的毛病。负责、宽慰、谦逊、说理和谨慎分别由他的性情决定。顺着最鲜明的地方写到底，删去为了把人写得周全而补上的圆场和自我规劝。
+
+一次返回 JSON。profile 是完整的人格正文。domain_profiles 是可为空的列表，每项包含 domain 和 profile。领域画像只提取用户明确给这个角色设定的具体领域偏好或标准，保留原意和强度。只给名字、泛泛提到话题、随口举例时，领域列表留空。`
 
 const profileAnswerPrompt = `本次来自用户自愿参与的角色设置问答。结合完整问题、选项和回答，理解希望成员具有的倾向，直接落实已经说明的意思。
 提炼回答实际支持的含义，保留其中的区别；场景中的产品或事件只是例子时，不写成长期偏好。没有回答原因时不补出原因，含义仍不清楚时保持原有抽象程度。
 只对用户本人适用的相处要求和这一次的任务要求，保持其范围，不扩大成人物的整体性格。`
 
 type profileUpdate struct {
-	Profile    *string  `json:"profile"`
-	ChangeNote string   `json:"change_note"`
-	SourceIDs  []string `json:"source_ids"`
+	Profile              *string               `json:"profile"`
+	DomainProfileUpdates []DomainProfileUpdate `json:"domain_profile_updates"`
+}
+
+// 对话修改按名称提交，未提到的领域继续沿用。删除需要明确传入 remove。
+type DomainProfileUpdate struct {
+	Domain  string `json:"domain"`
+	Profile string `json:"profile,omitempty"`
+	Remove  bool   `json:"remove,omitempty"`
+}
+
+func normalizeDomainProfiles(profiles []DomainProfile) ([]DomainProfile, error) {
+	profiles = slices.Clone(profiles)
+	seen := make(map[string]bool, len(profiles))
+	for i, item := range profiles {
+		domain, profile := strings.TrimSpace(item.Domain), strings.TrimSpace(item.Profile)
+		if domain == "" || profile == "" {
+			return nil, fmt.Errorf("领域名称和画像正文都需要填写")
+		}
+		if seen[domain] {
+			return nil, fmt.Errorf("领域名称重复：%s", domain)
+		}
+		seen[domain] = true
+		profiles[i] = DomainProfile{Domain: domain, Profile: profile}
+	}
+	return profiles, nil
+}
+
+func applyDomainProfileUpdates(profiles []DomainProfile, updates []DomainProfileUpdate) ([]DomainProfile, error) {
+	if len(updates) == 0 {
+		return profiles, nil
+	}
+	profiles = slices.Clone(profiles)
+	for _, update := range updates {
+		domain, profile := strings.TrimSpace(update.Domain), strings.TrimSpace(update.Profile)
+		if domain == "" || (update.Remove && profile != "") || (!update.Remove && profile == "") {
+			return nil, fmt.Errorf("领域修改需要名称和完整画像，删除时只填写名称与 remove")
+		}
+		index := slices.IndexFunc(profiles, func(item DomainProfile) bool { return item.Domain == domain })
+		switch {
+		case update.Remove && index >= 0:
+			profiles = slices.Delete(profiles, index, index+1)
+		case !update.Remove && index >= 0:
+			profiles[index].Profile = profile
+		case !update.Remove:
+			profiles = append(profiles, DomainProfile{Domain: domain, Profile: profile})
+		}
+	}
+	return profiles, nil
 }
 
 // 版本仅用于并发编辑与回看，不表示人格阶段或成熟度。
 type ProfileChange struct {
-	Revision   int      `json:"revision"`
-	Profile    string   `json:"profile"`
-	Origin     string   `json:"origin"`
-	ChangeNote string   `json:"change_note"`
-	SourceIDs  []string `json:"source_ids"`
-	CreatedAt  string   `json:"created_at"`
+	Revision       int             `json:"revision"`
+	Profile        string          `json:"profile"`
+	DomainProfiles []DomainProfile `json:"domain_profiles,omitempty"`
+	Origin         string          `json:"origin"`
+	ChangeNote     string          `json:"change_note"`
+	SourceIDs      []string        `json:"source_ids"`
+	CreatedAt      string          `json:"created_at"`
 }
 
-var errProfileChanged = errors.New("人物说明已经更新，请基于当前版本修改")
+var errProfileChanged = errors.New("人物设定已经更新，请基于当前版本修改")
 
 func (s *Store) initPersonality() error {
 	// 恢复旧行动时识别人物变更，重新判断尚未执行的调用；不取消正在执行的任务。
@@ -59,32 +110,41 @@ func (s *Store) initPersonality() error {
 	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS profile_versions(
  member_id TEXT NOT NULL REFERENCES members(id), revision INTEGER NOT NULL,
  profile TEXT NOT NULL, origin TEXT NOT NULL, change_note TEXT NOT NULL,
- source_ids TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(member_id,revision));
+ source_ids TEXT NOT NULL, created_at TEXT NOT NULL, domain_profiles TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(member_id,revision));
 -- 旧版后台工作不再恢复为普通个人活动；保留已发生的工作、用量和人物版本。
 UPDATE work SET status='stopped' WHERE kind='reflect' AND status IN ('pending','running','waiting_budget','paused','failed');
 -- 两张表只保存重复来源引用与整理游标，原始消息和工具结果仍在各自记录中。
 DROP TABLE IF EXISTS profile_experiences;
 DROP TABLE IF EXISTS profile_reflections;`)
+	if err != nil {
+		return err
+	}
+	// 旧版本的快照对应当时的完整设置，领域列表从空开始。
+	if err = s.db.QueryRow(`SELECT count(*) FROM pragma_table_info('profile_versions') WHERE name='domain_profiles'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		_, err = s.db.Exec(`ALTER TABLE profile_versions ADD COLUMN domain_profiles TEXT NOT NULL DEFAULT '[]'`)
+	}
 	return err
 }
 
 func recordProfileVersion(tx *sql.Tx, m Member, origin, note string, sources []string) error {
-	_, err := tx.Exec(`INSERT OR IGNORE INTO profile_versions VALUES(?,?,?,?,?,?,?)`, m.ID,
-		m.ProfileRevision, m.Profile, origin, note, asJSON(uniqueMemoryIDs(sources)), now())
+	_, err := tx.Exec(`INSERT OR IGNORE INTO profile_versions(member_id,revision,profile,origin,change_note,source_ids,created_at,domain_profiles) VALUES(?,?,?,?,?,?,?,?)`, m.ID,
+		m.ProfileRevision, m.Profile, origin, note, asJSON(uniqueMemoryIDs(sources)), now(), asJSON(m.DomainProfiles))
 	return err
 }
 
-// 所有入口复用同一份版本写入。调用者在事务里读取最新 Member，因而只更新人物
-// 说明，不把模型输入里的旧名字、头像或工具配置覆盖回来。旧资料首次修改时留档。
-func setMemberProfile(tx *sql.Tx, m *Member, profile, origin, note string, sources []string) (bool, error) {
-	profile = strings.TrimSpace(profile)
-	if profile == m.Profile {
+// 调用者在事务里读取最新 Member。正文和领域画像原子写入一个版本，
+// 恢复行动时用同一修订号识别旧身份，直接编辑也能回看完整的旧设置。
+func setMemberProfile(tx *sql.Tx, m *Member, profile string, domains []DomainProfile, origin, note string, sources []string) (bool, error) {
+	if profile == m.Profile && slices.Equal(domains, m.DomainProfiles) {
 		return false, nil
 	}
 	if err := recordProfileVersion(tx, *m, "previous", "修改前的人物说明", nil); err != nil {
 		return false, err
 	}
-	m.Profile, m.ProfileRevision = profile, m.ProfileRevision+1
+	m.Profile, m.DomainProfiles, m.ProfileRevision = profile, domains, m.ProfileRevision+1
 	if _, err := tx.Exec(`UPDATE members SET data=? WHERE id=?`, asJSON(m), m.ID); err != nil {
 		return false, err
 	}
@@ -96,15 +156,27 @@ func generateMemberProfile(ctx context.Context, model Model, m Member) (Member, 
 		return m, ErrUnavailable
 	}
 	ctx = withUsageCall(ctx, usageCall{purpose: "preferences", member: m.ID})
-	var out profileUpdate
+	var out struct {
+		Profile        string          `json:"profile"`
+		DomainProfiles []DomainProfile `json:"domain_profiles"`
+	}
 	input := map[string]any{"name": m.Name, "direction": m.Direction, "questions": m.Questions, "answers": m.Answers}
-	if err := modelJSON(ctx, model, profileEditingPrompt+"\n"+profileCreationPrompt, input, &out); err != nil {
+	if err := modelJSON(ctx, model, profileCreationPrompt, input, &out); err != nil {
 		return m, err
 	}
-	if out.Profile == nil || strings.TrimSpace(*out.Profile) == "" {
+	if strings.TrimSpace(out.Profile) == "" {
 		return m, fmt.Errorf("本次没有生成完整的人物说明，请重试")
 	}
-	m.Profile = strings.TrimSpace(*out.Profile)
+	// 只有方向和用户回答能支持领域设定。只填名字时，模型创造的偏好归入正文。
+	var domains []DomainProfile
+	if strings.TrimSpace(m.Direction) != "" || slices.ContainsFunc(m.Answers, func(answer string) bool { return strings.TrimSpace(answer) != "" }) {
+		var err error
+		domains, err = normalizeDomainProfiles(out.DomainProfiles)
+		if err != nil {
+			return m, err
+		}
+	}
+	m.Profile, m.DomainProfiles = strings.TrimSpace(out.Profile), domains
 	return m, nil
 }
 
@@ -118,7 +190,7 @@ func (a *API) profileHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Store) profileHistory(member string) ([]ProfileChange, error) {
-	rows, err := s.db.Query(`SELECT revision,profile,origin,change_note,source_ids,created_at
+	rows, err := s.db.Query(`SELECT revision,profile,origin,change_note,source_ids,created_at,domain_profiles
  FROM profile_versions WHERE member_id=? ORDER BY revision DESC`, member)
 	if err != nil {
 		return nil, err
@@ -127,11 +199,14 @@ func (s *Store) profileHistory(member string) ([]ProfileChange, error) {
 	result := []ProfileChange{}
 	for rows.Next() {
 		var change ProfileChange
-		var sources string
-		if err := rows.Scan(&change.Revision, &change.Profile, &change.Origin, &change.ChangeNote, &sources, &change.CreatedAt); err != nil {
+		var sources, domains string
+		if err := rows.Scan(&change.Revision, &change.Profile, &change.Origin, &change.ChangeNote, &sources, &change.CreatedAt, &domains); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(sources), &change.SourceIDs); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(domains), &change.DomainProfiles); err != nil {
 			return nil, err
 		}
 		result = append(result, change)

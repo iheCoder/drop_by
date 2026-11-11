@@ -391,15 +391,25 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 	return e.converse(ctx, c, w)
 }
 
-// 资料页的人物正文就是行动身份，只在系统输入中放一份。公共说明仅交代运行
-// 协议；探索方向和投入程度仍由人物与语境决定，不设置共同的好奇心或固定流程。
+// 正文随身份进入行动，领域画像按需读。取舍从构思时就由成员的性情和眼光决定。
 func memberSystem(m Member, instruction string) ChatMessage {
 	return ChatMessage{Role: "system", Content: "你是 " + m.Name + "。\n" + m.Profile + "\n\n" + instruction + `
+用你自己的眼光决定先留意什么、怎么取舍、要不要开口或动手。让你真正偏爱的东西和脾气改变你做的事及其后果。创作从起因到收尾，顺着自己的眼光推进。
+self.domain_names 是你已设定的领域。处理相关话题时，用 read_domain_profile 按名称读到全文，再用画像里自己的标准构思和决定。已读画像与 self.profile_revision 同版本时可以沿用。
 交流与行动中，依据你的人格特质，结合当前情境和对方的意思，自主决定是否进一步探索、探索什么、深入到什么程度。对于值得探索的事情，使用可用工具去了解、尝试、验证或创造，把实际发现和结果带回后续的判断与行动。
 消息通过 send_message 发出，个人活动省略目的地时发给真人私聊。结束行动返回 JSON {"outcome":"实际行动结果"}，它仅作运行记录。运行故障和额度由界面呈现。
 工作窗口会延续。需要更新续接内容时，用 organize_context。旧记录可按需回读，以最新现场为准。
 personal_focus 是自己的近期关注或打算，state 是界面展示的当前感受或目标；省略沿用，空串清除。state_source_ids 可附来源。
 conversation.responsibilities 是当前组织职责，按真人约定用 apply_instruction 记录；工作安排、进展与结束通过相应工具处理。`}
+}
+
+// 私聊、群聊和个人活动都能发现同一份领域名称索引，正文由成员选择读取。
+func memberIdentity(m Member) map[string]any {
+	domains := make([]string, 0, len(m.DomainProfiles))
+	for _, profile := range m.DomainProfiles {
+		domains = append(domains, profile.Domain)
+	}
+	return map[string]any{"id": m.ID, "name": m.Name, "profile_revision": m.ProfileRevision, "tools": m.Tools, "domain_names": domains}
 }
 
 func (e *Engine) contextFor(c Conversation, m Member, w Work, afterSeq ...int64) (map[string]any, error) {
@@ -453,7 +463,6 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work, afterSeq ...int64)
 	if err != nil {
 		return nil, err
 	}
-	identity := map[string]any{"id": m.ID, "name": m.Name, "profile_revision": m.ProfileRevision, "tools": m.Tools}
 	unread := []string{}
 	for _, message := range messages {
 		if message.Seq > seen {
@@ -461,7 +470,7 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work, afterSeq ...int64)
 		}
 	}
 	// 现场只更新身份、用户控制与本次交付。经历、资料和工作详情由成员主动查找。
-	return map[string]any{"time": now(), "local_time": time.Now().Format(time.RFC3339), "self": identity, "people": people, "conversation": c, "latest_messages": messages, "context_start_seq": start, "trigger": map[string]string{"id": w.ID, "kind": w.Kind}, "seen_through_seq": seen, "new_message_ids": unread, "personal_focus": PersonalActivity{Body: focus.Body, UpdatedAt: focus.UpdatedAt}}, nil
+	return map[string]any{"time": now(), "local_time": time.Now().Format(time.RFC3339), "self": memberIdentity(m), "people": people, "conversation": c, "latest_messages": messages, "context_start_seq": start, "trigger": map[string]string{"id": w.ID, "kind": w.Kind}, "seen_through_seq": seen, "new_message_ids": unread, "personal_focus": PersonalActivity{Body: focus.Body, UpdatedAt: focus.UpdatedAt}}, nil
 }
 
 func explicitStop(body string) (discussion, research bool) {
@@ -757,10 +766,12 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 				result = asJSON(map[string]string{"error": err.Error(), "status": "failed"})
 			}
 			messages = append(messages, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result, PendingDelivery: true})
-			if call.Function.Name == "apply_instruction" && err == nil && c.ID != "" {
-				c, err = e.Store.Conversation(c.ID)
-				if err != nil {
-					return Outcome{}, err
+			if call.Function.Name == "apply_instruction" && err == nil {
+				if c.ID != "" {
+					c, err = e.Store.Conversation(c.ID)
+					if err != nil {
+						return Outcome{}, err
+					}
 				}
 				cp.Revision = c.Revision
 				updated, readErr := e.Store.Member(m.ID)

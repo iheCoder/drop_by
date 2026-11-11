@@ -9,14 +9,14 @@ import (
 	"strings"
 )
 
-// 偏好仍然是一段可读、可编辑的人物说明。这里的结构只承载一次用户明确提出的修改，
-// source_id 用来保证网页、其他成员的发言或旧上下文不能替用户修改人物。
+// 一次真人设定可以改正文，也可以按名称改领域画像。来源 ID 对应真人提出设置的原话。
 type PreferenceUpdate struct {
-	MemberID         string `json:"member_id"`
-	Profile          string `json:"profile"`
-	SourceID         string `json:"source_id"`
-	ExpectedRevision *int   `json:"expected_revision,omitempty"`
-	ChangeNote       string `json:"change_note,omitempty"`
+	MemberID             string                `json:"member_id"`
+	Profile              string                `json:"profile,omitempty"`
+	DomainProfileUpdates []DomainProfileUpdate `json:"domain_profile_updates,omitempty"`
+	SourceID             string                `json:"source_id"`
+	ExpectedRevision     *int                  `json:"expected_revision,omitempty"`
+	ChangeNote           string                `json:"change_note,omitempty"`
 }
 
 // 控制层用同一个模型请求理解普通指令和明确偏好，避免每句话再串行调用一个模型。
@@ -79,7 +79,8 @@ func applyPreferenceUpdates(tx *sql.Tx, c Conversation, sourceID string, updates
 		return err
 	}
 	for _, update := range updates {
-		if update.SourceID != sourceID || !contains(c.MemberIDs, update.MemberID) || strings.TrimSpace(update.Profile) == "" {
+		profile := strings.TrimSpace(update.Profile)
+		if update.SourceID != sourceID || !contains(c.MemberIDs, update.MemberID) || (profile == "" && len(update.DomainProfileUpdates) == 0) {
 			return fmt.Errorf("人物偏好修改的来源或成员无效")
 		}
 		if questionOwner != "" && questionOwner != update.MemberID {
@@ -96,11 +97,18 @@ func applyPreferenceUpdates(tx *sql.Tx, c Conversation, sourceID string, updates
 		if update.ExpectedRevision != nil && m.ProfileRevision != *update.ExpectedRevision {
 			return errProfileChanged
 		}
+		if profile == "" {
+			profile = m.Profile
+		}
+		domains, err := applyDomainProfileUpdates(m.DomainProfiles, update.DomainProfileUpdates)
+		if err != nil {
+			return err
+		}
 		note := update.ChangeNote
 		if note == "" {
-			note = "用户在聊天中调整了人物说明"
+			note = "用户在聊天中调整了人物设定"
 		}
-		profileChanged, err := setMemberProfile(tx, &m, update.Profile, "instruction", note, []string{sourceID})
+		profileChanged, err := setMemberProfile(tx, &m, profile, domains, "instruction", note, []string{sourceID})
 		if err != nil {
 			return err
 		}
@@ -140,12 +148,13 @@ var avatarColors = []string{"jade", "apricot", "blue", "rose", "violet", "moss"}
 // 表示恢复默认图标，图片仍经过与创建相同的小型栅格验证。
 func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name            *string `json:"name"`
-		Profile         *string `json:"profile"`
-		Color           *string `json:"color"`
-		Avatar          *string `json:"avatar"`
-		AvatarIcon      *string `json:"avatar_icon"`
-		ProfileRevision *int    `json:"profile_revision"`
+		Name            *string          `json:"name"`
+		Profile         *string          `json:"profile"`
+		DomainProfiles  *[]DomainProfile `json:"domain_profiles"`
+		Color           *string          `json:"color"`
+		Avatar          *string          `json:"avatar"`
+		AvatarIcon      *string          `json:"avatar_icon"`
+		ProfileRevision *int             `json:"profile_revision"`
 	}
 	if !readBody(w, r, &in) {
 		return
@@ -157,8 +166,13 @@ func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if in.Profile != nil {
-		*in.Profile = strings.TrimSpace(*in.Profile)
+	if in.DomainProfiles != nil {
+		domains, err := normalizeDomainProfiles(*in.DomainProfiles)
+		if err != nil {
+			respond(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		in.DomainProfiles = &domains
 	}
 	if in.Avatar != nil {
 		if err := validateAvatar(*in.Avatar); err != nil {
@@ -190,17 +204,26 @@ func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	profileChanged := in.Profile != nil && *in.Profile != m.Profile
-	if in.Profile != nil && in.ProfileRevision != nil && m.ProfileRevision != *in.ProfileRevision {
+	editProfile := in.Profile != nil || in.DomainProfiles != nil
+	if editProfile && in.ProfileRevision != nil && m.ProfileRevision != *in.ProfileRevision {
 		respond(w, http.StatusConflict, map[string]string{"error": errProfileChanged.Error()})
 		return
 	}
-	contextChanged := (in.Name != nil && *in.Name != m.Name) || profileChanged
+	nameChanged := in.Name != nil && *in.Name != m.Name
 	if in.Name != nil {
 		m.Name = *in.Name
 	}
-	if in.Profile != nil {
-		if _, err = setMemberProfile(tx, &m, *in.Profile, "edit", "用户直接编辑了人物说明", nil); err != nil {
+	profileChanged := false
+	if editProfile {
+		profile, domains := m.Profile, m.DomainProfiles
+		if in.Profile != nil {
+			profile = strings.TrimSpace(*in.Profile)
+		}
+		if in.DomainProfiles != nil {
+			domains = *in.DomainProfiles
+		}
+		profileChanged, err = setMemberProfile(tx, &m, profile, domains, "edit", "用户直接编辑了人物设定", nil)
+		if err != nil {
 			a.fail(w, err)
 			return
 		}
@@ -224,7 +247,7 @@ func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 	}
 	// 新设定立即生效：已用旧人物说明生成但尚未发布的内容不能跨过这次修改。
 	// 单独更换头像/颜色不影响成员正在想说的话，也不取消聊天中的后台行动。
-	if contextChanged {
+	if nameChanged || profileChanged {
 		if _, err = tx.Exec(`UPDATE conversations SET revision=revision+1 WHERE id IN (SELECT conversation_id FROM participants WHERE member_id=?)`, m.ID); err != nil {
 			a.fail(w, err)
 			return
