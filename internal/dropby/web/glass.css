@@ -312,3 +312,35 @@ body:has(#crop-dialog[open]) #workspace-page::backdrop { background:transparent;
 .technical-record { margin-top:18px; color:var(--muted); font-size:12px; }
 .technical-record pre { max-height:300px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:11px/1.7 ui-monospace,monospace; background:rgb(255 255 255 / 50%); border-radius:12px; padding:14px; }
 .reply-issue { padding:8px 0; font-size:13px; color:var(--muted); }
+
+/* 领域画像是按需打开的章节。列表只露出标题和两行，一篇的正文在点进去之后才占编辑框。 */
+.domain-hint { margin:0 0 12px; color:var(--muted); font-size:12px; line-height:1.7; }
+.domain-empty { margin:0 0 4px; color:var(--muted); font-size:13px; line-height:1.7; }
+.domain-group { background:rgb(255 255 255 / 72%); border:1px solid #dce8e9; border-radius:18px; overflow:hidden; }
+.domain-row { display:flex; align-items:center; gap:10px; width:100%; min-height:64px; padding:10px 14px; border:0; border-radius:0; background:transparent; text-align:left; }
+.domain-row + .domain-row { box-shadow:inset 0 1px 0 rgb(107 137 145 / 16%); }
+.domain-row:hover { background:rgb(255 255 255 / 55%); }
+.domain-row-copy { min-width:0; flex:1; display:flex; flex-direction:column; gap:2px; }
+.domain-row-copy strong { font-size:14px; font-weight:600; }
+.domain-row-copy span { min-width:0; color:var(--muted); font-size:12px; line-height:1.55; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.domain-row > .icon { width:16px; height:16px; margin-left:auto; color:#8aa0a6; }
+.domain-add,.domain-back { display:inline-flex; align-items:center; gap:6px; border:0; background:transparent; color:#286c74; }
+.domain-add { min-height:44px; margin:12px 0 8px; padding:8px 10px; border-radius:12px; font-size:14px; }
+.domain-add:hover,.domain-back:hover { background:rgb(255 255 255 / 65%); }
+.domain-add .icon,.domain-back .icon { width:16px; height:16px; }
+.domain-back { min-height:44px; margin:0 0 4px; padding:4px 8px 4px 2px; border-radius:12px; font-size:13px; }
+.domain-note { margin:0 0 4px; color:var(--muted); font-size:12px; line-height:1.7; }
+.domain-remove { display:inline-flex; align-items:center; min-height:44px; margin:4px 0 8px; padding:8px 2px; border:0; background:transparent; color:var(--danger); font-size:13px; }
+.domain-remove:hover { text-decoration:underline; text-underline-offset:3px; }
+.domain-read { padding:12px 0; border-bottom:1px solid var(--line); }
+.domain-read summary { display:flex; align-items:center; gap:8px; cursor:pointer; list-style:none; }
+.domain-read summary::-webkit-details-marker { display:none; }
+.domain-read summary::marker { content:''; }
+.domain-read-copy { min-width:0; flex:1; }
+.domain-read summary strong { display:block; font-size:14px; font-weight:600; }
+.domain-excerpt { display:-webkit-box; min-width:0; margin-top:4px; color:var(--muted); font-size:13px; line-height:1.65; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.domain-read[open] .domain-excerpt { display:none; }
+.domain-read .profile-body { margin-top:8px; }
+.domain-read summary > .icon { width:16px; height:16px; color:#8aa0a6; transition:transform .15s; }
+.domain-read[open] summary > .icon { transform:rotate(90deg); }
+@media (prefers-reduced-motion:reduce) { .domain-read summary > .icon { transition:none; } }

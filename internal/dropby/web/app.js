@@ -10,6 +10,7 @@ let refreshTimer, toastTimer, budgetRefreshTimer, currentVersions = [];
 let currentArtifactIndex = 0, artifactMode = 'preview', panelRequest = 0;
 let panelView = '', avatarData = '', avatarIcon = 'cat', avatarColor = 'jade';
 let sideTab = 'chats', sending = false, renderedMessages = '', profileBaseline = null;
+let domainEditorIndex = null, domainEditorFresh = false;
 let avatarRequest = 0, avatarLoading = false;
 const drafts = new Map();
 let seen = {};
@@ -337,29 +338,80 @@ function newMember() {
   showWorkspace('认识新朋友', '一个名字就可以开始，TA 会带着自己的特质来打招呼。', `<form id="member-form">${avatarEditor()}<label class="field"><span>名字</span><input name="name" maxlength="24" required placeholder="怎么称呼这位朋友？" autocomplete="off"></label><label class="field"><span>大致方向 · 可选</span><textarea name="direction" rows="2" placeholder="例如：喜欢简洁设计的设计师"></textarea><small class="field-hint">留空也可以。认识之后，随时能调整 TA 的特质。</small></label><div class="form-error" hidden role="alert"></div><button class="primary full-width" type="submit">开始聊天 ${icon('arrow-up')}</button></form>`, 'new-member');
   $('workspace-content').querySelector('input[name=name]').focus();
 }
-function domainProfileFields({domain, profile} = {}) {
-  return `<div class="profile-change" data-domain-profile>
-    <label class="field"><span>领域名称</span><input name="domain" required value="${escapeHTML(domain)}" autocomplete="off"></label>
-    <label class="field"><span>画像正文</span><textarea name="domain_profile" rows="3" required>${escapeHTML(profile)}</textarea></label>
-    <button class="secondary" type="button" data-action="remove-domain-profile">移除这项画像</button>
-  </div>`;
+const domainExcerpt = text => String(text ?? '').replace(/\s+/g, ' ').trim();
+// 可见章节只是视图。每篇领域始终留在隐藏行里，保存和恢复都读这些行。
+function domainProfileStore({domain, profile} = {}) {
+  return `<div data-domain-profile hidden><input name="domain" value="${escapeHTML(domain)}"><textarea name="domain_profile">${escapeHTML(profile)}</textarea></div>`;
 }
-function domainProfilesView(profiles = []) {
-  if (!profiles.length) return '';
-  return `<h3 class="section-label">领域画像</h3>${profiles.map(({domain, profile}) => `<details class="profile-change"><summary>${escapeHTML(domain)}</summary><div class="profile-body">${escapeHTML(profile)}</div></details>`).join('')}`;
+function syncDomainEditor() {
+  const form = $('profile-form');
+  if (!form || domainEditorIndex == null) return;
+  const row = form.querySelectorAll('[data-domain-profile]')[domainEditorIndex];
+  const title = form.querySelector('[data-domain-draft="domain"]');
+  const body = form.querySelector('[data-domain-draft="profile"]');
+  if (!row || !title || !body) return;
+  row.querySelector('[name=domain]').value = title.value;
+  row.querySelector('[name=domain_profile]').value = body.value;
+}
+function collectDomainProfiles(form) {
+  syncDomainEditor();
+  for (const row of [...form.querySelectorAll('[data-domain-profile]')]) {
+    if (!row.querySelector('[name=domain]').value.trim() && !row.querySelector('[name=domain_profile]').value.trim()) row.remove();
+  }
+  const domains = Array.from(form.querySelectorAll('[data-domain-profile]'), row => ({
+    domain: row.querySelector('[name=domain]').value.trim(),
+    profile: row.querySelector('[name=domain_profile]').value.trim(),
+  }));
+  const partial = domains.findIndex(item => !item.domain || !item.profile);
+  if (partial >= 0) return {error: '领域名称和画像正文都需要填写', index: partial};
+  const seen = new Set();
+  for (let i = 0; i < domains.length; i++) {
+    if (seen.has(domains[i].domain)) return {error: `领域名称重复：${domains[i].domain}`, index: i};
+    seen.add(domains[i].domain);
+  }
+  return {domains};
+}
+function renderDomainEditor() {
+  const form = $('profile-form');
+  const view = form?.querySelector('[data-domain-view]');
+  if (!view) return;
+  const rows = [...form.querySelectorAll('[data-domain-profile]')];
+  if (domainEditorIndex != null && !rows[domainEditorIndex]) { domainEditorIndex = null; domainEditorFresh = false; }
+  if (domainEditorIndex == null) {
+    const items = rows.map((row, index) => {
+      const domain = row.querySelector('[name=domain]').value.trim();
+      const profile = domainExcerpt(row.querySelector('[name=domain_profile]').value);
+      return `<button class="domain-row" type="button" data-action="open-domain-profile" data-index="${index}"><span class="domain-row-copy"><strong>${escapeHTML(domain || '未命名领域')}</strong><span>${escapeHTML(profile || '还没有写下这篇')}</span></span>${icon('chevron-right')}</button>`;
+    }).join('');
+    view.innerHTML = `<h3 class="section-label">领域画像</h3><p class="domain-hint">聊到这些事时，TA 才会打开对应的一篇。可以留空。</p>${items ? `<div class="domain-group">${items}</div>` : '<p class="domain-empty">还没有领域画像。</p>'}<button class="domain-add" type="button" data-action="add-domain-profile">${icon('plus')}添加领域</button>`;
+    return;
+  }
+  const row = rows[domainEditorIndex];
+  const domain = row.querySelector('[name=domain]').value;
+  const profile = row.querySelector('[name=domain_profile]').value;
+  const title = domain.trim();
+  const name = form.elements.name.value.trim() || '这位朋友';
+  view.innerHTML = `<button class="domain-back" type="button" data-action="domain-profiles-back">${icon('arrow-left')}全部领域</button><p class="domain-note">${escapeHTML(name)} 的自我介绍留在全部领域里。这里只改这一篇。</p><label class="field"><span>领域</span><input data-domain-draft="domain" value="${escapeHTML(domain)}" placeholder="例如：写作与评论" autocomplete="off"></label><label class="field"><span>这篇画像</span><textarea data-domain-draft="profile" rows="8" placeholder="具体的品味、判断和做法">${escapeHTML(profile)}</textarea><small class="field-hint">聊到这个领域时，TA 才会读到这段。</small></label><button class="domain-remove" type="button" data-action="remove-domain-profile">${title ? `移除「${escapeHTML(title)}」` : '移除这篇'}</button>`;
+}
+function domainProfilesView(profiles = [], showEmpty = false) {
+  const list = profiles || [];
+  if (!list.length && !showEmpty) return '';
+  const body = list.length ? list.map(({domain, profile}) => `<details class="domain-read"><summary><span class="domain-read-copy"><strong>${escapeHTML(domain)}</strong><span class="domain-excerpt">${escapeHTML(domainExcerpt(profile))}</span></span>${icon('chevron-right')}</summary><div class="profile-body">${escapeHTML(profile)}</div></details>`).join('') : '<p class="domain-empty">还没有领域画像。可以留空。</p>';
+  return `<h3 class="section-label">领域画像</h3><p class="domain-hint">聊到这些事时，TA 才会打开对应的一篇。</p>${body}`;
 }
 function editProfile(id) {
   const m = member(id); if (!m) return;
   const domains = m.domain_profiles || [];
+  domainEditorIndex = null; domainEditorFresh = false;
   showWorkspace('编辑朋友', '', `<form id="profile-form" data-id="${m.id}">
     ${avatarEditor(m)}
     <label class="field"><span>名字</span><input name="name" maxlength="24" required value="${escapeHTML(m.name)}" autocomplete="off"></label>
     <label class="field"><span>自我介绍与特质</span><textarea name="profile" rows="8">${escapeHTML(m.profile)}</textarea><small class="field-hint">这就是 TA 交流和行动时使用的人物说明。性格、兴趣、判断和相处方式，都可以直接调整。</small></label>
-    <h3 class="section-label">领域画像</h3>
-    <div data-domain-profiles>${domains.map(domainProfileFields).join('')}</div>
-    <button class="secondary" type="button" data-action="add-domain-profile">添加领域画像</button>
+    <div data-domain-profiles hidden>${domains.map(domainProfileStore).join('')}</div>
+    <div data-domain-view></div>
     <div class="form-error" hidden role="alert"></div><div class="panel-footer"><button class="secondary" type="button" data-action="close-workspace">取消</button><button class="primary" type="submit">保存修改</button></div>
   </form>`, 'edit-profile');
+  renderDomainEditor();
   // 只提交用户实际改过的字段，避免头像修改覆盖同时从聊天中学到的新偏好。
   profileBaseline = {name:m.name.trim(),profile:m.profile.trim(),domain_profiles:domains,profile_revision:m.profile_revision || 0,color:avatarColor,avatar:avatarData,avatar_icon:avatarIcon};
 }
@@ -377,7 +429,9 @@ async function restoreProfile(id, revision) {
   editProfile(id);
   const form = $('profile-form');
   form.elements.profile.value = change.profile;
-  form.querySelector('[data-domain-profiles]').innerHTML = (change.domain_profiles || []).map(domainProfileFields).join('');
+  form.querySelector('[data-domain-profiles]').innerHTML = (change.domain_profiles || []).map(domainProfileStore).join('');
+  domainEditorIndex = null; domainEditorFresh = false;
+  renderDomainEditor();
 }
 async function openDirect(id) {
   const c = await post('/api/conversations', {name:'',kind:'direct',member_ids:[id]});
@@ -403,7 +457,7 @@ function focusBlock(id) {
 }
 function fullProfile(id) {
   const m = member(id); if (!m) return;
-  showPanel('朋友资料', '', `<div class="profile-head">${avatar(m)}<h3>${escapeHTML(m.name)}</h3><p>AI 朋友 · ${escapeHTML(dateLabel(m.created_at))} 相识</p></div><div class="profile-actions"><button class="primary" data-action="direct" data-id="${m.id}">${icon('message-circle')}单独聊聊</button><button class="secondary" data-action="edit-profile" data-id="${m.id}">${icon('pencil')}编辑</button></div>${focusBlock(id)}${capabilities(m)}<h3 class="section-label">自我介绍与特质</h3><div class="profile-body">${escapeHTML(m.profile)}</div>${domainProfilesView(m.domain_profiles)}<p class="profile-caption">你可以直接编辑、通过情景问答调整，或在聊天中明确要求修改特质。</p><div class="panel-nav"><button data-action="preference" data-id="${m.id}">${icon('circle-help')}用一个情景调整特质${icon('chevron-right')}</button><button data-action="profile-history" data-id="${m.id}">${icon('chevron-right')}看看特质的变化</button></div>`, `profile:${id}`);
+  showPanel('朋友资料', '', `<div class="profile-head">${avatar(m)}<h3>${escapeHTML(m.name)}</h3><p>AI 朋友 · ${escapeHTML(dateLabel(m.created_at))} 相识</p></div><div class="profile-actions"><button class="primary" data-action="direct" data-id="${m.id}">${icon('message-circle')}单独聊聊</button><button class="secondary" data-action="edit-profile" data-id="${m.id}">${icon('pencil')}编辑</button></div>${focusBlock(id)}${capabilities(m)}<h3 class="section-label">自我介绍与特质</h3><div class="profile-body">${escapeHTML(m.profile)}</div>${domainProfilesView(m.domain_profiles, true)}<p class="profile-caption">你可以直接编辑、通过情景问答调整，或在聊天中明确要求修改特质。</p><div class="panel-nav"><button data-action="preference" data-id="${m.id}">${icon('circle-help')}用一个情景调整特质${icon('chevron-right')}</button><button data-action="profile-history" data-id="${m.id}">${icon('chevron-right')}看看特质的变化</button></div>`, `profile:${id}`);
   $('panel-content').dataset.profileSignature = JSON.stringify([m, roomData?.member_states?.find(s => s.member_id === id),state.personal_focus?.[id]]);
 }
 function roomDetails(scroll = true) {
@@ -487,14 +541,37 @@ document.addEventListener('click', async event => {
     if (action === 'profile') profile(id, button);
     if (action === 'edit-profile') editProfile(id);
     if (action === 'add-domain-profile') {
-      const domains = button.form.querySelector('[data-domain-profiles]');
-      domains.insertAdjacentHTML('beforeend', domainProfileFields());
-      domains.lastElementChild.querySelector('input').focus();
+      const form = button.form;
+      syncDomainEditor();
+      const domains = form.querySelector('[data-domain-profiles]');
+      domains.insertAdjacentHTML('beforeend', domainProfileStore());
+      domainEditorIndex = domains.querySelectorAll('[data-domain-profile]').length - 1;
+      domainEditorFresh = true;
+      renderDomainEditor();
+      form.querySelector('[data-domain-draft="domain"]')?.focus();
+    }
+    if (action === 'open-domain-profile') {
+      syncDomainEditor();
+      domainEditorIndex = Number(button.dataset.index);
+      domainEditorFresh = false;
+      renderDomainEditor();
+      button.form.querySelector('[data-domain-draft="domain"]')?.focus();
+    }
+    if (action === 'domain-profiles-back') {
+      const form = button.form;
+      syncDomainEditor();
+      const row = form.querySelectorAll('[data-domain-profile]')[domainEditorIndex];
+      if (row && domainEditorFresh && !row.querySelector('[name=domain]').value.trim() && !row.querySelector('[name=domain_profile]').value.trim()) row.remove();
+      domainEditorIndex = null; domainEditorFresh = false;
+      renderDomainEditor();
+      form.querySelector('[data-action="add-domain-profile"]')?.focus();
     }
     if (action === 'remove-domain-profile') {
       const form = button.form;
-      button.closest('[data-domain-profile]').remove();
-      form.querySelector('[data-action="add-domain-profile"]').focus();
+      form.querySelectorAll('[data-domain-profile]')[domainEditorIndex]?.remove();
+      domainEditorIndex = null; domainEditorFresh = false;
+      renderDomainEditor();
+      form.querySelector('[data-action="add-domain-profile"]')?.focus();
     }
     if (action === 'profile-history') await profileHistory(id);
     if (action === 'restore-profile') await restoreProfile(id, button.dataset.revision);
@@ -536,6 +613,15 @@ document.addEventListener('click', async event => {
   } catch (error) { toast(error.message); button.disabled = false; }
 });
 
+document.addEventListener('input', event => {
+  if (!event.target.matches('[data-domain-draft]')) return;
+  syncDomainEditor();
+  if (event.target.dataset.domainDraft !== 'domain') return;
+  const remove = event.target.form.querySelector('[data-action="remove-domain-profile"]');
+  if (!remove) return;
+  const title = event.target.value.trim();
+  remove.textContent = title ? `移除「${title}」` : '移除这篇';
+});
 document.addEventListener('submit', async event => {
   const form = event.target;
   if (!['member-form','profile-form'].includes(form.id)) return;
@@ -549,10 +635,16 @@ document.addEventListener('submit', async event => {
     } else if (form.id === 'profile-form') {
       const values = {name:data.get('name').trim(),profile:data.get('profile').trim(),color:avatarColor,avatar:avatarData,avatar_icon:avatarIcon};
       const changes = Object.fromEntries(Object.entries(values).filter(([key,value]) => value !== profileBaseline?.[key]));
-      const domains = Array.from(form.querySelectorAll('[data-domain-profile]'), row => ({
-        domain: row.querySelector('[name="domain"]').value.trim(),
-        profile: row.querySelector('[name="domain_profile"]').value.trim(),
-      }));
+      const collected = collectDomainProfiles(form);
+      if (collected.error) {
+        domainEditorIndex = collected.index; domainEditorFresh = false;
+        renderDomainEditor();
+        formError(form, {message: collected.error});
+        form.querySelector('[data-domain-draft="domain"]')?.focus();
+        reset();
+        return;
+      }
+      const domains = collected.domains;
       if (JSON.stringify(domains) !== JSON.stringify(profileBaseline.domain_profiles)) changes.domain_profiles = domains;
       if ('profile' in changes || 'domain_profiles' in changes) changes.profile_revision = profileBaseline.profile_revision;
       if (Object.keys(changes).length) await api(`/api/members/${form.dataset.id}`, {method:'PATCH',body:JSON.stringify(changes)});
