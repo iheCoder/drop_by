@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>痕迹 · 测光</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="stylesheet" href="/meter.css?v=3">
+  <style>
+    .app { height: 100dvh; display: grid; grid-template-rows: 52px minmax(0, 1fr); }
+    .body { display: grid; grid-template-columns: minmax(0, 1fr) 440px; min-height: 0; }
+    #stage { overflow: auto; padding: 18px 22px 28px; min-width: 0; }
+    .matter { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+    .matter h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -0.03em; }
+    .matter p { margin: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .range { margin-top: 12px; font-family: var(--mono); font-size: 12px; color: var(--faint); }
+    .board { margin-top: 8px; min-width: 720px; }
+    .sheet { position: relative; --gutter: 88px; }
+    .ruler { position: relative; height: 28px; margin-left: var(--gutter); }
+    .marks span {
+      position: absolute; top: 0; transform: translateX(-50%);
+      font-family: var(--mono); font-size: 11px; color: var(--faint);
+    }
+    .marks .start { transform: none; }
+    .marks .end { transform: translateX(-100%); }
+    .play {
+      position: absolute; top: 16px; bottom: 0; width: 2px; margin-left: -1px;
+      left: calc(var(--gutter) + (100% - var(--gutter)) * var(--at));
+      background: var(--yellow); z-index: 3; pointer-events: none;
+    }
+    .play::before {
+      content: ""; position: absolute; top: -4px; left: -4px; width: 10px; height: 10px;
+      background: var(--yellow); border-radius: 2px;
+    }
+    #scrub {
+      position: absolute; left: 0; right: 0; top: 12px; width: 100%; height: 14px;
+      appearance: none; background: transparent; margin: 0; z-index: 4;
+    }
+    #scrub::-webkit-slider-runnable-track { height: 1px; background: #111; }
+    #scrub::-webkit-slider-thumb {
+      appearance: none; width: 10px; height: 10px; margin-top: -5px;
+      background: var(--yellow); border-radius: 2px; border: 0;
+    }
+    .lane { display: grid; grid-template-columns: var(--gutter) minmax(0, 1fr); height: 64px; border-top: 1px solid var(--line); }
+    .lane-name { display: flex; align-items: center; font-weight: 650; font-size: 14px; }
+    .track { position: relative; }
+    .bar {
+      position: absolute; top: 20px; height: 24px; border: 0; border-radius: 4px;
+      color: #fff; font-size: 12px; padding: 0 8px; text-align: left; overflow: hidden; z-index: 1;
+    }
+    .bar.ink { background: #111; }
+    .bar.sky { background: var(--sky); }
+    .bar.wait { background: repeating-linear-gradient(-45deg, transparent, transparent 4px, rgb(0 144 212 / 18%) 4px, rgb(0 144 212 / 18%) 5px); color: var(--sky-ink); border: 1px dashed var(--sky); }
+    .bar.quiet { background: #fff; color: #111; border: 1px solid #111; }
+    .bar.open::after {
+      content: ""; position: absolute; right: 8px; top: 8px; width: 8px; height: 8px; background: var(--danger); border-radius: 50%;
+    }
+    .bar.on { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--sky); }
+    .tick {
+      position: absolute; top: 8px; width: 8px; height: 8px; padding: 0; border: 0;
+      background: #111; transform: translate(-4px, 0) rotate(45deg); z-index: 2;
+    }
+    .tick.steer { background: #fff; box-shadow: inset 0 0 0 1.5px #111; }
+    .readout { color: var(--muted); margin: 8px 0 0; }
+    #detail { border-left: 1px solid var(--line); overflow: auto; padding: 18px 18px 32px; background: #fff; }
+    @media (max-width: 1080px) {
+      .body { grid-template-columns: 1fr; }
+      #detail { border-left: 0; border-top: 1px solid var(--line); max-height: 48dvh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <a class="brand" href="/"><span>drop_by</span>测光</a>
+      <nav class="switch" aria-label="原型">
+        <a href="/linear.html">列表</a>
+        <a href="/geist.html">读数</a>
+        <a href="/trace.html" aria-current="page">痕迹</a>
+      </nav>
+      <button type="button" class="find" id="open-find"><span>查找</span><kbd>/</kbd></button>
+    </header>
+    <div class="body">
+      <main id="stage"></main>
+      <aside id="detail"></aside>
+    </div>
+  </div>
+  <script src="/meter.js?v=3"></script>
+  <script src="/trace.js?v=3"></script>
+</body>
+</html>

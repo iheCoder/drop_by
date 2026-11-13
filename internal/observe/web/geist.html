@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>读数 · 测光</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="stylesheet" href="/meter.css?v=3">
+  <style>
+    .app { height: 100dvh; display: grid; grid-template-rows: 52px auto minmax(0, 1fr); }
+    .head { padding: 22px 28px 8px; }
+    .figures { display: flex; gap: 36px; align-items: flex-end; }
+    .figures p { margin: 0; }
+    .figures small { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+    .figures strong {
+      font-size: 36px; font-weight: 560; letter-spacing: -0.045em; line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .figures .bad strong { color: var(--danger); }
+    .spark { display: flex; align-items: flex-end; gap: 3px; height: 48px; margin-top: 18px; }
+    .spark button {
+      flex: 1; padding: 0; border: 0; background: #111; border-radius: 2px 2px 0 0; min-height: 4px;
+    }
+    .spark button.on { background: var(--sky); }
+    .filters { display: flex; gap: 6px; padding: 0 28px 12px; }
+    .filters button {
+      background: #fff; border: 1px solid var(--line-strong); border-radius: 999px;
+      padding: 4px 10px; color: var(--muted);
+    }
+    .filters button[aria-pressed="true"] { background: #111; color: #fff; border-color: #111; }
+    #log { overflow: auto; border-top: 1px solid var(--line); }
+    .rec, .cols {
+      display: grid;
+      grid-template-columns: 78px 52px minmax(160px, 1fr) 160px 104px;
+      gap: 12px; align-items: center;
+      padding: 0 28px;
+    }
+    .cols { height: 32px; color: var(--faint); font-size: 11px; position: sticky; top: 0; background: #fff; }
+    .rec {
+      width: 100%; min-height: 42px; border: 0; border-bottom: 1px solid var(--line);
+      background: #fff; text-align: left; color: inherit;
+    }
+    .rec:hover { background: #fafafa; }
+    .rec[aria-current="true"] { background: var(--sky-soft); }
+    .rec b { font-weight: 600; }
+    .barline { height: 4px; background: #f0f0f0; border-radius: 99px; }
+    .barline i { display: block; height: 4px; background: #111; border-radius: 99px; }
+    .rec.sky .barline i { background: var(--sky); }
+    .extra { padding: 8px 28px 24px 158px; border-bottom: 1px solid var(--line); background: #fff; }
+    .extra .steplist { display: flex; flex-direction: row; flex-wrap: wrap; gap: 6px; }
+    .extra .steplist button { width: auto; grid-template-columns: auto auto; }
+    @media (max-width: 800px) {
+      .figures strong { font-size: 28px; }
+      .extra { padding-left: 28px; }
+      .cols { display: none; }
+      .rec { grid-template-columns: 72px 1fr auto; }
+      .rec .barline, .rec .who { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <a class="brand" href="/"><span>drop_by</span>测光</a>
+      <nav class="switch" aria-label="原型">
+        <a href="/linear.html">列表</a>
+        <a href="/geist.html" aria-current="page">读数</a>
+        <a href="/trace.html">痕迹</a>
+      </nav>
+      <button type="button" class="find" id="open-find"><span>查找</span><kbd>/</kbd></button>
+    </header>
+    <div class="head">
+      <div class="figures">
+        <p><small>已结算</small><strong id="settled"></strong></p>
+        <p class="bad"><small>未回执</small><strong id="hold"></strong></p>
+      </div>
+      <div class="spark" id="spark"></div>
+    </div>
+    <div class="filters" id="filters"></div>
+    <div id="log"></div>
+  </div>
+  <script src="/meter.js?v=3"></script>
+  <script src="/geist.js?v=3"></script>
+</body>
+</html>
