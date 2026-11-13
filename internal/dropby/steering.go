@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -71,7 +72,7 @@ func (e *Engine) completeMemberModel(ctx context.Context, c Conversation, seen *
 // 一个连接处理本次响应及其自动续接。每份响应分别记账，steer.accepted 不是
 // 已消费回执。若服务要求客户端工具，先返回原工具调用；未应用的补充仍在消息库，
 // 下一次携工具结果的完整请求会包含它，绝不把排队状态当作模型已经读到。
-func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price modelPrice, reserve int64, inputEstimate int, input *steeringInput, chain *[]ChatMessage) (modelResult, error) {
+func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price modelPrice, reserve int64, inputEstimate int, input *steeringInput, chain *[]ChatMessage) (out modelResult, err error) {
 	if m.Client.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, m.Client.Timeout)
@@ -82,29 +83,47 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 		client.Transport = serviceTransport
 	}
 	var conn *websocket.Conn
+	var call usageReservation
+	var modelStep, steerStep string
+	modelDone := false
+	heldReserve := reserve
+	var nextReserve int64
+	var transcript []string
+	transcriptFrom := 0
+	defer func() {
+		if !modelDone {
+			finishModelAttempt(ctx, modelStep, out.Message, strings.Join(transcript[transcriptFrom:], "\n"), err, false, 0, heldReserve, call, m.Config.APIKey)
+		}
+	}()
 	// 握手尚未发送 response.create，可安全沿用现有网络重试；生成开始后不自动重放。
-	err := retryRequest(ctx, func() error {
+	var dialPrev string
+	dialAttempt := 0
+	err = retryRequest(ctx, func() error {
+		dialAttempt++
 		var response *http.Response
 		var dialErr error
 		conn, response, dialErr = websocket.Dial(ctx, m.Config.BaseURL+"/responses", &websocket.DialOptions{HTTPClient: &client, HTTPHeader: http.Header{"Authorization": []string{"Bearer " + m.Config.APIKey}}})
-		if dialErr == nil {
-			return nil
+		var fail error
+		if dialErr != nil {
+			if ctx.Err() != nil {
+				fail = ctx.Err()
+			} else {
+				status := 0
+				if response != nil {
+					status = response.StatusCode
+				}
+				fail = &requestFailure{Stage: "建立 Responses WebSocket 失败", Status: status, Temporary: status == 0 || status == 408 || status == 429 || status >= 500}
+			}
 		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		status := 0
-		if response != nil {
-			status = response.StatusCode
-		}
-		return &requestFailure{Stage: "建立 Responses WebSocket 失败", Status: status, Temporary: status == 0 || status == 408 || status == 429 || status >= 500}
+		dialPrev = noteConnection(ctx, dialAttempt, dialPrev, fail, m.Config.APIKey)
+		return fail
 	})
 	if err != nil {
 		return modelResult{}, err
 	}
 	defer conn.CloseNow()
 	conn.SetReadLimit(-1) // 容量由模型请求边界管理，不另设截断工具正文的 WebSocket 大小限制。
-	call, err := m.Store.reserveCall(ctx, m.Config, reserve, "OpenAI", m.Config.Model, "")
+	call, err = m.Store.reserveCall(ctx, m.Config, reserve, "OpenAI", m.Config.Model, "")
 	if err != nil {
 		return modelResult{}, &modelAccountingError{err}
 	}
@@ -121,6 +140,8 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 	if err = wsjson.Write(ctx, conn, request); err != nil {
 		return modelResult{}, err
 	}
+	sentBody, _ := json.Marshal(request)
+	modelStep = beginModelAttempt(ctx, m.Config.Model, string(sentBody), 1, "", "")
 
 	type event struct {
 		Type     string           `json:"type"`
@@ -131,6 +152,7 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 	}
 	type received struct {
 		Event event
+		Raw   string
 		Err   error
 	}
 	incoming := make(chan received, 1)
@@ -139,9 +161,12 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 	go func() {
 		for {
 			var ev event
-			err := wsjson.Read(readCtx, conn, &ev)
+			_, data, err := conn.Read(readCtx)
+			if err == nil {
+				err = json.Unmarshal(data, &ev)
+			}
 			select {
-			case incoming <- received{ev, err}:
+			case incoming <- received{ev, string(data), err}:
 			case <-readCtx.Done():
 				return
 			}
@@ -179,13 +204,20 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 		// 续接包含上一响应及追加原文，预留不能重复使用首次短输入的金额。
 		inputEstimate += m.Config.MaxOutputTokens + len(asJSON(batch))
 		queuedReserve := price.reserveMicros(inputEstimate, m.Config.MaxOutputTokens)
+		nextReserve = queuedReserve
 		queuedCall, err = m.Store.reserveCall(ctx, m.Config, queuedReserve, "OpenAI", m.Config.Model, "")
 		if err != nil {
 			queuedCall = usageReservation{}
 			return nil
 		}
 		queued = batch
-		err = wsjson.Write(ctx, conn, map[string]any{"type": "response.steer", "previous_response_id": responseID, "input": "真人追加的消息：" + asJSON(batch)})
+		steerBody := map[string]any{"type": "response.steer", "previous_response_id": responseID, "input": "真人追加的消息：" + asJSON(batch)}
+		err = wsjson.Write(ctx, conn, steerBody)
+		if err != nil {
+			noteSteering(ctx, asJSON(steerBody), "failed", scrub(err.Error(), m.Config.APIKey))
+		} else {
+			steerStep = noteSteering(ctx, asJSON(steerBody), "started", "")
+		}
 		if err == nil {
 			for _, msg := range batch {
 				sent[msg.ID] = true
@@ -204,6 +236,9 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 				}
 			}
 		case got := <-incoming:
+			if got.Raw != "" {
+				transcript = append(transcript, got.Raw)
+			}
 			if got.Err != nil {
 				return modelResult{}, &requestFailure{Stage: "Responses WebSocket 中断，未读消息保留", Cause: got.Err, Temporary: ctx.Err() == nil}
 			}
@@ -219,8 +254,18 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 						*chain = append(*chain, completed.Message, ChatMessage{Role: "user", Content: "真人追加的消息：" + asJSON(queued)})
 					}
 					applied = append(applied, queued...)
+					accepted := steerStep
+					finishSteering(ctx, accepted, "accepted", "服务器已接下这次追加")
+					steerStep = ""
 					m.Store.finishUsageCall(call)
 					call, queuedCall = queuedCall, usageReservation{}
+					heldReserve = nextReserve
+					modelStep = beginModelAttempt(ctx, m.Config.Model, "真人追加的消息："+asJSON(queued), 1, "", accepted)
+					transcriptFrom = len(transcript) - 1
+					if transcriptFrom < 0 {
+						transcriptFrom = 0
+					}
+					modelDone = false
 					queued = nil
 					completed = nil
 				}
@@ -236,15 +281,20 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 					return modelResult{}, err
 				}
 				result.Message.OutputTokens = result.Usage.OutputTokens
+				settled := false
+				var actual int64
 				if result.Usage.InputTokens+result.Usage.OutputTokens > 0 {
-					actual, err := m.responseCost(result.Usage, price)
+					actual, err = m.responseCost(result.Usage, price)
 					if err != nil {
 						return modelResult{}, err
 					}
 					if err = m.Store.settleCall(call, actual, result.Usage, result.usageOutcome(ctx)); err != nil {
 						return modelResult{}, &modelAccountingError{err}
 					}
+					settled = true
 				}
+				finishModelAttempt(ctx, modelStep, result.Message, strings.Join(transcript[transcriptFrom:], "\n"), nil, settled, actual, heldReserve, call, m.Config.APIKey)
+				modelDone = true
 				completed = &result
 				if input.Applied == nil {
 					input.Applied = map[string]bool{}
@@ -264,9 +314,11 @@ func (m *HTTPModel) steeredResponse(ctx context.Context, raw []byte, price model
 					return result, nil
 				}
 				if result.Incomplete && ev.Response.IncompleteDetails.Reason != "steered" {
+					finishModelAttempt(ctx, modelStep, result.Message, strings.Join(transcript[transcriptFrom:], "\n"), fmt.Errorf("模型本次未完成输出"), settled, actual, heldReserve, call, m.Config.APIKey)
 					return result, fmt.Errorf("模型本次未完成输出")
 				}
 			case "response.steer.failed":
+				finishSteering(ctx, steerStep, "failed", "服务器没有接受这次追加")
 				if queuedCall.id != 0 {
 					if err = m.Store.settleCall(queuedCall, 0, responseUsage{}, "released"); err != nil {
 						return modelResult{}, err

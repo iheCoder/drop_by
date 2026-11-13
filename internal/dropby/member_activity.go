@@ -30,6 +30,17 @@ func (e *Engine) converse(ctx context.Context, c Conversation, w Work) error {
 	}
 	completed := make(chan result, len(c.MemberIDs))
 	busy, failed, started := map[string]bool{}, map[string]int64{}, map[string]bool{}
+	decided := false
+	defer func() {
+		if !decided {
+			return
+		}
+		for _, id := range c.MemberIDs {
+			if !started[id] {
+				noteNotCalled(ctx, id)
+			}
+		}
+	}()
 	seen := map[string]int64{}
 	for _, id := range c.MemberIDs {
 		last, _, err := e.Store.observation(c.ID, id)
@@ -118,6 +129,7 @@ func (e *Engine) converse(ctx context.Context, c Conversation, w Work) error {
 			start(id)
 		}
 	}
+	decided = true
 	failures := map[string]error{}
 	for len(busy) > 0 {
 		select {
@@ -174,6 +186,7 @@ func (e *Engine) memberAction(ctx context.Context, c Conversation, m Member, w W
 		return 0, err
 	}
 	defer unlock()
+	ctx = branchObservation(ctx)
 	// 发布和回执已提交、调度终态还没写入时可能发生重启。没有未完现场就不用重演个人活动。
 	if c.ID == "" && w.Kind != "research" {
 		var completed int
@@ -196,7 +209,9 @@ func (e *Engine) memberAction(ctx context.Context, c Conversation, m Member, w W
 	}
 	if err != nil {
 		if !errors.Is(err, errActionYield) {
-			_ = e.recordMemberAction(w, m.ID, "error", err.Error())
+			if recErr := e.recordMemberAction(w, m.ID, "error", err.Error()); recErr == nil {
+				noteParticipation(ctx, m.ID, "error", err.Error())
+			}
 		}
 		return out.seen, err
 	}
@@ -219,6 +234,7 @@ func (e *Engine) memberAction(ctx context.Context, c Conversation, m Member, w W
 		msg = &Message{ID: cp.ID, ConversationID: target.ID, AuthorID: m.ID, Body: out.Message, ReplyTo: out.ReplyTo, Evidence: out.Evidence, Notify: out.Notify, CreatedAt: now()}
 	}
 	// 消息、已完成回执、断点删除在同一事务中：恢复不会重复发言或重新执行已完成行动。
+	recordedAction := ""
 	err = e.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -251,6 +267,7 @@ func (e *Engine) memberAction(ctx context.Context, c Conversation, m Member, w W
 		if usedTools > 0 {
 			action = "act"
 		}
+		recordedAction = action
 		if _, err := tx.Exec(`INSERT INTO participation VALUES(?,?,?,?,?,?)`, w.ID, m.ID, action, clip(out.Outcome, 500), true, now()); err != nil {
 			return err
 		}
@@ -291,8 +308,10 @@ func (e *Engine) memberAction(ctx context.Context, c Conversation, m Member, w W
 		return out.seen, err
 	}
 	if msg != nil {
+		noteSentMessage(ctx, m.ID, c.ID, target.ID, msg.ID, false)
 		e.Hub.Publish(target.ID)
 	}
+	noteParticipation(ctx, m.ID, recordedAction, out.Outcome)
 	if out.Unfinished && w.Kind != "research" && w.Kind != "share" {
 		_, err = e.Tools.Schedule(ctx, c, m, w, out.Outcome, "", time.Now())
 	}

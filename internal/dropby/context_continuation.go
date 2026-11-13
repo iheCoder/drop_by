@@ -32,8 +32,15 @@ func (m *HTTPModel) countResponseInput(ctx context.Context, raw []byte) (int, er
 	var out struct {
 		InputTokens int `json:"input_tokens"`
 	}
+	var previous string
+	attempt := 0
 	if err := retryRequest(ctx, func() error {
-		return requestJSON(ctx, m.Client, m.Config.BaseURL+"/responses/input_tokens", m.Config.APIKey, encoded, &out)
+		attempt++
+		box := &rawBox{}
+		callCtx := context.WithValue(ctx, rawResponseKey{}, box)
+		err := requestJSON(callCtx, m.Client, m.Config.BaseURL+"/responses/input_tokens", m.Config.APIKey, encoded, &out)
+		previous = noteInputCount(ctx, attempt, previous, string(encoded), box.text, err)
+		return err
 	}); err != nil {
 		return 0, err
 	}
@@ -272,7 +279,7 @@ func retainActionSource(history, live []ChatMessage) ([]ChatMessage, []ChatMessa
 
 // 原生压缩只接收历史，使用供应商默认的推理续接。应用拥有的最新现场留在
 // 外面，原生返回项按原顺序整体回传，包括供应商保留的用户消息。
-func (m *HTTPModel) compactHistory(ctx context.Context, history []ChatMessage, count int) (ChatMessage, error) {
+func (m *HTTPModel) compactHistory(ctx context.Context, history []ChatMessage, count int) (msg ChatMessage, err error) {
 	encoded, err := m.responseBody(history, nil, false)
 	if err != nil {
 		return ChatMessage{}, err
@@ -293,29 +300,42 @@ func (m *HTTPModel) compactHistory(ctx context.Context, history []ChatMessage, c
 		count = min(count, upper)
 	}
 	reserve := price.reserveMicros(count, m.Config.MaxOutputTokens)
-	call, err := m.Store.reserveCall(ctx, m.Config, reserve, "OpenAI", m.Config.Model, "compact")
-	if err != nil {
-		return ChatMessage{}, &modelAccountingError{err}
-	}
-	defer m.Store.finishUsageCall(call)
+	stepID := beginCompact(ctx, string(compactBody))
+	var call usageReservation
+	settled := false
+	var actual int64
 	var compacted struct {
 		Output []json.RawMessage `json:"output"`
 		Usage  responseUsage     `json:"usage"`
 	}
-	if err = requestJSON(ctx, m.Client, m.Config.BaseURL+"/responses/compact", m.Config.APIKey, compactBody, &compacted); err != nil {
+	compactRaw := &rawBox{}
+	defer func() {
+		output := compactRaw.text
+		if output == "" && err == nil {
+			output = string(asJSON(compacted.Output))
+		}
+		finishCompact(ctx, stepID, output, err, settled, actual, reserve, call, m.Config.APIKey)
+	}()
+	call, err = m.Store.reserveCall(ctx, m.Config, reserve, "OpenAI", m.Config.Model, "compact")
+	if err != nil {
+		return ChatMessage{}, &modelAccountingError{err}
+	}
+	defer m.Store.finishUsageCall(call)
+	if err = requestJSON(context.WithValue(ctx, rawResponseKey{}, compactRaw), m.Client, m.Config.BaseURL+"/responses/compact", m.Config.APIKey, compactBody, &compacted); err != nil {
 		if releaseErr := m.releaseUnsent(call, err); releaseErr != nil {
 			return ChatMessage{}, releaseErr
 		}
 		return ChatMessage{}, fmt.Errorf("上下文压缩尚未完成：%w", err)
 	}
 	if compacted.Usage.InputTokens+compacted.Usage.OutputTokens > 0 {
-		actual, costErr := compacted.Usage.costMicros(price)
-		if costErr != nil {
-			return ChatMessage{}, costErr
+		actual, err = compacted.Usage.costMicros(price)
+		if err != nil {
+			return ChatMessage{}, err
 		}
 		if err = m.Store.settleCall(call, actual, compacted.Usage, ""); err != nil {
 			return ChatMessage{}, &modelAccountingError{err}
 		}
+		settled = true
 	}
 	for _, item := range compacted.Output {
 		var value struct {

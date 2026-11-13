@@ -186,10 +186,12 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	if readErr == nil {
 		if oldStatus == "running" {
 			if !readOnlyTool(call.Function.Name) && call.Function.Name != "send_message" && call.Function.Name != reactionTool && call.Function.Name != "ask_question" {
+				noteBlockedTool(ctx, call.Function.Name, call.Function.Arguments, "结果不明，没有重放")
 				return "", errUncertainTool
 			}
 			resuming = true
 		} else {
+			noteReusedTool(ctx, runID, call.Function.Name, call.Function.Arguments, oldResult)
 			return asJSON(map[string]any{"tool_run_id": runID, "status": oldStatus, "result": json.RawMessage(oldResult)}), nil
 		}
 	}
@@ -206,11 +208,13 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 		labels := map[string]string{"organize_context": "正在整理思路", "search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_message": "正在发送消息", "read_conversation": "正在看聊天近况", "send_private": "正在准备私聊", "read_history": "正在翻阅聊天记录", "read_artifact": "正在查看成果", "read_tool_result": "正在核对已有材料", "read_memory": "正在回顾经历", "search_memory": "正在找回相关经历", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
 		t.Activity(c.ID, m.ID, labels[call.Function.Name])
 	}
+	toolStep := beginTool(ctx, run.ID, call.Function.Name, call.Function.Arguments, resuming)
 	var result any
 	var err error
 	if call.Function.Name == reactionTool {
 		result, err = t.reactToMessage(ctx, c, m, call, run.ID)
 		if err == nil {
+			finishTool(ctx, toolStep, "succeeded", asJSON(result))
 			return asJSON(map[string]any{"tool_run_id": run.ID, "status": "succeeded", "result": result}), nil
 		}
 	} else {
@@ -238,8 +242,10 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	// 完整工具返回值留在本地；旧上下文可以折叠，原始结果始终可回读。
 	raw := asJSON(result)
 	if _, saveErr := t.Store.db.Exec(`UPDATE tool_runs SET result=?,status=? WHERE id=?`, raw, status, run.ID); saveErr != nil {
+		finishTool(ctx, toolStep, "failed", saveErr.Error())
 		return "", saveErr
 	}
+	finishTool(ctx, toolStep, status, raw)
 	if call.Function.Name != reactionTool {
 		t.Hub.Publish(c.ID)
 	}
@@ -528,6 +534,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		})
 		if err == nil {
 			t.Hub.Publish(direct.ID)
+			noteSentMessage(ctx, m.ID, c.ID, direct.ID, message.ID, false)
 		}
 		return map[string]string{"conversation_id": direct.ID, "message_id": message.ID, "message": message.Body}, err
 	}
@@ -555,17 +562,30 @@ func (t *Toolbox) webRequest(ctx context.Context, path string, body, out any) er
 	if t.Config.SearchKey == "" {
 		return fmt.Errorf("尚未配置搜索服务，不能执行真实网页探索")
 	}
-	return retryRequest(ctx, func() error {
+	var previous string
+	attempt := 0
+	return retryRequest(ctx, func() (err error) {
+		attempt++
 		purpose, model := "read_page", "DeepSeek Fetch"
 		if path == "search" {
 			purpose, model = "search", "DeepSeek Search"
 		}
-		call, err := t.Store.reserveCall(ctx, t.Config, t.Config.ToolCostMicros, "DeepSeek", model, purpose)
+		var call usageReservation
+		settled, released := false, false
+		var cost int64
+		var response map[string]any
+		defer func() {
+			output := ""
+			if response != nil {
+				output = asJSON(response)
+			}
+			previous = noteWebTry(ctx, purpose, attempt, previous, asJSON(body), output, err, settled, released, cost, t.Config.ToolCostMicros, call, t.Config.SearchKey)
+		}()
+		call, err = t.Store.reserveCall(ctx, t.Config, t.Config.ToolCostMicros, "DeepSeek", model, purpose)
 		if err != nil {
 			return err
 		}
 		defer t.Store.finishUsageCall(call)
-		var response map[string]any
 		err = requestJSON(ctx, &http.Client{Timeout: 45 * time.Second}, t.Config.SearchURL+"/"+path, t.Config.SearchKey, []byte(asJSON(body)), &response)
 		if err != nil {
 			var failure *requestFailure
@@ -574,6 +594,7 @@ func (t *Toolbox) webRequest(ctx context.Context, path string, body, out any) er
 				if settleErr := t.Store.settleCall(call, 0, responseUsage{}, "released"); settleErr != nil {
 					return settleErr
 				}
+				released = true
 			}
 			return err
 		}
@@ -602,15 +623,17 @@ func (t *Toolbox) webRequest(ctx context.Context, path string, body, out any) er
 				return fmt.Errorf("网页响应缺少正文，计费结果未知")
 			}
 			if strings.TrimSpace(content) == "" {
-				if err := t.Store.settleCall(call, 0, responseUsage{}, "empty"); err != nil {
+				if err = t.Store.settleCall(call, 0, responseUsage{}, "empty"); err != nil {
 					return err
 				}
+				settled, cost = true, 0
 				return fmt.Errorf("网页没有返回可用正文")
 			}
 		}
-		if err := t.Store.settleCall(call, cost, responseUsage{}, outcome); err != nil {
+		if err = t.Store.settleCall(call, cost, responseUsage{}, outcome); err != nil {
 			return err
 		}
+		settled = true
 		data, _ := json.Marshal(response)
 		return json.Unmarshal(data, out)
 	})

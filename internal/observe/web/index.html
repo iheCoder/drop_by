@@ -3,32 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>选择原型 · 测光</title>
+  <title>测光</title>
   <link rel="icon" href="/favicon.svg">
-  <link rel="stylesheet" href="/studio.css?v=9">
+  <link rel="stylesheet" href="/live.css">
 </head>
-<body class="chooser">
+<body>
   <header class="top">
-    <a class="brand" href="/"><small>drop_by</small>测光</a>
+    <a class="brand" href="/">测光</a>
+    <p>实际记录。<a href="/demo.html">样例</a>仍是 11 月 11 日那一版。</p>
   </header>
   <main>
-    <h1>同一条痕迹，三套外观</h1>
-    <p class="lead">交互还是时间轴铺满、点一段就换旁边。这一轮只换层次、颜色和展开方式。样例停在 11 月 11 日 21:28。</p>
-    <div class="choices">
-      <a class="choice" href="/spectrum.html">
-        <span class="swatch spectrum" aria-hidden="true"><i></i><i></i><i></i></span>
-        <span><b>色谱</b><p>左边是角色、群聊和私聊。点进去都从最新一条往上翻，调用、费用和上下文在右边。</p></span>
-      </a>
-      <a class="choice" href="/night.html">
-        <span class="swatch night" aria-hidden="true"><i></i><i></i><i></i></span>
-        <span><b>夜航</b><p>深色分层，色块自己发光。时刻放在左边的玻璃条里。正文在前，用量收在卡片里。</p></span>
-      </a>
-      <a class="choice" href="/strata.html">
-        <span class="swatch strata" aria-hidden="true"><i></i><i></i><i></i></span>
-        <span><b>层叠</b><p>每一行是一块玻璃胶囊，右边的说明也是分开的卡片。点开原文，卡片才展开。</p></span>
-      </a>
+    <p id="gaps" class="gaps" hidden></p>
+    <div class="layout">
+      <section>
+        <h1>行动</h1>
+        <div id="runs"></div>
+      </section>
+      <section>
+        <h1>步骤</h1>
+        <div id="steps" class="muted">选一次行动。</div>
+        <article id="snap" hidden></article>
+      </section>
     </div>
-    <p class="foot">选定之前，原来的 /observe 先留着。</p>
   </main>
+  <script src="/live.js"></script>
 </body>
 </html>

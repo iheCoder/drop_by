@@ -3,6 +3,7 @@ package observe
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -31,6 +32,9 @@ func ListenAddress() (string, error) {
 func NewHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
+	mux.HandleFunc("GET /api/runs", listRuns)
+	mux.HandleFunc("GET /api/runs/{id}", listSteps)
+	mux.HandleFunc("GET /api/steps/{id}", readSnapshot)
 	mux.HandleFunc("GET /observe", serveObserve)
 	mux.HandleFunc("GET /observe/", serveObserve)
 	root, err := fs.Sub(webFiles, "web")
@@ -45,6 +49,70 @@ func health(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "source": "sample"})
+}
+
+func listRuns(w http.ResponseWriter, r *http.Request) {
+	db, err := OpenRead(DBPath())
+	if errors.Is(err, os.ErrNotExist) {
+		writeJSON(w, http.StatusOK, map[string]any{"runs": []RunView{}, "gaps": []Gap{}, "source": "none"})
+		return
+	}
+	if err != nil {
+		http.Error(w, "观测记录暂时读不出来", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+	runs, gaps, err := ListRuns(db, 40)
+	if err != nil {
+		http.Error(w, "观测记录暂时读不出来", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": runs, "gaps": gaps, "source": "observe"})
+}
+
+func listSteps(w http.ResponseWriter, r *http.Request) {
+	db, err := OpenRead(DBPath())
+	if errors.Is(err, os.ErrNotExist) {
+		writeJSON(w, http.StatusOK, map[string]any{"steps": []StepView{}})
+		return
+	}
+	if err != nil {
+		http.Error(w, "观测记录暂时读不出来", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+	steps, err := ListSteps(db, r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "观测记录暂时读不出来", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"steps": steps})
+}
+
+func readSnapshot(w http.ResponseWriter, r *http.Request) {
+	db, err := OpenRead(DBPath())
+	if err != nil {
+		http.Error(w, "没有这份快照", http.StatusNotFound)
+		return
+	}
+	defer db.Close()
+	input, output, err := Snapshot(db, r.PathValue("id"))
+	if errors.Is(err, os.ErrNotExist) {
+		http.Error(w, "没有这份快照", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, "观测记录暂时读不出来", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"input": input, "output": output})
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(value)
 }
 
 func serveObserve(w http.ResponseWriter, r *http.Request) {

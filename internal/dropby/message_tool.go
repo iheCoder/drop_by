@@ -35,6 +35,7 @@ func (t *Toolbox) sendMessage(ctx context.Context, c Conversation, m Member, w W
 	var priorRoom, priorBody string
 	err = t.Store.db.QueryRow(`SELECT conversation_id,body FROM messages WHERE id=?`, id).Scan(&priorRoom, &priorBody)
 	if err == nil {
+		noteSentMessage(ctx, m.ID, c.ID, priorRoom, id, true)
 		return map[string]string{"message_id": id, "conversation_id": priorRoom, "message": priorBody}, nil
 	}
 	if err != sql.ErrNoRows {
@@ -55,6 +56,7 @@ func (t *Toolbox) sendMessage(ctx context.Context, c Conversation, m Member, w W
 	if err != nil {
 		return nil, err
 	}
+	noteSentMessage(ctx, m.ID, c.ID, destination.ID, id, false)
 
 	t.Hub.Publish(destination.ID)
 	return map[string]string{"message_id": id, "conversation_id": destination.ID, "message": body}, nil

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"drop_by/internal/observe"
 )
 
 type Engine struct {
@@ -19,6 +21,7 @@ type Engine struct {
 	Config      Config
 	Tools       *Toolbox
 	Hub         *Hub
+	Observe     *observe.Log
 	mu          sync.Mutex
 	running     map[string]context.CancelFunc
 	activities  map[string]Activity
@@ -129,8 +132,32 @@ func (e *Engine) dispatch(ctx context.Context) {
 		go func(w Work) {
 			defer e.wg.Done()
 			defer cancel()
-			err := e.process(workCtx, w)
-			status, result, due := "done", "", time.Now()
+			trigger := "message"
+			switch {
+			case w.Attempts > 0:
+				trigger = "reclaim"
+			case w.ParentID != "":
+				trigger = "delegate"
+			case w.Kind == "explore" || w.Kind == "revisit":
+				trigger = "explore"
+			}
+			runID := ""
+			if e.Observe != nil {
+				runID = e.Observe.BeginRun(observe.Run{
+					WorkID: w.ID, ParentWorkID: w.ParentID, MemberID: w.MemberID, ConversationID: w.ConversationID,
+					Kind: w.Kind, SourceID: w.SourceID, RootID: w.RootID, Execution: w.Attempts + 1, Trigger: trigger,
+				})
+			}
+			runCtx := observe.WithTrace(workCtx, e.Observe, runID)
+			status, result := "running", ""
+			defer func() {
+				if tr := observe.Current(runCtx); tr != nil {
+					tr.End(status, result)
+				}
+			}()
+			err := e.process(runCtx, w)
+			var due time.Time
+			status, result, due = "done", "", time.Now()
 			if err != nil {
 				result = err.Error()
 				// 复用已有工作结果携带本次重试的原因。即使后来等待预算或服务
@@ -558,6 +585,7 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 	if err != nil {
 		return Outcome{}, err
 	}
+	noteActor(ctx, m.ID, c.ID)
 	e.setActivity(c.ID, m.ID, observationLabel(c, w))
 	defer e.setActivity(c.ID, m.ID, "")
 	// 研究使用更充分的推理；工具能力不按首轮/后续轮限制。

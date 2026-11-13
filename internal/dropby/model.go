@@ -204,6 +204,7 @@ type modelResult struct {
 	Usage           responseUsage
 	Incomplete      bool
 	CacheDiagnostic *cacheDiagnostic
+	Raw             string // 供应商原文，只给观测，不进入成员上下文。
 }
 
 // 只描述供应商响应的形态。生成正文并不等同于发布，非成员调用也不猜测内部决策。
@@ -266,6 +267,7 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	if m.Config.APIKey == "" {
 		return ChatMessage{}, ErrUnavailable
 	}
+	beginCall(ctx)
 	// 在模型边界统一检查完整请求，参与判断与行动共用此处。
 	// 不先截短工具正文；保守估算超出时使用实际计数与原生压缩。
 	encoded, inputEstimate, e := boundedRequest(messages, m.Config.ContextTokenBudget, m.Config.MaxOutputTokens, func(input []ChatMessage) ([]byte, error) {
@@ -307,8 +309,20 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	if steering != nil && m.Config.MidTurnSteering {
 		response, e = m.steeredResponse(ctx, encoded, price, reserve, inputEstimate, steering, chain)
 	} else {
-		e = retryRequest(ctx, func() error {
-			call, err := m.Store.reserveCall(ctx, m.Config, reserve, "OpenAI", m.Config.Model, "")
+		var previous string
+		attempt := 0
+		e = retryRequest(ctx, func() (err error) {
+			attempt++
+			response = modelResult{}
+			var call usageReservation
+			settled := false
+			var actual int64
+			stepID := beginModelAttempt(ctx, m.Config.Model, string(encoded), attempt, previous, "")
+			previous = stepID
+			defer func() {
+				finishModelAttempt(ctx, stepID, response.Message, response.Raw, err, settled, actual, reserve, call, m.Config.APIKey)
+			}()
+			call, err = m.Store.reserveCall(ctx, m.Config, reserve, "OpenAI", m.Config.Model, "")
 			if err != nil {
 				return &modelAccountingError{err}
 			}
@@ -321,13 +335,14 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 				return err
 			}
 			if response.Usage.InputTokens+response.Usage.OutputTokens > 0 {
-				actual, err := m.responseCost(response.Usage, price)
+				actual, err = m.responseCost(response.Usage, price)
 				if err != nil {
 					return err
 				}
 				if err = m.Store.settleCall(call, actual, response.Usage, response.usageOutcome(ctx)); err != nil {
 					return &modelAccountingError{err}
 				}
+				settled = true
 			}
 			return nil
 		})
@@ -397,7 +412,9 @@ func requestJSON(ctx context.Context, client *http.Client, endpoint, key string,
 				Message string `json:"message"`
 			} `json:"error"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&detail)
+		rawBody, _ := io.ReadAll(r.Body)
+		rememberRaw(ctx, rawBody)
+		_ = json.NewDecoder(bytes.NewReader(rawBody)).Decode(&detail)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -405,6 +422,7 @@ func requestJSON(ctx context.Context, client *http.Client, endpoint, key string,
 		return &requestFailure{Detail: message, Stage: "服务请求失败", Status: r.StatusCode, RetryAfter: wait, Temporary: r.StatusCode == 429 || r.StatusCode == 408 || r.StatusCode >= 500}
 	}
 	b, e := io.ReadAll(r.Body)
+	rememberRaw(ctx, b)
 	if e != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -560,10 +578,26 @@ func markResponseCache(raw any, ttl string) {
 func (m *HTTPModel) responses(ctx context.Context, raw []byte) (modelResult, error) {
 	var err error
 	var out responseEnvelope
+	box := &rawBox{}
+	ctx = context.WithValue(ctx, rawResponseKey{}, box)
 	if err = requestJSON(ctx, m.Client, m.Config.BaseURL+"/responses", m.Config.APIKey, raw, &out); err != nil {
-		return modelResult{}, err
+		return modelResult{Raw: box.text}, err
 	}
-	return decodeResponse(out)
+	result, err := decodeResponse(out)
+	result.Raw = box.text
+	return result, err
+}
+
+type rawResponseKey struct{}
+
+type rawBox struct{ text string }
+
+func rememberRaw(ctx context.Context, body []byte) {
+	box, _ := ctx.Value(rawResponseKey{}).(*rawBox)
+	if box == nil || len(body) == 0 {
+		return
+	}
+	box.text = string(body)
 }
 
 type responseEnvelope struct {

@@ -1,0 +1,15 @@
+:root { color: #141821; background: #e7ebf0; font: 15px/1.5 "SF Pro Text", "PingFang SC", sans-serif; }
+body { margin: 0; }
+.top { display: flex; gap: 16px; align-items: baseline; padding: 16px 20px; background: #fff; }
+.brand { color: inherit; font-weight: 650; text-decoration: none; }
+.top p, .muted { color: #5c6570; }
+.layout { display: grid; grid-template-columns: 320px 1fr; gap: 12px; padding: 12px; }
+section { background: #fff; border-radius: 12px; padding: 12px; min-height: 70vh; }
+h1 { margin: 0 0 8px; font-size: 16px; }
+button { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 8px; border-radius: 8px; font: inherit; color: inherit; }
+button.on { background: #e7eefc; }
+b { display: block; }
+small { color: #5c6570; }
+.gaps { margin: 12px 12px 0; padding: 8px 12px; background: #fff; border-radius: 8px; color: #9f1239; }
+pre { white-space: pre-wrap; word-break: break-word; background: #f6f7f9; padding: 10px; border-radius: 8px; }
+@media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }

@@ -33,13 +33,13 @@ nohup ./bin/dropby >data/server.log 2>&1 &
 
 服务必须保持运行，电脑也必须处于可运行状态；关机、休眠时无法执行网络探索。重新启动会恢复中断的工作。停止服务用正常的 `SIGTERM` 或终端 `Ctrl+C`，程序会取消生成并保留未完工作。同一数据目录只允许一个服务进程。
 
-测光是另一个进程，不打开聊天数据库，也不进入成员上下文。当前页面仍是样例，还没有接入正式记录。公开名称是 <https://www.dropby.ob.ai/>，和聊天的 <https://www.dropby.ai/> 分开。进程仍只监听本机回环，并接受这个域名的 Host。
+测光是另一个进程，不打开聊天数据库，也不进入成员上下文。主页读数据目录里的 `observe.sqlite`；测光用 `OBSERVE_DB` 指向这个文件，默认是 `data/observe.sqlite`。样例在 <http://127.0.0.1:8097/demo.html>。公开名称是 <https://www.dropby.ob.ai/>，和聊天的 <https://www.dropby.ai/> 分开。进程仍只监听本机回环，并接受这个域名的 Host。
 
 ```sh
 go run ./cmd/observe
 ```
 
-本机直接打开 <http://127.0.0.1:8097/spectrum.html>。监听地址用 `OBSERVE_ADDR`，默认 `127.0.0.1:8097`。
+本机直接打开 <http://127.0.0.1:8097/>。监听地址用 `OBSERVE_ADDR`，默认 `127.0.0.1:8097`。
 
 代理按请求协议优先使用显式配置的 `HTTP_PROXY` / `HTTPS_PROXY`（也支持小写），并尊重 `NO_PROXY`。没有配置时，macOS 按需读取当前系统的 HTTP、HTTPS 或 SOCKS 代理及例外列表；系统端口变化无需重启。其他系统未配置时直连。显式代理连接失败不会擅自换地址。
 
@@ -102,8 +102,8 @@ go run ./cmd/observe
 | 文件 | 责任 |
 | --- | --- |
 | `cmd/dropby/main.go` | 聊天服务启动、后台进程和退出 |
-| `cmd/observe/main.go` | 测光自己的服务；不读取聊天数据 |
-| `internal/observe/` | 测光的 HTTP 与嵌入前端 |
+| `cmd/observe/main.go` | 测光自己的服务；只读观测库 |
+| `internal/observe/` | 观测库、测光的 HTTP 与嵌入前端 |
 | `internal/dropby/store.go` | SQLite 事务、原始记录、工作恢复、数据目录锁 |
 | `internal/dropby/engine.go` | 用户插话、成员参与、讨论与研究分离、故障续接 |
 | `internal/dropby/participation.go` | 阅读位置和聊天内当前关注 |

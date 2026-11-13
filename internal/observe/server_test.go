@@ -15,6 +15,14 @@ func TestObservatoryServesItself(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8097"+path, nil))
 		return rec
 	}
+	home := get("/")
+	if home.Code != http.StatusOK || !strings.Contains(home.Body.String(), "实际记录") || strings.Contains(home.Body.String(), "studio.js") {
+		t.Fatalf("主页应是实际记录 %d", home.Code)
+	}
+	demo := get("/demo.html")
+	if demo.Code != http.StatusOK || !strings.Contains(demo.Body.String(), "测光") || !strings.Contains(demo.Body.String(), "/studio.js") {
+		t.Fatalf("样例页 %d", demo.Code)
+	}
 	page := get("/spectrum.html")
 	if page.Code != http.StatusOK {
 		t.Fatalf("色谱页面状态 %d", page.Code)
