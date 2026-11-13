@@ -92,6 +92,9 @@ func TestCoordinatorChangeDuringControlKeepsUnprocessedPreference(t *testing.T) 
 	var calls atomic.Int32
 	cfg := testConfig()
 	e := NewEngine(s, modelFunc(func(_ context.Context, messages []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if reply, ok := replyIfWakeAdjust(messages); ok {
+			return reply, nil
+		}
 		var input struct {
 			Self Member `json:"self"`
 		}
@@ -155,6 +158,9 @@ func TestProfileEditBeforeBudgetFailureKeepsLaterPreference(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	e := NewEngine(s, modelFunc(func(_ context.Context, messages []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if reply, ok := replyIfWakeAdjust(messages); ok {
+			return reply, nil
+		}
 		if calls.Load() < 2 {
 			if calls.Add(1) == 1 {
 				close(started)

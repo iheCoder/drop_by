@@ -71,18 +71,20 @@ UPDATE work SET autonomous=1 WHERE source_id='' AND kind!='chat';`)
 	return err
 }
 
-// 每个成员只有一份个人时钟。没有发言不代表失去兴趣，不能把沉默累计
-// 成六小时退避；具体预约与正在运行的行动仍按自己的时间继续。
-func (s *Store) ScheduleExploration(interval time.Duration) error {
+// 每个成员只有一份自主唤醒。到期只启动一次；下一次按本人节律随机计算。
+// 停机期间错过的次数不会排成一串补跑。恢复时若正处于不唤醒时段，这次过期机会也不执行，从现在重新安排。
+// 正在运行或等待重试的同一次活动不会被另开一份。具体约定的后续不在这里处理。
+func (s *Store) ScheduleExploration() error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	rows, err := tx.Query(`SELECT a.member_id FROM personal_activity a WHERE a.next_at<=?
+	nowMS := time.Now().UnixMilli()
+	rows, err := tx.Query(`SELECT a.member_id FROM personal_activity a WHERE a.next_at>=0 AND a.next_at<=?
  AND EXISTS(SELECT 1 FROM participants p JOIN conversations c ON c.id=p.conversation_id WHERE p.member_id=a.member_id AND c.research_paused=0)
  AND NOT EXISTS(SELECT 1 FROM work w WHERE w.member_id=a.member_id AND w.conversation_id IS NULL AND
- (w.status IN ('running','waiting_budget') OR (w.status='pending' AND (w.due_at<=? OR (w.kind='explore' AND w.attempts>0)))))`, time.Now().UnixMilli(), time.Now().UnixMilli())
+ (w.status IN ('running','waiting_budget') OR (w.status='pending' AND (w.due_at<=? OR (w.kind='explore' AND w.attempts>0)))))`, nowMS, nowMS)
 	if err != nil {
 		return err
 	}
@@ -100,12 +102,23 @@ func (s *Store) ScheduleExploration(interval time.Duration) error {
 	if err != nil {
 		return err
 	}
+	at := time.Now()
 	for _, id := range members {
-		w := Work{ID: newID("work"), MemberID: id, Kind: "explore", Autonomous: true, Instruction: "这是你自己的活动时间。", Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
+		rhythm, err := loadWakeTx(tx, id)
+		if err != nil {
+			return err
+		}
+		if !wakeOpen(rhythm, at) {
+			if err = placeNextWake(tx, id, at); err != nil {
+				return err
+			}
+			continue
+		}
+		w := Work{ID: newID("work"), MemberID: id, Kind: "explore", Autonomous: true, Instruction: "这是你自己的活动时间。", Status: "pending", DueAt: at.UnixMilli(), CreatedAt: now()}
 		if err = insertWork(tx, w); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(`UPDATE personal_activity SET next_at=? WHERE member_id=?`, time.Now().Add(interval).UnixMilli(), id); err != nil {
+		if err = placeNextWake(tx, id, at); err != nil {
 			return err
 		}
 	}

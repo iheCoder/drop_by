@@ -30,7 +30,7 @@ func TestPersonalExplorationSharingAndRecovery(t *testing.T) {
 	defer service.Close()
 	cfg := testConfig()
 	cfg.SearchURL = service.URL
-	if err := s.ScheduleExploration(time.Hour); err != nil {
+	if err := s.ScheduleExploration(); err != nil {
 		t.Fatal(err)
 	}
 	jobs, _ := s.personalWorks([]string{m.ID})

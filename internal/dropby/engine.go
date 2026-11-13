@@ -31,7 +31,7 @@ type Engine struct {
 
 func NewEngine(s *Store, m Model, c Config) *Engine {
 	e := &Engine{Store: s, Model: m, Config: c, Hub: NewHub(), running: map[string]context.CancelFunc{}, activities: map[string]Activity{}}
-	e.Tools = &Toolbox{Store: s, Config: c, Hub: e.Hub, Activity: e.setActivity}
+	e.Tools = &Toolbox{Store: s, Model: m, Config: c, Hub: e.Hub, Activity: e.setActivity}
 	return e
 }
 
@@ -58,7 +58,7 @@ func (e *Engine) Run(ctx context.Context) {
 	defer tick.Stop()
 	for {
 		if e.Config.APIKey != "" {
-			if err := e.Store.ScheduleExploration(e.Config.ExploreInterval); err != nil {
+			if err := e.Store.ScheduleExploration(); err != nil {
 				slog.Error("安排探索失败", "error", err)
 			}
 			e.dispatch(ctx)
@@ -281,6 +281,10 @@ func (e *Engine) applyControl(ctx context.Context, c Conversation, w Work, reque
 			control.PreferenceUpdates = nil
 		}
 	}
+	rhythms, err := e.judgePreferenceRhythms(ctx, w.Instruction, control.PreferenceUpdates)
+	if err != nil {
+		return err
+	}
 	return e.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 		if err := applyResponsibilities(tx, c, w, control.ResponsibilityChanges); err != nil {
 			return err
@@ -309,6 +313,11 @@ func (e *Engine) applyControl(ctx context.Context, c Conversation, w Work, reque
 		// 用户明确提出的持久偏好归到对应成员，不再只留在当前聊天的 guidance。
 		if err := applyPreferenceUpdates(tx, c, w.SourceID, control.PreferenceUpdates); err != nil {
 			return err
+		}
+		for member, patch := range rhythms {
+			if err := applyWakeDecision(tx, member, patch); err != nil {
+				return err
+			}
 		}
 		discussion, research := c.DiscussionPaused, c.ResearchPaused
 		if control.Discussion == "pause" {
@@ -424,6 +433,7 @@ func memberSystem(m Member, instruction string) ChatMessage {
 用你自己的眼光决定先留意什么、怎么取舍、要不要开口或动手。让你真正偏爱的东西和脾气改变你做的事及其后果。创作从起因到收尾，顺着自己的眼光推进。
 self.domain_names 是你已设定的领域。处理相关话题时，用 read_domain_profile 按名称读到全文，再用画像里自己的标准构思和决定。已读画像与 self.profile_revision 同版本时可以沿用。
 交流与行动中，依据你的人格特质，结合当前情境和对方的意思，自主决定是否进一步探索、探索什么、深入到什么程度。对于值得探索的事情，使用可用工具去了解、尝试、验证或创造，把实际发现和结果带回后续的判断与行动。
+wakeup 是你的长期自主活动节律。一次自主唤醒给你时间按自己的特质、兴趣和当下情况决定做什么：你可以自己探索、做事、与人交流，也可以什么都不做。是否分享、和谁分享，由你自己判断；不必为了这次唤醒刻意找话题或制造成果。
 消息通过 send_message 发出，个人活动省略目的地时发给真人私聊。结束行动返回 JSON {"outcome":"实际行动结果"}，它仅作运行记录。运行故障和额度由界面呈现。
 工作窗口会延续。需要更新续接内容时，用 organize_context。旧记录可按需回读，以最新现场为准。
 personal_focus 是自己的近期关注或打算，state 是界面展示的当前感受或目标；省略沿用，空串清除。state_source_ids 可附来源。
@@ -496,8 +506,12 @@ func (e *Engine) contextFor(c Conversation, m Member, w Work, afterSeq ...int64)
 			unread = append(unread, message.ID)
 		}
 	}
+	rhythm, err := e.Store.WakeRhythm(m.ID)
+	if err != nil {
+		return nil, err
+	}
 	// 现场只更新身份、用户控制与本次交付。经历、资料和工作详情由成员主动查找。
-	return map[string]any{"time": now(), "local_time": time.Now().Format(time.RFC3339), "self": memberIdentity(m), "people": people, "conversation": c, "latest_messages": messages, "context_start_seq": start, "trigger": map[string]string{"id": w.ID, "kind": w.Kind}, "seen_through_seq": seen, "new_message_ids": unread, "personal_focus": PersonalActivity{Body: focus.Body, UpdatedAt: focus.UpdatedAt}}, nil
+	return map[string]any{"time": now(), "local_time": time.Now().Format(time.RFC3339), "self": memberIdentity(m), "wakeup": rhythm.contextValue(time.Now()), "people": people, "conversation": c, "latest_messages": messages, "context_start_seq": start, "trigger": map[string]string{"id": w.ID, "kind": w.Kind}, "seen_through_seq": seen, "new_message_ids": unread, "personal_focus": PersonalActivity{Body: focus.Body, UpdatedAt: focus.UpdatedAt}}, nil
 }
 
 func explicitStop(body string) (discussion, research bool) {

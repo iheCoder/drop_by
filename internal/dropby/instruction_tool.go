@@ -68,7 +68,7 @@ func (t *Toolbox) applyInstruction(ctx context.Context, c Conversation, m Member
 		args.Control.personalWorkID = w.ID
 	}
 	args.Control.Guidance = c.Guidance // 普通理解不再汇总成公共 guidance。
-	e := &Engine{Store: t.Store}
+	e := &Engine{Store: t.Store, Model: t.Model}
 	if err = e.applyControl(ctx, c, source, args.Control); err != nil {
 		return nil, err
 	}

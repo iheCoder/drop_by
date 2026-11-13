@@ -83,7 +83,7 @@ INSERT INTO profile_reflections VALUES(?,0,0);`, m.ID, source.ID, m.ID); err != 
 	if response.Code != 409 {
 		t.Fatal("已移除的旧后台仍能恢复", response.Code)
 	}
-	if err := reopened.ScheduleExploration(time.Hour); err != nil {
+	if err := reopened.ScheduleExploration(); err != nil {
 		t.Fatal(err)
 	}
 	works, err := reopened.DueWorks()
@@ -117,6 +117,9 @@ func TestCurrentProfileAppearsOnceAndSurvivesOrganization(t *testing.T) {
 	newProfile := "我喜欢寻找原始材料，也愿意改变判断，平时乐于主动与人交流。"
 	calls := 0
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if reply, ok := replyIfWakeAdjust(ms); ok {
+			return reply, nil
+		}
 		calls++
 		raw := asJSON(ms)
 		if calls == 1 {
@@ -188,6 +191,9 @@ func TestResumedProfileEditReplacesPendingScene(t *testing.T) {
 	w := latestChatWork(t, s, c.ID)
 	updated := "我喜欢寻找原始材料，也乐于主动与人交流。"
 	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if reply, ok := replyIfWakeAdjust(ms); ok {
+			return reply, nil
+		}
 		if !strings.Contains(ms[0].Content, updated) || strings.Contains(ms[0].Content, m.Profile) {
 			t.Error("恢复工具后仍使用旧人物", ms[0].Content)
 		}

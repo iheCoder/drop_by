@@ -131,7 +131,7 @@ func TestExplorationQueueHonorsPausesAndDoesNotAccumulate(t *testing.T) {
 				s.db.Exec(`UPDATE conversations SET research_paused=1 WHERE id=?`, c.ID)
 			}
 			for range 3 {
-				if err := s.ScheduleExploration(time.Hour); err != nil {
+				if err := s.ScheduleExploration(); err != nil {
 					t.Fatal(err)
 				}
 			}

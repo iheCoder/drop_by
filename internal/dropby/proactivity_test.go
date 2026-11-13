@@ -54,21 +54,21 @@ func TestAutonomousUsageSharesTotalBudgetAndSettles(t *testing.T) {
 }
 
 func TestPersonalClockDoesNotBackoffOrMultiplyByRooms(t *testing.T) {
-	// 同一个人加入两群仍只有一份闲时机会；沉默不会把下一次机会指数推迟。
+	// 同一个人加入两群仍只有一份活动机会。沉默和后来的真人消息都不改已经排好的下一次。
 	s, c, m := fixture(t)
 	s.CreateConversation("另一个群", "group", []string{m.ID}, time.Hour)
 	for range 3 {
 		s.db.Exec(`UPDATE personal_activity SET next_at=0`)
 		before := time.Now()
-		if err := s.ScheduleExploration(time.Minute); err != nil {
+		if err := s.ScheduleExploration(); err != nil {
 			t.Fatal(err)
 		}
 		var due int64
 		var n int
 		s.db.QueryRow(`SELECT next_at FROM personal_activity WHERE member_id=?`, m.ID).Scan(&due)
 		s.db.QueryRow(`SELECT count(*) FROM work WHERE kind='explore' AND status='pending'`).Scan(&n)
-		if n != 1 || time.UnixMilli(due).Sub(before) > time.Minute+time.Second {
-			t.Fatalf("个人时钟退避或按房间重复: n=%d due=%d", n, due)
+		if n != 1 || due <= before.UnixMilli() {
+			t.Fatalf("个人时钟按房间重复或没有排下一次: n=%d due=%d", n, due)
 		}
 		s.db.Exec(`UPDATE work SET status='done' WHERE kind='explore'`)
 	}

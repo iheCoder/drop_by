@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -51,6 +52,20 @@ func (s *Store) PreferenceContext(c Conversation, sourceID string) (map[string]a
 		return nil, err
 	}
 	return result, nil
+}
+
+func previewPreference(m Member, update PreferenceUpdate) (Member, bool, error) {
+	profile := strings.TrimSpace(update.Profile)
+	if profile == "" {
+		profile = m.Profile
+	}
+	domains, err := applyDomainProfileUpdates(m.DomainProfiles, update.DomainProfileUpdates)
+	if err != nil {
+		return m, false, err
+	}
+	changed := profile != m.Profile || !slices.Equal(domains, m.DomainProfiles)
+	m.Profile, m.DomainProfiles = profile, domains
+	return m, changed, nil
 }
 
 // 只修改人物说明，名字、头像、创建时间和已有经历保持原身份。事务内重新读取人物，
@@ -188,6 +203,40 @@ func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 		respond(w, 400, map[string]string{"error": "请选择已有头像颜色"})
 		return
 	}
+	var patch wakePatch
+	adjust := false
+	if in.Profile != nil || in.DomainProfiles != nil {
+		current, err := a.engine.Store.Member(r.PathValue("id"))
+		if err != nil {
+			respond(w, 404, map[string]string{"error": "成员不存在"})
+			return
+		}
+		if in.ProfileRevision != nil && current.ProfileRevision != *in.ProfileRevision {
+			respond(w, http.StatusConflict, map[string]string{"error": errProfileChanged.Error()})
+			return
+		}
+		profile, domains := current.Profile, current.DomainProfiles
+		if in.Profile != nil {
+			profile = strings.TrimSpace(*in.Profile)
+		}
+		if in.DomainProfiles != nil {
+			domains = *in.DomainProfiles
+		}
+		if profile != current.Profile || !slices.Equal(domains, current.DomainProfiles) {
+			after := current
+			after.Profile, after.DomainProfiles = profile, domains
+			rhythm, err := a.engine.Store.WakeRhythm(current.ID)
+			if err != nil {
+				a.fail(w, err)
+				return
+			}
+			patch, adjust, err = judgeWakeRhythm(r.Context(), a.engine.Model, current, after, "用户直接编辑了人物设定", rhythm)
+			if err != nil {
+				a.fail(w, err)
+				return
+			}
+		}
+	}
 	tx, err := a.engine.Store.db.Begin()
 	if err != nil {
 		a.fail(w, err)
@@ -226,6 +275,12 @@ func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			a.fail(w, err)
 			return
+		}
+		if profileChanged && adjust {
+			if err = applyWakeDecision(tx, m.ID, patch); err != nil {
+				a.fail(w, err)
+				return
+			}
 		}
 	}
 	if in.Color != nil {

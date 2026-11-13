@@ -17,7 +17,13 @@ func TestDomainProfilesShareCreationAndEditVersions(t *testing.T) {
 	const profile = "我看地图爱追没标名字的小路，找人帮忙却很干脆。"
 	domains := []DomainProfile{{Domain: "地图", Profile: "偏爱把绕路的原因也画进去。"}}
 	e := NewEngine(s, modelFunc(func(_ context.Context, messages []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if reply, ok := replyIfWakeAdjust(messages); ok {
+			return reply, nil
+		}
 		calls++
+		if strings.Contains(messages[0].Content, "自主唤醒") {
+			return jsonReply(map[string]any{"windows": []any{}}), nil
+		}
 		if len(messages) != 2 || !strings.Contains(messages[0].Content, "domain_profiles") {
 			t.Error("创建调用缺少同时生成正文和提取领域的提示")
 		}
@@ -35,7 +41,7 @@ func TestDomainProfilesShareCreationAndEditVersions(t *testing.T) {
 	}
 	bare := create("")
 	m := create("给他一个地图画像，他偏爱把绕路的原因也画进去。")
-	if calls != 2 || bare.Profile != profile || len(bare.DomainProfiles) != 0 || !slices.Equal(m.DomainProfiles, domains) {
+	if calls != 4 || bare.Profile != profile || len(bare.DomainProfiles) != 0 || !slices.Equal(m.DomainProfiles, domains) {
 		t.Fatal("创建正文或领域画像没有按输入保存", calls, bare, m)
 	}
 
@@ -69,7 +75,13 @@ func TestDomainProfileToolReadsActualTextAndRefreshesAfterExplicitEdit(t *testin
 	old := strings.Repeat("保留每次改变路线的理由。", 520) + " 原文尾部。"
 	other := DomainProfile{Domain: "手绘", Profile: "愿意把不顺手的笔划也留着。"}
 	profile := DomainProfile{Domain: "地图", Profile: old}
-	h := NewHandler(NewEngine(s, nil, testConfig()))
+	h := NewHandler(NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if reply, ok := replyIfWakeAdjust(ms); ok {
+			return reply, nil
+		}
+		t.Fatal("资料编辑以外的模型调用")
+		return ChatMessage{}, nil
+	}), testConfig()))
 	response := preferenceRequest(h, "PATCH", "/api/members/"+m.ID, map[string]any{"domain_profiles": []DomainProfile{profile, other}})
 	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &m) != nil {
 		t.Fatal(response.Code, response.Body.String())
@@ -89,6 +101,9 @@ func TestDomainProfileToolReadsActualTextAndRefreshesAfterExplicitEdit(t *testin
 	readAfter := toolCall("read_domain_profile", map[string]string{"domain": "地图"})
 	calls := 0
 	e := NewEngine(s, modelFunc(func(_ context.Context, messages []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if reply, ok := replyIfWakeAdjust(messages); ok {
+			return reply, nil
+		}
 		calls++
 		if calls == 1 {
 			// 现场公开本人可用的领域名。全文只在请求读取后交给本次行动。

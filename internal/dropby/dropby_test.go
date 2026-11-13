@@ -22,6 +22,13 @@ func (f modelFunc) Complete(c context.Context, m []ChatMessage, d []ToolDefiniti
 }
 
 func jsonReply(v any) ChatMessage { return ChatMessage{Role: "assistant", Content: asJSON(v)} }
+
+func replyIfWakeAdjust(messages []ChatMessage) (ChatMessage, bool) {
+	if len(messages) > 0 && strings.Contains(messages[0].Content, "判断这次人物修改") {
+		return jsonReply(map[string]any{"unchanged": true}), true
+	}
+	return ChatMessage{}, false
+}
 func testConfig() Config {
 	return Config{Address: "127.0.0.1:8090", APIKey: "test-only", Model: "gpt-6.1-terra", BaseURL: "http://localhost", SearchKey: "test-only", ExploreInterval: time.Hour, MaxOutputTokens: 400, WeeklyBudgetMicros: 1_000_000, ToolCostMicros: 750}
 }

@@ -91,7 +91,7 @@ func TestLivePersonalExploration(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
-	if err = s.ScheduleExploration(time.Hour); err != nil {
+	if err = s.ScheduleExploration(); err != nil {
 		t.Fatal(err)
 	}
 	e.dispatch(ctx)

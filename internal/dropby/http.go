@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -237,7 +238,12 @@ func (a *API) createMember(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	if err := a.engine.Store.AddMember(m); err != nil {
+	rhythm, err := proposeWakeRhythm(r.Context(), a.engine.Model, m)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	if err := a.engine.Store.AddMemberAndRhythm(m, rhythm); err != nil {
 		a.fail(w, err)
 		return
 	}
@@ -287,14 +293,43 @@ func (a *API) preferences(w http.ResponseWriter, r *http.Request) {
 		respond(w, 400, map[string]string{"error": "偏好内容过长"})
 		return
 	}
+	before := m
 	m.Questions = []Question{in.Question}
 	m.Answers = []string{in.Answer}
-	previousRevision := m.ProfileRevision
+	previousRevision := before.ProfileRevision
 	// 旧 profile 一并交给模型，只合并这次明确提供的偏好，保留同一身份及经历。
 	m, err = CompleteMember(r.Context(), a.engine.Model, m)
 	if err != nil {
 		a.fail(w, err)
 		return
+	}
+	fresh, err := a.engine.Store.Member(before.ID)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	if fresh.ProfileRevision != previousRevision {
+		respond(w, http.StatusConflict, map[string]string{"error": "人物说明刚刚已修改，请基于最新说明继续聊偏好"})
+		return
+	}
+	var patch wakePatch
+	adjust := false
+	if fresh.Profile != m.Profile || !slices.Equal(fresh.DomainProfiles, m.DomainProfiles) {
+		rhythm, rhythmErr := a.engine.Store.WakeRhythm(fresh.ID)
+		if rhythmErr != nil {
+			a.fail(w, rhythmErr)
+			return
+		}
+		note := strings.TrimSpace(in.Question.Text)
+		if note != "" {
+			note += "\n"
+		}
+		note += in.Answer
+		patch, adjust, err = judgeWakeRhythm(r.Context(), a.engine.Model, fresh, m, note, rhythm)
+		if err != nil {
+			a.fail(w, err)
+			return
+		}
 	}
 	// 兼容旧界面的接口也不能整份覆盖等待期间的新名字和头像。人物说明已被显式
 	// 修改时拒绝迟到的合并结果，避免旧问题答案悄悄撤销刚保存的新设定。
@@ -322,6 +357,12 @@ func (a *API) preferences(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.fail(w, err)
 		return
+	}
+	if changed && adjust {
+		if err = applyWakeDecision(tx, current.ID, patch); err != nil {
+			a.fail(w, err)
+			return
+		}
 	}
 	current.Questions, current.Answers = m.Questions, m.Answers
 	if _, err = tx.Exec(`UPDATE members SET data=? WHERE id=?`, asJSON(current), current.ID); err != nil {
@@ -474,7 +515,16 @@ func (a *API) conversation(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	respond(w, 200, map[string]any{"conversation": c, "messages": messages, "work": jobs, "artifacts": artifacts, "participation": decisions, "tool_runs": runs, "member_states": memberStates, "has_earlier": len(messages) == 60})
+	rhythms := map[string]wakeView{}
+	for _, id := range c.MemberIDs {
+		rhythm, err := a.engine.Store.WakeRhythm(id)
+		if err != nil {
+			a.fail(w, err)
+			return
+		}
+		rhythms[id] = rhythm.view(time.Now())
+	}
+	respond(w, 200, map[string]any{"conversation": c, "messages": messages, "work": jobs, "artifacts": artifacts, "participation": decisions, "tool_runs": runs, "member_states": memberStates, "wake_rhythms": rhythms, "has_earlier": len(messages) == 60})
 }
 
 func (a *API) coordinator(w http.ResponseWriter, r *http.Request) {

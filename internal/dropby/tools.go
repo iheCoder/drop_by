@@ -16,6 +16,7 @@ import (
 type Toolbox struct {
 	webCache webResultCache
 	Store    *Store
+	Model    Model
 	Config   Config
 	Hub      *Hub
 	Activity func(string, string, string)
@@ -31,7 +32,7 @@ func definition(name, desc string, properties map[string]any, required ...string
 func textField(desc string) any { return map[string]string{"type": "string", "description": desc} }
 
 func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition {
-	defs := []ToolDefinition{instructionDefinition(),
+	defs := []ToolDefinition{instructionDefinition(), wakeRhythmDefinition(),
 		definition("read_domain_profile", "按 self.domain_names 中的名称读取本人的领域画像全文和版本。", map[string]any{"domain": textField("要读取的领域名称")}, "domain"),
 		definition("organize_context", "更新给下次的工作窗口。按你的特质和眼下关注重新挑选，换题时把无关旧事留在历史。新便笺和所选原话替换旧窗口，同批新结果照常交付。", map[string]any{
 			"note":              textField("写给接下来的自己，留下会影响后续的个人判断、有效约定或未完线索。已完结且无关的事项直接省略，可为空。"),
@@ -205,7 +206,7 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 		}
 	}
 	if t.Activity != nil && call.Function.Name != reactionTool {
-		labels := map[string]string{"organize_context": "正在整理思路", "search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_message": "正在发送消息", "read_conversation": "正在看聊天近况", "send_private": "正在准备私聊", "read_history": "正在翻阅聊天记录", "read_artifact": "正在查看成果", "read_tool_result": "正在核对已有材料", "read_memory": "正在回顾经历", "search_memory": "正在找回相关经历", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
+		labels := map[string]string{"organize_context": "正在整理思路", "search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "set_wakeup_rhythm": "正在调整自己的活动节律", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_message": "正在发送消息", "read_conversation": "正在看聊天近况", "send_private": "正在准备私聊", "read_history": "正在翻阅聊天记录", "read_artifact": "正在查看成果", "read_tool_result": "正在核对已有材料", "read_memory": "正在回顾经历", "search_memory": "正在找回相关经历", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
 		t.Activity(c.ID, m.ID, labels[call.Function.Name])
 	}
 	toolStep := beginTool(ctx, run.ID, call.Function.Name, call.Function.Arguments, resuming)
@@ -258,37 +259,41 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 
 func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work, call ToolCall) (any, error) {
 	var args struct {
-		ConversationID string   `json:"conversation_id"`
-		ReplyTo        string   `json:"reply_to"`
-		Evidence       []string `json:"evidence"`
-		ID             string   `json:"id"`
-		Scope          string   `json:"scope"`
-		Body           string   `json:"body"`
-		Domain         string   `json:"domain"`
-		Query          string   `json:"query"`
-		URL            string   `json:"url"`
-		Title          string   `json:"title"`
-		Content        string   `json:"content"`
-		Format         string   `json:"format"`
-		Instruction    string   `json:"instruction"`
-		Reason         string   `json:"reason"`
-		DelaySeconds   int      `json:"delay_seconds"`
-		Message        string   `json:"message"`
-		Notify         bool     `json:"notify"`
-		Offset         int      `json:"offset"`
-		Text           string   `json:"text"`
-		Options        []string `json:"options"`
-		Before         int64    `json:"before"`
-		BeforeSeq      int64    `json:"before_seq"`
-		MemberID       string   `json:"member_id"`
-		DueAt          string   `json:"due_at"`
-		Coordinate     bool     `json:"coordinate"`
-		Limit          int      `json:"limit"`
-		Length         int      `json:"length"`
-		Version        int      `json:"version"`
-		Refresh        bool     `json:"refresh"`
-		Revision       *int     `json:"revision"`
-		SourceBodies   bool     `json:"include_source_bodies"`
+		ConversationID string       `json:"conversation_id"`
+		ReplyTo        string       `json:"reply_to"`
+		Evidence       []string     `json:"evidence"`
+		ID             string       `json:"id"`
+		Scope          string       `json:"scope"`
+		Body           string       `json:"body"`
+		Domain         string       `json:"domain"`
+		Query          string       `json:"query"`
+		URL            string       `json:"url"`
+		Title          string       `json:"title"`
+		Content        string       `json:"content"`
+		Format         string       `json:"format"`
+		Instruction    string       `json:"instruction"`
+		Reason         string       `json:"reason"`
+		DelaySeconds   int          `json:"delay_seconds"`
+		Message        string       `json:"message"`
+		Notify         bool         `json:"notify"`
+		Offset         int          `json:"offset"`
+		Text           string       `json:"text"`
+		Options        []string     `json:"options"`
+		Before         int64        `json:"before"`
+		BeforeSeq      int64        `json:"before_seq"`
+		MemberID       string       `json:"member_id"`
+		DueAt          string       `json:"due_at"`
+		Coordinate     bool         `json:"coordinate"`
+		Limit          int          `json:"limit"`
+		Length         int          `json:"length"`
+		Version        int          `json:"version"`
+		Refresh        bool         `json:"refresh"`
+		Revision       *int         `json:"revision"`
+		SourceBodies   bool         `json:"include_source_bodies"`
+		Enabled        *bool        `json:"enabled"`
+		Timezone       string       `json:"timezone"`
+		SetWindows     []wakeWindow `json:"set_windows"`
+		RemoveWindows  []wakeWindow `json:"remove_windows"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
 		return nil, fmt.Errorf("工具参数格式不正确")
@@ -361,6 +366,8 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 			return nil, err
 		}
 		return t.Store.ScheduleFollowup(c, m, w, args.Instruction, args.Reason, due)
+	case "set_wakeup_rhythm":
+		return t.Store.UpdateWakeRhythm(m.ID, wakePatch{Enabled: args.Enabled, Timezone: args.Timezone, Set: args.SetWindows, Remove: args.RemoveWindows})
 	case "close_responsibility":
 		return map[string]string{"responsibility_id": args.ID, "status": "closed"}, t.Store.CloseResponsibility(c, m, w, args.ID)
 	case "cancel_work":

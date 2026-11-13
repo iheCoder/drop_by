@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -45,7 +46,7 @@ func TestWelcomeUsesSavedIntroductionWithoutAnotherModelCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 1 || messages[0].Question != nil || messages[0].Body != m.Profile || messages[0].AuthorID != m.ID || calls != 1 {
+	if len(messages) != 1 || messages[0].Question != nil || messages[0].Body != m.Profile || messages[0].AuthorID != m.ID || calls != 2 {
 		t.Fatalf("没有复用同一份人物介绍: %+v calls=%d", messages, calls)
 	}
 
@@ -172,7 +173,13 @@ func TestMemberEditorPreservesConversationAndInvalidatesOldDraft(t *testing.T) {
 	if err = s.Publish(old, c.Revision); err != nil {
 		t.Fatal(err)
 	}
-	h := NewHandler(NewEngine(s, nil, testConfig()))
+	h := NewHandler(NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if reply, ok := replyIfWakeAdjust(ms); ok {
+			return reply, nil
+		}
+		t.Fatal("资料编辑以外的模型调用")
+		return ChatMessage{}, nil
+	}), testConfig()))
 	w := preferenceRequest(h, "PATCH", "/api/members/"+m.ID, map[string]any{"name": "阿苇的新名字", "avatar_icon": "fox", "color": "blue", "profile": "爱开玩笑，也认真听对方说话。"})
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
@@ -218,8 +225,12 @@ func TestDelayedLegacyPreferenceDoesNotOverwriteNewIdentity(t *testing.T) {
 	// 后返回的模型只能合并偏好，不能把旧身份外观整份写回。
 	s, _, m := fixture(t)
 	started, release := make(chan struct{}), make(chan struct{})
-	model := modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
-		close(started)
+	var once sync.Once
+	model := modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if reply, ok := replyIfWakeAdjust(ms); ok {
+			return reply, nil
+		}
+		once.Do(func() { close(started) })
 		<-release
 		return jsonReply(map[string]any{"profile": "喜欢主动分享原始材料。", "tools": []string{"search"}}), nil
 	})
@@ -249,8 +260,12 @@ func TestDelayedLegacyPreferenceRespectsNewProfile(t *testing.T) {
 	// 人物说明本身已被用户更新时，旧模型答案必须给出冲突，保留最新明确设定。
 	s, _, m := fixture(t)
 	started, release := make(chan struct{}), make(chan struct{})
-	model := modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
-		close(started)
+	var once sync.Once
+	model := modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if reply, ok := replyIfWakeAdjust(ms); ok {
+			return reply, nil
+		}
+		once.Do(func() { close(started) })
 		<-release
 		return jsonReply(map[string]any{"profile": "旧请求的主动风格。"}), nil
 	})

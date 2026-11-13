@@ -171,6 +171,15 @@ func (s *Store) Member(id string) (Member, error) {
 	return m, e
 }
 func (s *Store) AddMember(m Member) error {
+	return s.insertMember(m, nil)
+}
+
+// AddMemberAndRhythm 把人物和初始节律放进同一次提交。节律无效时成员也不会留下。
+func (s *Store) AddMemberAndRhythm(m Member, rhythm wakeRhythm) error {
+	return s.insertMember(m, &rhythm)
+}
+
+func (s *Store) insertMember(m Member, rhythm *wakeRhythm) error {
 	tx, e := s.db.Begin()
 	if e != nil {
 		return e
@@ -184,6 +193,11 @@ func (s *Store) AddMember(m Member) error {
 	}
 	if e = recordProfileVersion(tx, m, "created", "创建时的人物说明", nil); e != nil {
 		return e
+	}
+	if rhythm != nil {
+		if e = installWakeTx(tx, m.ID, *rhythm); e != nil {
+			return e
+		}
 	}
 	return tx.Commit()
 }
@@ -602,6 +616,13 @@ func (s *Store) Finish(w Work, status, result string, due time.Time) error {
 	// 只在本次确实结束工作时通知，被真人停止或已保存的任务不能被旧执行复活。
 	if count > 0 && (status == "failed" || status == "paused") {
 		if err := queueCoordinationReview(tx, w, status, result); err != nil {
+			return err
+		}
+	}
+	// 一次自主活动结束时，如果下一次已经落在过去，就从结束时刻重抽。
+	// 不把运行期间错过的那次立刻再开一遍。恢复中的同一次活动保持原时间。
+	if count > 0 && w.Kind == "explore" && w.ConversationID == "" && status != "pending" && status != "waiting_budget" && status != "paused" && status != "running" {
+		if err := rollWakeIfDue(tx, w.MemberID, time.Now()); err != nil {
 			return err
 		}
 	}

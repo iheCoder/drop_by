@@ -86,10 +86,14 @@ func (s *Store) initPersonalActivity() error {
 		}
 	}
 	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS personal_activity(
- member_id TEXT PRIMARY KEY REFERENCES members(id), body TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '', next_at INTEGER NOT NULL DEFAULT 0);
+ member_id TEXT PRIMARY KEY REFERENCES members(id), body TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '', next_at INTEGER NOT NULL DEFAULT 0,
+ rhythm_enabled INTEGER NOT NULL DEFAULT 1, rhythm_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai', rhythm_windows TEXT NOT NULL DEFAULT '');
  INSERT OR IGNORE INTO personal_activity(member_id) SELECT id FROM members;
  UPDATE work SET status='superseded' WHERE kind='explore' AND member_id='' AND status IN ('pending','waiting_budget');`)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.ensureWakeColumns()
 }
 
 func (s *Store) personalActivity(member string) (PersonalActivity, error) {
@@ -191,8 +195,12 @@ func (e *Engine) personalContext(m Member, w Work) (map[string]any, error) {
 			known[id] = true
 		}
 	}
+	rhythm, err := e.Store.WakeRhythm(m.ID)
+	if err != nil {
+		return nil, err
+	}
 	// 个人活动同样不自动加载旧经历、工具索引和工作正文，按需使用已有读取工具。
-	return map[string]any{"time": now(), "local_time": time.Now().Format(time.RFC3339), "self": memberIdentity(m), "personal_focus": PersonalActivity{Body: a.Body, UpdatedAt: a.UpdatedAt}, "people": people, "conversations": destinations, "trigger": map[string]string{"id": w.ID, "kind": w.Kind}}, nil
+	return map[string]any{"time": now(), "local_time": time.Now().Format(time.RFC3339), "self": memberIdentity(m), "wakeup": rhythm.contextValue(time.Now()), "personal_focus": PersonalActivity{Body: a.Body, UpdatedAt: a.UpdatedAt}, "people": people, "conversations": destinations, "trigger": map[string]string{"id": w.ID, "kind": w.Kind}}, nil
 }
 
 func (s *Store) personalToolRuns(member string) ([]ToolRun, error) {

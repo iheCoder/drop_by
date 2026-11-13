@@ -64,6 +64,18 @@ function workEntry(w) {
   const d=w.display || {};
   return `<details class="activity-work" data-detail="${escapeHTML(w.id)}"><summary><span><strong>${escapeHTML(d.title || '后续安排')}</strong><small>${escapeHTML(d.status || '查看记录')}</small></span>${icon('chevron-down')}</summary><p>${escapeHTML(d.detail)}</p>${w.status==='pending' && w.kind==='revisit' ? `<p class="activity-time">${escapeHTML(new Date(w.due_at).toLocaleString('zh-CN'))} 再看看</p>`:''}<div class="activity-links">${sourceLink(d.source_id)}${['failed','paused'].includes(w.status) ? `<button class="quiet" data-action="continue-work" data-id="${escapeHTML(w.id)}">接着聊这件事 ${icon('arrow-up')}</button>`:''}</div>${technicalRecord({kind:w.kind,status:w.status,instruction:w.instruction,result:w.result},`technical-${w.id}`)}</details>`;
 }
+function wakeSection() {
+  const rhythms = roomData.wake_rhythms || {};
+  const blocks = (roomData.conversation?.member_ids || []).map(id => {
+    const rhythm = rhythms[id];
+    if (!rhythm) return '';
+    const lines = (rhythm.summary || []).map(line => escapeHTML(line)).join('<br>');
+    const when = rhythm.next_label ? `<br>下一次大约在 ${escapeHTML(rhythm.next_label)}。` : '';
+    const note = rhythm.enabled ? '<br>实际时间会前后浮动，醒来也不一定发消息。' : '';
+    return `<div class="activity-person">${avatar(member(id), true)}<div><strong>${escapeHTML(authorName(id))}的自主活动</strong><div class="wake-lines">${lines}${when}${note}</div></div></div>`;
+  }).join('');
+  return blocks ? `<h3 class="section-label">自主活动</h3>${blocks}` : '';
+}
 function showActivity(scroll=true) {
   if(!roomData)return;
   const content=$('panel-content'), expanded=[...content.querySelectorAll('details[open][data-detail]')].map(d=>d.dataset.detail), top=content.scrollTop;
@@ -84,7 +96,7 @@ function showActivity(scroll=true) {
   const failedChat=roomData.work.find(w=>w.kind==='chat' && w.status==='failed' && w.id===roomData.work[0]?.id);
   const replyIssue=failedChat && ![...decisions.values()].some(p=>p.work_id===failedChat.id && p.action==='error') ? `<div class="reply-issue"><p>这次回应未生成，已有消息保留。</p><div class="activity-links">${sourceLink(failedChat.source_id)}<button class="quiet" data-action="continue-work" data-id="${escapeHTML(failedChat.id)}">接着聊 ${icon('arrow-up')}</button></div>${technicalRecord({reason:failedChat.result},'reply-error')}</div>` : '';
   const history=[...jobs.filter(w=>!current.includes(w)).slice(0,6).map(workEntry),...other.slice(0,12).map(actionRow)].join('');
-  showPanel('朋友动态','',`<div class="activity-view"><h3 class="section-label">近况</h3>${people}${replyIssue}${current.length ? `<h3 class="section-label">后续安排</h3>${current.slice(0,12).map(workEntry).join('')}`:''}${meaningful.length ? `<h3 class="section-label">最近行动</h3>${meaningful.slice(0,12).map(actionRow).join('')}`:''}${history ? `<details class="activity-history" data-detail="history"><summary>查看其他记录 ${icon('chevron-down')}</summary>${history}</details>`:''}${!jobs.length && !meaningful.length ? '<p class="activity-empty">没有额外安排，接着聊就好。</p>':''}</div>`,'activity');
+  showPanel('朋友动态','',`<div class="activity-view">${wakeSection()}<h3 class="section-label">近况</h3>${people}${replyIssue}${current.length ? `<h3 class="section-label">后续安排</h3>${current.slice(0,12).map(workEntry).join('')}`:''}${meaningful.length ? `<h3 class="section-label">最近行动</h3>${meaningful.slice(0,12).map(actionRow).join('')}`:''}${history ? `<details class="activity-history" data-detail="history"><summary>查看其他记录 ${icon('chevron-down')}</summary>${history}</details>`:''}${!jobs.length && !meaningful.length ? '<p class="activity-empty">没有额外安排，接着聊就好。</p>':''}</div>`,'activity');
   if(scroll) markWorkNoticesRead([...current.slice(0,12).filter(w=>['failed','paused'].includes(w.status)), ...(failedChat?[failedChat]:[])]);
   if(!scroll) {
     for(const d of content.querySelectorAll('details[data-detail]'))d.open=expanded.includes(d.dataset.detail);

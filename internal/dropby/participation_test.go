@@ -386,6 +386,9 @@ func TestProfileEditRetriesButOrdinaryHumanDoesNotReplaceRunningChat(t *testing.
 			var controls atomic.Int32
 			cfg := testConfig()
 			e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+				if reply, ok := replyIfWakeAdjust(ms); ok {
+					return reply, nil
+				}
 				if strings.HasPrefix(ms[0].Content, "你只解释") {
 					controlCall := controls.Add(1)
 					if change == "profile_then_budget" && controlCall == 2 {
@@ -548,7 +551,10 @@ func TestBudgetResumeStillAppliesUnprocessedHumanPreference(t *testing.T) {
 	w := latestChatWork(t, s, c.ID)
 	w.Attempts, w.Result = 1, ErrBudget.Error()
 	c, _ = s.Conversation(c.ID)
-	e := NewEngine(s, modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
+	e := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if reply, ok := replyIfWakeAdjust(ms); ok {
+			return reply, nil
+		}
 		return jsonReply(Control{PreferenceUpdates: []PreferenceUpdate{{MemberID: m.ID, Profile: "喜欢自然幽默地交流", SourceID: msg.ID}}}), nil
 	}), testConfig())
 	var control Control

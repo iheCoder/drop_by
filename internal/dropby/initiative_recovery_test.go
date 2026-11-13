@@ -66,7 +66,7 @@ func TestRecoveryReconsidersUnsentDraftWithLatestMessage(t *testing.T) {
 // 暂时网络故障保留原工作身份；下次时钟不能另开一份探索将其搁置。
 func TestNetworkFailureSchedulesSamePersonalAction(t *testing.T) {
 	s, _, m := fixture(t)
-	s.ScheduleExploration(time.Hour)
+	s.ScheduleExploration()
 	jobs, _ := s.personalWorks([]string{m.ID})
 	w := jobs[0]
 	e := NewEngine(s, modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
@@ -80,7 +80,7 @@ func TestNetworkFailureSchedulesSamePersonalAction(t *testing.T) {
 		t.Fatal("未安排原工作恢复", status)
 	}
 	s.db.Exec(`UPDATE personal_activity SET next_at=0`)
-	s.ScheduleExploration(time.Hour)
+	s.ScheduleExploration()
 	jobs, _ = s.personalWorks([]string{m.ID})
 	if len(jobs) != 1 || jobs[0].ID != w.ID {
 		t.Fatal("重复创建探索", jobs)
