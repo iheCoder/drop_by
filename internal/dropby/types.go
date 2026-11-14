@@ -56,6 +56,7 @@ type Conversation struct {
 }
 
 type Message struct {
+	workID         string   // Only set at delivery; never exposed as part of a chat message.
 	Seq            int64    `json:"seq"`
 	ID             string   `json:"id"`
 	ConversationID string   `json:"conversation_id"`

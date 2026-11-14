@@ -45,6 +45,8 @@ func NewHandler(engine *Engine) http.Handler {
 	mux.HandleFunc("POST /api/conversations", a.createConversation)
 	mux.HandleFunc("GET /api/conversations/{id}", a.conversation)
 	mux.HandleFunc("GET /api/conversations/{id}/latest", a.latestMessage)
+	mux.HandleFunc("GET /api/conversations/{id}/activity", a.activityPage)
+	mux.HandleFunc("GET /api/conversations/{id}/activity/{work}", a.activityRecord)
 	mux.HandleFunc("PATCH /api/conversations/{id}/coordinator", a.coordinator)
 	mux.HandleFunc("POST /api/conversations/{id}/messages", a.sendMessage)
 	mux.HandleFunc("PUT /api/conversations/{id}/messages/{message}/reaction", a.messageReaction)
@@ -488,43 +490,51 @@ func (a *API) conversation(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	runs, err := a.engine.Store.ToolRuns(c.ID, "")
+	plans, err := a.engine.Store.activityPlans(c)
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
-	personalJobs, err := a.engine.Store.personalWorks(c.MemberIDs)
-	if err != nil {
-		a.fail(w, err)
-		return
-	}
-	jobs = append(jobs, personalJobs...)
-	for _, id := range c.MemberIDs {
-		personalRuns, err := a.engine.Store.personalToolRuns(id)
+	runs := []ToolRun{}
+	if r.URL.Query().Get("activity") != "paged" {
+		runs, err = a.engine.Store.ToolRuns(c.ID, "")
 		if err != nil {
 			a.fail(w, err)
 			return
 		}
-		runs = append(runs, personalRuns...)
-	}
-	// 展示文案从真实记录派生；执行指令和工具成功不能直接当作用户进度。
-	// 完整结果仍按 ID 打开，避免 SSE 每次刷新重传网页或作品正文。
-	for i := range jobs {
-		display, err := a.engine.Store.workSummary(jobs[i])
+		personalJobs, err := a.engine.Store.personalWorks(c.MemberIDs)
 		if err != nil {
 			a.fail(w, err)
 			return
 		}
-		jobs[i].Display = &display
-	}
-	for i := range runs {
-		display, err := a.engine.Store.actionSummary(runs[i])
-		if err != nil {
-			a.fail(w, err)
-			return
+		jobs = append(jobs, personalJobs...)
+		for _, id := range c.MemberIDs {
+			personalRuns, err := a.engine.Store.personalToolRuns(id)
+			if err != nil {
+				a.fail(w, err)
+				return
+			}
+			runs = append(runs, personalRuns...)
 		}
-		runs[i].Display = &display
-		runs[i].Result = ""
+		// 展示文案从真实记录派生；执行指令和工具成功不能直接当作用户进度。
+		// 完整结果仍按 ID 打开，避免 SSE 每次刷新重传网页或作品正文。
+		for i := range jobs {
+			display, err := a.engine.Store.workSummary(jobs[i])
+			if err != nil {
+				a.fail(w, err)
+				return
+			}
+			jobs[i].Display = &display
+		}
+		for i := range runs {
+			display, err := a.engine.Store.actionSummary(runs[i])
+			if err != nil {
+				a.fail(w, err)
+				return
+			}
+			runs[i].Display = &display
+			runs[i].Result = ""
+		}
 	}
 	memberStates, err := a.engine.Store.MemberStates(c.ID)
 	if err != nil {
@@ -540,7 +550,15 @@ func (a *API) conversation(w http.ResponseWriter, r *http.Request) {
 		}
 		rhythms[id] = rhythm.view(time.Now())
 	}
-	respond(w, 200, map[string]any{"conversation": c, "messages": messages, "work": jobs, "artifacts": artifacts, "participation": decisions, "tool_runs": runs, "member_states": memberStates, "wake_rhythms": rhythms, "has_earlier": len(messages) == 60})
+	var replyNotice *activityEntry
+	if before == 0 && r.URL.Query().Get("activity") == "paged" {
+		replyNotice, err = a.replyFailureNotice(c, messages, jobs)
+		if err != nil {
+			a.fail(w, err)
+			return
+		}
+	}
+	respond(w, 200, map[string]any{"reply_notice": replyNotice, "conversation": c, "messages": messages, "work": jobs, "plans": plans, "artifacts": artifacts, "participation": decisions, "tool_runs": runs, "member_states": memberStates, "wake_rhythms": rhythms, "has_earlier": len(messages) == 60})
 }
 
 func (a *API) coordinator(w http.ResponseWriter, r *http.Request) {

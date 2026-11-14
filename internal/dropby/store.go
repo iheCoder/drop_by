@@ -355,7 +355,7 @@ func (s *Store) messagesAfter(room string, after, before int64, limit int) ([]Me
 }
 
 func insertMessage(tx *sql.Tx, m Message) error {
-	_, e := tx.Exec(`INSERT INTO messages(id,conversation_id,author_id,body,reply_to,mentions,evidence,notify,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, m.ID, m.ConversationID, m.AuthorID, m.Body, m.ReplyTo, asJSON(m.Mentions), asJSON(m.Evidence), m.Notify, m.CreatedAt)
+	_, e := tx.Exec(`INSERT INTO messages(id,conversation_id,author_id,body,reply_to,mentions,evidence,notify,created_at,work_id) VALUES(?,?,?,?,?,?,?,?,?,?)`, m.ID, m.ConversationID, m.AuthorID, m.Body, m.ReplyTo, asJSON(m.Mentions), asJSON(m.Evidence), m.Notify, m.CreatedAt, m.workID)
 	if e != nil {
 		return e
 	}

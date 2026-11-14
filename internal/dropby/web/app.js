@@ -102,7 +102,7 @@ async function refresh(signal) {
     for (const c of state.conversations) {
       const previous = notificationCursor[c.id];
       if (!initialLoad && document.hidden && c.last_seq > (previous || 0) && 'Notification' in window && Notification.permission === 'granted') {
-        const data = await api(`/api/conversations/${c.id}`, {signal});
+        const data = await api(`/api/conversations/${c.id}?activity=paged`, {signal});
         for (const m of data.messages.filter(m => m.seq > (previous || 0) && m.notify && m.author_id !== 'user' && m.author_id !== 'system')) {
           const n = new Notification(`${authorName(m.author_id)} · ${c.name}`, { body: m.body.slice(0, 120), tag: m.id });
           n.onclick = () => { window.focus(); openRoom(c.id); n.close(); };
@@ -235,7 +235,7 @@ async function openRoom(id) {
 }
 async function loadConversation(id, preserve, signal) {
   const sequence = ++loadSequence;
-  const data = await api(`/api/conversations/${id}`, {signal});
+  const data = await api(`/api/conversations/${id}?activity=paged`, {signal});
   if (sequence !== loadSequence || selected !== id) return;
   const changedRoom = roomData?.conversation.id !== id;
   roomData = data;
@@ -259,7 +259,7 @@ async function loadConversation(id, preserve, signal) {
   $('earlier').hidden = !hasEarlier;
   renderActivity();
   $('show-activity').hidden = false;
-  if (panelView === 'activity') showActivity(false);
+  if (panelView === 'activity') { refreshActivityOverview(); void refreshActivityHead(); }
   if (panelView.startsWith('evidence:')) {
     const run=data.tool_runs.find(r=>r.id===panelView.slice(9));
     if(run) await refreshEvidence(run);
@@ -290,7 +290,7 @@ async function loadConversation(id, preserve, signal) {
 function renderMessages(scrollToBottom) {
   const body = $('chat-body'), previousTop = body.scrollTop;
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 110;
-  const signature = JSON.stringify([messages.map(({reactions, ...message}) => message), state.profile, state.members.map(m => [m.id,m.name,m.avatar,m.avatar_icon,m.color])]);
+  const signature = JSON.stringify([messages.map(({reactions, ...message}) => message), state.profile, state.members.map(m => [m.id,m.name,m.avatar,m.avatar_icon,m.color]), roomData.reply_notice, readReplyNotices.has(roomData.reply_notice?.work_id)]);
   // SSE 也会报告后台活动。聊天内容没变时保留 DOM 和键盘焦点，避免打断正在点选的问题。
   if (signature === renderedMessages && !scrollToBottom) { syncLoadedReactions(); return; }
   renderedMessages = signature;
@@ -311,7 +311,7 @@ function renderMessages(scrollToBottom) {
     const quote = m.reply_to ? `<button class="quote" data-action="jump-message" data-id="${m.reply_to}" aria-label="查看引用的消息"><strong>${escapeHTML(quoted ? authorName(quoted.author_id) : '较早的消息')}</strong><span>${escapeHTML(quoted ? quoted.body.slice(0,100) : '点击查看这段交流')}</span></button>` : '';
     const q = m.question, open = q && m.question_status === 'open' && m.seq > lastHumanSeq;
     const question = q ? `${m.body !== q.text ? `<span class="question-text">${m.body ? '\n\n' : ''}${escapeHTML(q.text)}</span>` : ''}${open ? `<div class="question-options">${q.options.map((option,i) => `<button class="question-option" data-action="answer-question" data-id="${m.id}" data-option="${i}">${escapeHTML(option)}${icon('chevron-right')}</button>`).join('')}</div><span class="question-hint">选一个，或直接在下面说说你的想法。聊点别的也可以。</span>` : m.question_status === 'answered' ? '<span class="question-closed">已回答</span>' : ''}` : '';
-    return `${divider}<article class="message ${isUser ? 'user-message' : ''}" id="message-${m.id}" data-message-id="${m.id}">${isUser ? avatar(person) : `<button class="avatar-button" data-action="profile" data-id="${m.author_id}" aria-label="了解 ${escapeHTML(authorName(m.author_id))}">${avatar(person)}</button>`}<div class="message-content"><div class="message-meta"><strong>${escapeHTML(authorName(m.author_id))}</strong><time datetime="${m.created_at}">${timeLabel(m.created_at)}</time><button type="button" class="message-menu-trigger" popovertarget="message-menu" data-id="${m.id}" aria-label="消息操作" aria-haspopup="dialog" aria-controls="message-menu" aria-expanded="false">${icon('ellipsis')}</button></div><div class="message-bubble">${quote}${richText(m.body)}${question}</div>${m.artifacts?.length ? `<div class="message-artifacts">${m.artifacts.map(artifactCard).join('')}</div>` : ''}<div class="message-reactions" hidden></div></div></article>`;
+    return `${divider}<article class="message ${isUser ? 'user-message' : ''}" id="message-${m.id}" data-message-id="${m.id}">${isUser ? avatar(person) : `<button class="avatar-button" data-action="profile" data-id="${m.author_id}" aria-label="了解 ${escapeHTML(authorName(m.author_id))}">${avatar(person)}</button>`}<div class="message-content"><div class="message-meta"><strong>${escapeHTML(authorName(m.author_id))}</strong><time datetime="${m.created_at}">${timeLabel(m.created_at)}</time><button type="button" class="message-menu-trigger" popovertarget="message-menu" data-id="${m.id}" aria-label="消息操作" aria-haspopup="dialog" aria-controls="message-menu" aria-expanded="false">${icon('ellipsis')}</button></div><div class="message-bubble">${quote}${richText(m.body)}${question}</div>${replyNoticeFor(m)}${m.artifacts?.length ? `<div class="message-artifacts">${m.artifacts.map(artifactCard).join('')}</div>` : ''}<div class="message-reactions" hidden></div></div></article>`;
   }).join('') : `<div class="empty-chat"><div class="empty-avatars">${roomData.conversation.member_ids.map(id => avatar(member(id))).join('')}</div><strong>${roomData.conversation.kind === 'direct' ? `和 ${escapeHTML(authorName(roomData.conversation.member_ids[0]))} 打个招呼` : '人到齐了，随便聊聊'}</strong><p>一个念头、一件小事、一个好奇的问题。<br>从哪里开始，都可以。</p></div>`;
   syncLoadedReactions();
   if (scrollToBottom || nearBottom) body.scrollTop = body.scrollHeight; else body.scrollTop = previousTop;
@@ -326,7 +326,7 @@ async function jumpToMessage(id) {
   const room = selected;
   // 引用可能在当前页之外；沿已有历史分页找到原消息，才能准确回到当时的交流。
   while (!messages.some(m => m.id === id) && hasEarlier) {
-    const data = await api(`/api/conversations/${room}?before=${messages[0]?.seq || 0}`);
+    const data = await api(`/api/conversations/${room}?activity=paged&before=${messages[0]?.seq || 0}`);
     if (room !== selected) return;
     if (!data.messages.length) break;
     const combined = new Map([...data.messages, ...messages].map(m => [m.id,m]));
@@ -354,6 +354,8 @@ function showMentions() {
 
 // 详情是聊天旁的一个页面，不再用遮罩和模态弹窗打断交流。
 function showPanel(title, description, body, view = '') {
+  disposeActivity();
+  $('panel-back').hidden = true;
   closeTransient();
   const opening=$('inspector').hidden;
   if (opening) panelInvoker=document.activeElement;
@@ -368,6 +370,8 @@ function showPanel(title, description, body, view = '') {
   if (opening) $('panel-title').focus();
 }
 function closePanel(restoreFocus = false) {
+  disposeActivity();
+  $('panel-back').hidden = true;
   $('inspector').hidden=true; $('panel-content').replaceChildren(); document.querySelector('.app').classList.remove('panel-open','artifact-open','artifact-expanded');
   panelRequest++; panelView=''; avatarRequest++; avatarLoading=false;
   if(restoreFocus) (panelInvoker?.isConnected && panelInvoker.getClientRects().length ? panelInvoker : $('message-input')).focus();
@@ -526,7 +530,7 @@ function roomDetails(scroll = true) {
   const top=$('panel-content').scrollTop;
   const people=c.member_ids.map(id=>`<button class="person-button" data-action="profile" data-id="${id}">${avatar(member(id))}<span class="person-copy"><span class="person-name">${escapeHTML(authorName(id))}</span><span class="person-note">${escapeHTML(memberIntroduction(member(id)))}</span></span>${icon('chevron-right')}</button>`).join('');
   const roles=(c.responsibilities || []).map(r=>`<div class="responsibility"><strong>${escapeHTML(authorName(r.member_id))}<small>${r.scope_id ? '这件事' : '长期约定'}</small></strong><p>${escapeHTML(r.body)}</p>${r.source_id ? `<button class="quiet" data-action="jump-message" data-id="${r.source_id}">回到这次约定 ${icon('arrow-up')}</button>` : ''}</div>`).join('');
-  showPanel('聊天详情', '', `<div class="room-details-head">${groupAvatar(c)}<h3>${escapeHTML(c.name)}</h3><p>${c.member_ids.length+1} 位成员</p></div><button class="secondary full-width" data-action="edit-group">${icon('pencil')}编辑群资料与成员</button><h3 class="section-label">群成员</h3><div class="person-button own-member">${avatar(state.profile)}<span class="person-copy"><span class="person-name">${escapeHTML(authorName('user'))}</span><span class="person-note">我</span></span></div>${people}<h3 class="section-label">在这里的约定</h3>${roles || '<p class="empty-note">还没有特别的分工。需要一起做事时，在聊天里告诉大家就好。</p>'}<p class="profile-caption">例如「@小舟，这次你帮我们安排一下」。约定会留在这里，平时大家仍按自己的方式聊天。</p><div class="panel-nav"><button data-action="activity">${icon('activity')}朋友动态${icon('chevron-right')}</button><button data-action="artifacts">${icon('notebook')}聊天成果${icon('chevron-right')}</button></div>`, 'room');
+  showPanel('聊天详情', '', `<div class="room-details-head">${groupAvatar(c)}<h3>${escapeHTML(c.name)}</h3><p>${c.member_ids.length+1} 位成员</p></div><button class="secondary full-width" data-action="edit-group">${icon('pencil')}编辑群资料与成员</button><h3 class="section-label">群成员</h3><div class="person-button own-member">${avatar(state.profile)}<span class="person-copy"><span class="person-name">${escapeHTML(authorName('user'))}</span><span class="person-note">我</span></span></div>${people}<h3 class="section-label">在这里的约定</h3>${roles || '<p class="empty-note">还没有特别的分工。需要一起做事时，在聊天里告诉大家就好。</p>'}<p class="profile-caption">例如「@小舟，这次你帮我们安排一下」。约定会留在这里，平时大家仍按自己的方式聊天。</p><div class="panel-nav"><button data-action="activity">${icon('activity')}成员动态${icon('chevron-right')}</button><button data-action="artifacts">${icon('notebook')}聊天成果${icon('chevron-right')}</button></div>`, 'room');
   $('panel-content').dataset.roomSignature=signature;
   if (!scroll) $('panel-content').scrollTop=top;
 }
@@ -634,6 +638,9 @@ document.addEventListener('click', async event => {
     if (action === 'restore-profile') await restoreProfile(id, button.dataset.revision);
     if (action === 'close-panel') closePanel(true);
     if (action === 'activity') showActivity();
+    if (action === 'activity-notice') openReplyNotice();
+    if (action === 'activity-record') await openActivityRecord(id, button.dataset.member, button);
+    if (action === 'activity-back') backToActivity();
     if (action === 'artifacts') showArtifacts();
     if (action === 'preference') await askPreference(id,button);
     if (action === 'avatar-preset') {
@@ -641,11 +648,6 @@ document.addEventListener('click', async event => {
       if (avatarLoading) { avatarLoading = false; const save = button.closest('form')?.querySelector('button[type=submit]'); if (save) save.disabled = false; }
       avatarIcon = id; avatarData = ''; renderAvatarPreview();
     }
-    if (action === 'continue-member') {
-      composeFollowup(`@${authorName(id)} 刚才的话题，你有什么想法？`);
-      replyTo=messages.find(m=>m.id===button.dataset.source) || null; renderReply();
-    }
-    if (action === 'continue-work') { button.disabled = true; try { await post('/api/work/' + encodeURIComponent(id) + '/resume', {}); await refresh(); } finally { button.disabled = false; } }
     if (action === 'reply') { replyTo = messages.find(m => m.id === id); renderReply(); $('message-input').focus(); }
     if (action === 'clear-reply') { replyTo = null; renderReply(); }
     if (action === 'jump-message') await jumpToMessage(id);
@@ -742,6 +744,7 @@ document.addEventListener('keydown', event => {
     if (closeTransient(true)) { event.preventDefault(); return; }
     if (!$('mention-options').hidden) $('mention-options').hidden = true;
     else if (document.querySelector('.version-menu[open]')) { const menu=document.querySelector('.version-menu[open]'); menu.open=false; menu.querySelector('summary').focus(); }
+    else if (panelView === 'activity-detail') backToActivity();
     else if (!$('inspector').hidden) closePanel(true);
     else if (!$('workspace-page').hidden) closeWorkspace(true);
     else { $('sidebar').classList.remove('open'); $('mobile-nav').setAttribute('aria-expanded','false'); }
@@ -783,6 +786,7 @@ $('mention-trigger').onclick = () => {
 };
 $('new-member').onclick = () => startChat();
 $('welcome-action').onclick = () => state.members.length ? startGroup() : newMember();
+$('panel-content').addEventListener('scroll', () => activityScrolled(), {passive:true});
 $('show-artifacts').onclick = showArtifacts; $('show-activity').onclick = () => showActivity();
 $('room-details').onclick = () => roomDetails();
 $('close-sidebar').onclick = () => { $('sidebar').classList.remove('open'); $('mobile-nav').setAttribute('aria-expanded','false'); };
@@ -800,7 +804,7 @@ $('earlier').onclick = async () => {
   const button = $('earlier'); button.disabled = true;
   try {
     const room = selected, height = $('chat-body').scrollHeight, top = $('chat-body').scrollTop;
-    const data = await api(`/api/conversations/${room}?before=${messages[0]?.seq || 0}`); if (room !== selected) return;
+    const data = await api(`/api/conversations/${room}?activity=paged&before=${messages[0]?.seq || 0}`); if (room !== selected) return;
     const combined = new Map([...data.messages,...messages].map(m => [m.id,m])); messages = [...combined.values()].sort((a,b) => a.seq-b.seq);
     hasEarlier = data.has_earlier; renderMessages(false); $('chat-body').scrollTop = top + $('chat-body').scrollHeight - height; button.hidden = !hasEarlier;
   } catch (error) { toast(error.message); } finally { button.disabled = false; }

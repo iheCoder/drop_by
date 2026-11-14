@@ -91,7 +91,7 @@ func (t *Toolbox) sendQuestion(ctx context.Context, c Conversation, m Member, w 
 	if err := validateQuestion(Question{Text: body, Options: options}); err != nil {
 		return nil, err
 	}
-	msg := Message{ID: sentMessageID(w, m, call), ConversationID: c.ID, AuthorID: m.ID, Body: body, Question: &Question{Text: body, Options: options}, CreatedAt: now()}
+	msg := Message{workID: w.ID, ID: sentMessageID(w, m, call), ConversationID: c.ID, AuthorID: m.ID, Body: body, Question: &Question{Text: body, Options: options}, CreatedAt: now()}
 	err := t.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 		if err := ctx.Err(); err != nil {
 			return err

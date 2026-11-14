@@ -231,7 +231,7 @@ func (e *Engine) memberAction(ctx context.Context, c Conversation, m Member, w W
 		if loadErr != nil {
 			return out.seen, loadErr
 		}
-		msg = &Message{ID: cp.ID, ConversationID: target.ID, AuthorID: m.ID, Body: out.Message, ReplyTo: out.ReplyTo, Evidence: out.Evidence, Notify: out.Notify, CreatedAt: now()}
+		msg = &Message{workID: w.ID, ID: cp.ID, ConversationID: target.ID, AuthorID: m.ID, Body: out.Message, ReplyTo: out.ReplyTo, Evidence: out.Evidence, Notify: out.Notify, CreatedAt: now()}
 	}
 	// 消息、已完成回执、断点删除在同一事务中：恢复不会重复发言或重新执行已完成行动。
 	recordedAction := ""

@@ -345,3 +345,30 @@ body:has(#crop-dialog[open]) #workspace-page::backdrop { background:transparent;
 .domain-read summary > .icon { width:16px; height:16px; color:#8aa0a6; transition:transform .15s; }
 .domain-read[open] summary > .icon { transform:rotate(90deg); }
 @media (prefers-reduced-motion:reduce) { .domain-read summary > .icon { transition:none; } }
+
+/* A group action adds one owner line. The private view has one known owner. */
+.panel-title-group { display:flex; align-items:center; gap:6px; }
+.panel-title-group .icon-button { margin-left:-8px; }
+.activity-byline { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:12px; font-weight:600; }
+.activity-byline .avatar.small { width:22px; height:22px; flex-basis:22px; }
+.activity-view #activity-wake .section-label { margin-top:0; }
+.activity-entry .activity-entry-copy { gap:5px; }
+.activity-fact { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:8px; color:var(--muted); font-size:13px; line-height:1.6; }
+.activity-fact > span:first-child { color:var(--subtle); font-weight:600; }
+.activity-fact > span:nth-child(2) { min-width:0; overflow-wrap:anywhere; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+.activity-fact > small { color:var(--muted); }
+.activity-failure { color:var(--danger); }
+.activity-empty:empty { display:none; }
+#activity-end { height:1px; }
+.activity-detail .detail-meta { font-size:12px; color:var(--muted); margin:8px 0 5px; }
+.activity-detail .detail-title { font-size:21px; margin:0 0 12px; }
+.activity-detail .detail-part { margin-top:23px; }
+.activity-detail h4 { font-size:13px; margin:0 0 8px; }
+.activity-quote { padding:10px 13px; border:1px solid var(--line); border-radius:12px; margin:8px 0; background:rgb(255 255 255 / 65%); }
+.activity-quote figcaption { font-size:12px; color:var(--muted); }
+.activity-quote blockquote { font-size:14px; line-height:1.7; margin:5px 0 0; overflow-wrap:anywhere; }
+.activity-quote blockquote p { margin:.5em 0; }
+.activity-detail .activity-technical { border-top:1px solid var(--line); padding-top:8px; }
+.message-content > .work-notice { display:flex; flex-direction:column; align-items:flex-start; gap:4px; margin:4px 0 0 auto; padding:6px 9px; border-radius:9px; }
+.message-content > .work-notice:hover { background:var(--hover); }
+.activity-source-list { margin:0; padding-left:20px; font-size:13px; color:var(--muted); line-height:1.7; overflow-wrap:anywhere; }

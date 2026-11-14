@@ -28,7 +28,7 @@ func (s *Store) initIM() error {
 	if _, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS user_settings(id INTEGER PRIMARY KEY CHECK(id=1), weekly_budget_micros INTEGER)`); err != nil {
 		return err
 	}
-	for _, column := range []struct{ table, name, definition string }{{"conversations", "avatar", "TEXT NOT NULL DEFAULT ''"}, {"work", "budget_required", "INTEGER NOT NULL DEFAULT 0"}} {
+	for _, column := range []struct{ table, name, definition string }{{"conversations", "avatar", "TEXT NOT NULL DEFAULT ''"}, {"work", "budget_required", "INTEGER NOT NULL DEFAULT 0"}, {"messages", "work_id", "TEXT NOT NULL DEFAULT ''"}} {
 		var exists int
 		if err = s.db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, column.table, column.name).Scan(&exists); err != nil {
 			return err
@@ -39,7 +39,10 @@ func (s *Store) initIM() error {
 			}
 		}
 	}
-	return nil
+	// Associate actual deliveries with their action even when observation is disabled.
+	_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS messages_work ON messages(work_id) WHERE work_id<>'';
+CREATE INDEX IF NOT EXISTS activity_tool_work ON tool_runs(work_id);`)
+	return err
 }
 
 func (s *Store) UserProfile() (UserProfile, error) {

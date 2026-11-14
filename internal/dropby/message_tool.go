@@ -31,7 +31,7 @@ func (t *Toolbox) sendMessage(ctx context.Context, c Conversation, m Member, w W
 		return nil, fmt.Errorf("目标聊天已暂停发言")
 	}
 	id := sentMessageID(w, m, call)
-	message := Message{ID: id, ConversationID: destination.ID, AuthorID: m.ID, Body: body, ReplyTo: reply, Evidence: evidence, Notify: notify, CreatedAt: now()}
+	message := Message{workID: w.ID, ID: id, ConversationID: destination.ID, AuthorID: m.ID, Body: body, ReplyTo: reply, Evidence: evidence, Notify: notify, CreatedAt: now()}
 	var priorRoom, priorBody string
 	err = t.Store.db.QueryRow(`SELECT conversation_id,body FROM messages WHERE id=?`, id).Scan(&priorRoom, &priorBody)
 	if err == nil {

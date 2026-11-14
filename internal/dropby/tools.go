@@ -528,7 +528,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		if err != nil {
 			return nil, err
 		}
-		message := Message{ID: newID("msg"), ConversationID: direct.ID, AuthorID: m.ID, Body: args.Message, Notify: args.Notify, CreatedAt: now()}
+		message := Message{workID: w.ID, ID: newID("msg"), ConversationID: direct.ID, AuthorID: m.ID, Body: args.Message, Notify: args.Notify, CreatedAt: now()}
 		err = t.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 			var paused bool
 			if err := tx.QueryRow(`SELECT discussion_paused FROM conversations WHERE id=?`, direct.ID).Scan(&paused); err != nil {
