@@ -173,7 +173,8 @@ func TestCancellationKeepsCauseAndCorrectReservation(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			s, _, _ := fixture(t)
 			cfg := testConfig()
-			model := &HTTPModel{Store: s, Config: cfg}
+			model := responsesForTest(cfg)
+			model.Store = s
 			call, err := s.reserveCall(context.Background(), cfg, 10000, "OpenAI", "gpt-6.1-sol", "")
 			if err != nil {
 				t.Fatal(err)

@@ -24,7 +24,7 @@
 
 ## GPT-6 Mid-turn steering
 
-当前接口用实际 `gpt-6.1-terra` 和 `gpt-6.1-sol` 验证通过。成员聊天/研究使用 Responses WebSocket；控制理解和无聊天目的地的个人活动沿用普通 Responses 请求。`DROPBY_MID_TURN_STEERING` 默认 true，可显式关闭。关闭后新消息仍在普通边界增量交付，不恢复旧取消逻辑。
+当前接口用实际 `gpt-6.1-terra` 和 `gpt-6.1-sol` 验证通过。成员聊天/研究使用 Responses WebSocket；控制理解和无聊天目的地的个人活动沿用普通 Responses 请求。`config.yaml` 中按供应商设置 `mid_turn_steering`，示例已为当前接入点开启。关闭后新消息仍在普通边界增量交付，不恢复旧取消逻辑。
 
 - 仅真人追加消息发送 `response.steer`，BOT 发言不会被升级成用户指示。
 - `response.steer.accepted` 只表示入队；实际自动续接结束后才确认交付，且不跨过尚未读到的其他成员消息推进游标。

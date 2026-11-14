@@ -9,7 +9,9 @@
 需要 Go 1.27；模块指定工具链 1.27.3。首次运行会下载工具链与 SQLite 驱动依赖。
 
 ```sh
-# 在已有 OPENAI_API_KEY 的终端中运行，不要把真实密钥放进仓库。
+# 保留已有的本机配置。
+cp -n config.example.yaml config.yaml
+# 可在 config.yaml 填写 api_key，也可由启动环境提供 OPENAI_API_KEY。
 go run ./cmd/dropby
 ```
 
@@ -47,9 +49,12 @@ go run ./cmd/observe
 
 ## 模型、工具和费用
 
-默认用 `gpt-6.1-terra` 进行日常交流与行动，用 `gpt-6.1-sol` 进行个人探索、研究及后台人格整理。不再设置独立的参与分类或表达审核模型；两者均通过 Responses API 调用，默认读取 `OPENAI_API_KEY`，地址为 `https://api.openai.com/v1`。搜索与网页读取仍独立使用 `DEEPSEEK_API_KEY`，其费用不属于 OpenAI 赠送额度。密钥只保留在进程环境，不写入 SQLite、不传给浏览器、不写日志。创建人物、生成回应和理解自然语言设置需要模型；已有资料的手工编辑与历史查看不需要模型。没有搜索配置时不会宣称已经联网探索。
+[config.example.yaml](config.example.yaml) 包含服务、搜索、预算和模型配置。启动默认读取工作目录的 `config.yaml`，也可通过 `DROPBY_CONFIG` 指定本机文件。仓库忽略本机配置，修改在重启后生效。
 
-可用环境变量见 [.env.example](.env.example)。程序**不自动加载 `.env` 文件**，请由启动环境设置变量。当前生成接口只使用 Responses API。`DROPBY_BASE_URL` 与 `DROPBY_API_KEY` 指向正在使用的网关，交流与探索模型分别配置；搜索服务独立配置。
+- `models.providers` 配置接入点的协议、API 根地址和 `api_key`。当前支持 `openai_responses`。连接具备对应能力时可启用 WebSocket 插话和显式缓存断点。
+- `models.scenes` 直接选择供应商、模型和原生参数。示例沿用 Terra 日常聊天、Sol 研究、Sol 个人探索、Sol 人物设定。研究和探索分别配置。请求中的上下文、工具、JSON 格式及续接状态由接入代码组装。
+- 同一字段先读文件，其次才用环境变量和默认值。OpenAI 条目省略 `api_key` 时，依次查 `api_key_env` 指定的变量，或者默认的 `DROPBY_API_KEY`、`OPENAI_API_KEY`。自定义接入点只用自己的 `api_key` 或 `api_key_env`。搜索密钥可写在 `search.api_key`，省略时依次查 `DROPBY_SEARCH_KEY`、`DEEPSEEK_API_KEY`。
+- 从旧配置迁移时，把接入地址填到 `models.providers`，把模型、推理和输出长度填到对应场景。之前的模型环境变量仍可给默认 OpenAI 接入点补充缺省值。其余变量见 [.env.example](.env.example)。执行显式开启的真实模型测试时，用绝对路径指定 `DROPBY_CONFIG`。
 
 成员上下文的续接、主动整理、容量兜底与 GPT-6 Steering 见[上下文管理说明](docs/context-management.md)。
 
@@ -57,18 +62,11 @@ go run ./cmd/observe
 | --- | --- | --- |
 | `DROPBY_ADDR` | `127.0.0.1:8090` | 只允许本机回环监听 |
 | `DROPBY_DATA_DIR` | `data` | 数据目录；每个目录独立 |
-| `DROPBY_MODEL` | `gpt-6.1-sol` | 个人探索和研究的主模型 |
-| `DROPBY_CHAT_MODEL` | `gpt-6.1-terra` | 普通发言，包括后续接话 |
+| `DROPBY_CONFIG` | `config.yaml` | 应用配置文件路径 |
 | `DROPBY_WEEKLY_BUDGET_USD` | `20` | 每周估算费用总上限 |
-| `DROPBY_CONTEXT_TOKEN_BUDGET` | `100000` | 完整输入的保守 token 上界与输出预留总容量，不是精确 tokenizer |
-| `DROPBY_MAX_OUTPUT_TOKENS` | `8000` | 快速调用的输出与推理 token 总上限 |
-| `DROPBY_EXPLORE_INTERVAL` | `30m` | 每名成员的个人活动间隔；沉默不退避，多个聊天不重复创建机会，具体预约另按到期时间运行 |
+| `DROPBY_EXPLORE_INTERVAL` | `30m` | 旧工作间隔与网络故障恢复间隔；自主唤醒按成员自己的节律 |
 
-职责选择发生在已有调用节点，不额外调用模型分类。日常交流使用 `none` 推理；主模型默认 `DROPBY_REASONING=low`，个人探索和实际研究使用 `DROPBY_DEEP_REASONING=high` 和 `DROPBY_DEEP_MAX_OUTPUT_TOKENS=25000`。后续闲聊不会仅因不是首句而升级。身份、原话、记忆与工具结果继续属于同一个成员。原生压缩沿用当前请求的模型，不跨型号搬运加密推理或压缩项目。没有自动降级到旧型号或重放整段工具行动的回退。
-
-所有模型请求使用 `/responses`、`max_output_tokens`、`reasoning.effort` 和 `text.format`，保留原生工具及加密推理项目。返回的 `commentary` 不会拼入业务 JSON；只读取 `final_answer`，同时保留完整原生项目供后续调用。不保留旧模型识别、Chat Completions 或旧参数分支。两个模型各自读取配置，设置主模型不会隐式覆盖聊天模型。
-
-费用按实际调用的模型及其官方 Standard 费率估算：Luna 输入/输出每百万 tokens 为 $0.10/$0.50，Terra 为 $1/$5，Sol 为 $2/$10；缓存读取和写入分别结算，不重复计入普通输入。原生压缩也使用当前模型的费率。费率来源与计算边界见 [模型费用估算](docs/model-pricing.md)。每周 20 美元按用户要求设置，应用不读取账户账单、余额或赠送额度到期日；不再额外限制调用次数。选型证据、接口修复和验证边界见 [模型选择记录](docs/model-selection.md)。
+费用按实际调用的模型及其官方 Standard 费率估算：Luna 输入/输出每百万 tokens 为 $0.10/$0.50，Terra 为 $1/$5，Sol 为 $2/$10；缓存读取和写入分别结算，不重复计入普通输入。原生压缩也使用当前模型的费率。账本记录请求实际使用的供应商，直连和中转按同一个底层模型的官方费率估算。费率来源与计算边界见 [模型费用估算](docs/model-pricing.md)。每周 20 美元按用户要求设置，应用不读取账户账单、余额或赠送额度到期日；不再额外限制调用次数。选型证据、接口修复和验证边界见 [模型选择记录](docs/model-selection.md)。
 
 费用在调用前事务性预留，成功返回 token 用量后按该模型费率与缓存明细结算；未知结果保留保守预留。账本保留每日明细，按服务进程本地时区的**周一 00:00 到下周一 00:00**累计；本机显式设置 `TZ=Asia/Shanghai`。升级前本周费用一并计入，重启不会清空。金额用完与余额不足以预留下一次请求分别说明。新版额外显示尚未结算的在途/未知预留，旧账不凭空重算。额度只在个人中心显示；聊天仅在当前额度不足时提示，预留结算释放余额或新周恢复后自动撤下提示并重新检查待执行工作。历史额度系统消息保留在数据库，但不再出现在聊天或列表。重启后也会重新核对当前配置，实际预留仍不可绕过。旧 `DROPBY_DAILY_*` 变量需迁移到新的周变量，避免把旧 3 美元误认为每周 3 美元。实际服务商账单可能包含缓存折扣和价格变更，界面资源限制不等于精确账单。
 
@@ -114,7 +112,9 @@ go run ./cmd/observe
 | `internal/dropby/coordination.go` | 群内职责、委托、真实结果驱动的协调接力 |
 | `internal/dropby/request_context.go` | 整个模型请求的容量保护与可回读工具正文压缩 |
 | `internal/dropby/preferences.go` | 对话偏好、资料与头像编辑、可选问题 |
-| `internal/dropby/model.go` | 实际模型 HTTP 请求、成员创建、预算预留 |
+| `internal/dropby/model_provider.go` | 按场景配置接上对应的模型协议 |
+| `internal/dropby/model/openai/` | OpenAI Responses 请求、解析、计数、压缩、缓存和 WebSocket |
+| `internal/dropby/model.go` | 调用顺序、预算预留和成员设定 |
 | `internal/dropby/tools.go` | 真实搜索、阅读、成果版本、记忆和主动私聊 |
 | `internal/dropby/http.go` | 本机 API、SSE、请求验证与浏览器访问边界 |
 | `internal/dropby/web/` | 创建成员、群聊、私聊、完整聊天、成果查看 |

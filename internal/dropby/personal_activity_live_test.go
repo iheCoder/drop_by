@@ -21,7 +21,7 @@ func TestLivePersonalExploration(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := os.Getenv("DROPBY_PERSONAL_TEST_DIR")
-	if dir == "" || cfg.APIKey == "" || cfg.SearchKey == "" {
+	if dir == "" || !cfg.ModelReady() || cfg.SearchKey == "" {
 		t.Fatal("需要独立测试目录及 API 配置")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "dropby.sqlite")); err == nil {

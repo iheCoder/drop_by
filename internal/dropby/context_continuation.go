@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"drop_by/internal/dropby/model"
 )
 
 // completeModel 让一次工具循环继续使用压缩后的上下文。普通 Model（包括测试替身）
@@ -17,42 +19,32 @@ func completeModel(ctx context.Context, model Model, messages *[]ChatMessage, de
 	return model.Complete(ctx, *messages, defs, jsonOutput)
 }
 
-// countResponseInput 使用实际模型与工具 schema 计数。字节上界只用于快速放行短请求，
-// 不能把中文、长作品参数或可见输出的重复估算当成供应商上下文已满。
-func (m *HTTPModel) countResponseInput(ctx context.Context, raw []byte) (int, error) {
-	var body map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &body); err != nil {
+// 计数重试和记录归应用管理，计数请求的字段及用量由供应商解释。
+func (m *modelCall) countResponseInput(ctx context.Context, raw []byte) (int, error) {
+	counter, ok := m.backend.(model.InputCounter)
+	if !ok {
+		return 0, fmt.Errorf("%w：当前接入点未提供精确输入计数", ErrContextCapacity)
+	}
+	payload, err := counter.CountBody(raw)
+	if err != nil {
 		return 0, err
 	}
-	// 计数接受输入、模型、工具和推理设置；生成的输出长度与存储设置不属于输入。
-	for _, key := range []string{"max_output_tokens", "store", "include", "text"} {
-		delete(body, key)
-	}
-	encoded, _ := json.Marshal(body)
-	var out struct {
-		InputTokens int `json:"input_tokens"`
-	}
+	var count int
 	var previous string
 	attempt := 0
-	if err := retryRequest(ctx, func() error {
+	err = retryRequest(ctx, func() error {
 		attempt++
-		box := &rawBox{}
-		callCtx := context.WithValue(ctx, rawResponseKey{}, box)
-		err := requestJSON(callCtx, m.Client, m.Config.BaseURL+"/responses/input_tokens", m.Config.APIKey, encoded, &out)
-		previous = noteInputCount(ctx, attempt, previous, string(encoded), box.text, err)
+		value, response, err := counter.Count(ctx, payload)
+		count = value
+		previous = noteInputCount(ctx, attempt, previous, string(payload), scrub(response, m.apiKey), err)
 		return err
-	}); err != nil {
-		return 0, err
-	}
-	if out.InputTokens <= 0 {
-		return 0, fmt.Errorf("输入容量计数未返回有效结果")
-	}
-	return out.InputTokens, nil
+	})
+	return count, err
 }
 
 // 真实请求放不下时，先为待交付的内容留空间，再处理已经读过的历史。
 // 本人整理选中的内容、最新人物和行动目标继续由应用原样交付。
-func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMessage, defs []ToolDefinition, jsonOutput bool) ([]byte, int, []ChatMessage, error) {
+func (m *modelCall) prepareLargeResponse(ctx context.Context, messages []ChatMessage, defs []ToolDefinition, jsonOutput bool) ([]byte, int, []ChatMessage, error) {
 	encode := func(window []ChatMessage) ([]byte, error) { return m.responseBody(window, defs, jsonOutput) }
 	recount := func(window []ChatMessage) ([]byte, int, error) {
 		raw, err := encode(window)
@@ -66,11 +58,11 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("无法核对实际输入容量：%w", err)
 	}
-	capacity := m.Config.ContextTokenBudget
+	capacity := m.ContextTokenBudget
 	if capacity == 0 {
 		capacity = 100000
 	}
-	limit := capacity - m.Config.MaxOutputTokens
+	limit := capacity - m.maxOutputTokens
 	if count <= limit {
 		return raw, count, messages, nil
 	}
@@ -95,7 +87,7 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 	// 已存结果改成明确的待交付回执。已有同批短结果仍完整交付。
 	required := slices.Concat(core, next)
 	deferred := false
-	_, _, estimateErr := boundedRequest(required, capacity, m.Config.MaxOutputTokens, encode)
+	_, _, estimateErr := boundedRequest(required, capacity, m.maxOutputTokens, m.backend.Estimate, encode)
 	if len(history) == 0 || estimateErr != nil {
 		requiredRaw, requiredCount := raw, count
 		if len(history) > 0 {
@@ -140,7 +132,7 @@ func (m *HTTPModel) prepareLargeResponse(ctx context.Context, messages []ChatMes
 		if err != nil {
 			// 计数中断时，能由保守上界确认放得下的压缩成果仍可落盘。
 			// 无法确认的候选保留在本次请求中，断点仍从原来的历史恢复。
-			if _, _, estimateErr := boundedRequest(window, capacity, m.Config.MaxOutputTokens, encode); estimateErr == nil {
+			if _, _, estimateErr := boundedRequest(window, capacity, m.maxOutputTokens, m.backend.Estimate, encode); estimateErr == nil {
 				if saveErr := save(window); saveErr != nil {
 					return nil, 0, nil, saveErr
 				}
@@ -279,71 +271,57 @@ func retainActionSource(history, live []ChatMessage) ([]ChatMessage, []ChatMessa
 
 // 原生压缩只接收历史，使用供应商默认的推理续接。应用拥有的最新现场留在
 // 外面，原生返回项按原顺序整体回传，包括供应商保留的用户消息。
-func (m *HTTPModel) compactHistory(ctx context.Context, history []ChatMessage, count int) (msg ChatMessage, err error) {
+func (m *modelCall) compactHistory(ctx context.Context, history []ChatMessage, count int) (msg ChatMessage, err error) {
 	encoded, err := m.responseBody(history, nil, false)
 	if err != nil {
 		return ChatMessage{}, err
 	}
-	var request map[string]json.RawMessage
-	if err = json.Unmarshal(encoded, &request); err != nil {
-		return ChatMessage{}, err
+	compactor, ok := m.backend.(model.CompactionSession)
+	if !ok {
+		return ChatMessage{}, fmt.Errorf("%w：当前接入点未提供原生压缩", ErrContextCapacity)
 	}
-	compactBody, _ := json.Marshal(map[string]any{"model": m.Config.Model, "input": request["input"]})
-	price, err := priceForModel(m.Config.Model)
+	compactBody, err := compactor.CompactBody(encoded)
 	if err != nil {
 		return ChatMessage{}, err
 	}
-	// 预留只针对发给压缩的旧输入。长的新资料不计入这次请求的开销。
-	if upper, err := requestInputUpperBound(history, func(input []ChatMessage) ([]byte, error) {
+	// 预留只针对发给压缩的旧输入。
+	if upper, err := m.backend.Estimate(history, func(input []ChatMessage) ([]byte, error) {
 		return m.responseBody(input, nil, false)
 	}); err == nil {
 		count = min(count, upper)
 	}
-	reserve := price.reserveMicros(count, m.Config.MaxOutputTokens)
+	reserve := m.reserveMicros(count, m.maxOutputTokens)
 	stepID := beginCompact(ctx, string(compactBody))
 	var call usageReservation
 	settled := false
 	var actual int64
-	var compacted struct {
-		Output []json.RawMessage `json:"output"`
-		Usage  responseUsage     `json:"usage"`
-	}
-	compactRaw := &rawBox{}
+	var result modelResult
 	defer func() {
-		output := compactRaw.text
-		if output == "" && err == nil {
-			output = string(asJSON(compacted.Output))
-		}
-		finishCompact(ctx, stepID, output, err, settled, actual, reserve, call, m.Config.APIKey)
+		finishCompact(ctx, stepID, result.Raw, err, settled, actual, reserve, call, m.apiKey)
 	}()
-	call, err = m.Store.reserveCall(ctx, m.Config, reserve, "OpenAI", m.Config.Model, "compact")
+	call, err = m.Store.reserveCall(ctx, m.Config, reserve, m.Provider, m.Model, "compact")
 	if err != nil {
 		return ChatMessage{}, &modelAccountingError{err}
 	}
 	defer m.Store.finishUsageCall(call)
-	if err = requestJSON(context.WithValue(ctx, rawResponseKey{}, compactRaw), m.Client, m.Config.BaseURL+"/responses/compact", m.Config.APIKey, compactBody, &compacted); err != nil {
+	if result, err = compactor.Compact(ctx, compactBody); err != nil {
 		if releaseErr := m.releaseUnsent(call, err); releaseErr != nil {
 			return ChatMessage{}, releaseErr
 		}
 		return ChatMessage{}, fmt.Errorf("上下文压缩尚未完成：%w", err)
 	}
-	if compacted.Usage.InputTokens+compacted.Usage.OutputTokens > 0 {
-		actual, err = compacted.Usage.costMicros(price)
+	if result.Usage.InputTokens+result.Usage.OutputTokens > 0 {
+		actual, err = result.CostMicros, result.CostError
 		if err != nil {
 			return ChatMessage{}, err
 		}
-		if err = m.Store.settleCall(call, actual, compacted.Usage, ""); err != nil {
+		if err = m.Store.settleCall(call, actual, result.Usage, ""); err != nil {
 			return ChatMessage{}, &modelAccountingError{err}
 		}
 		settled = true
 	}
-	for _, item := range compacted.Output {
-		var value struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(item, &value) == nil && value.Type == "compaction" {
-			return ChatMessage{Role: "user", ResponseItems: compacted.Output, OutputTokens: compacted.Usage.OutputTokens}, nil
-		}
+	if len(result.Message.ResponseItems) > 0 {
+		return result.Message, nil
 	}
 	return ChatMessage{}, fmt.Errorf("%w：服务未返回可续接的压缩记录", ErrContextCapacity)
 }

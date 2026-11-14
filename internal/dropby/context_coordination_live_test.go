@@ -22,7 +22,7 @@ func TestLiveContextRecallAndCoordination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.APIKey == "" {
+	if !cfg.ModelReady() {
 		t.Fatal("缺少模型配置")
 	}
 	dir := os.Getenv("DROPBY_CONTEXT_DATA_DIR")
@@ -35,7 +35,7 @@ func TestLiveContextRecallAndCoordination(t *testing.T) {
 	}
 	defer s.Close()
 	cfg.WeeklyBudgetMicros = 1_100_000
-	cfg.MaxOutputTokens, cfg.DeepMaxOutputTokens = 2000, 8000
+	cfg.setModelLimit(2000, 8000)
 	members := []Member{
 		{ID: "recall_lan", Name: "阿岚", Color: "blue", AvatarIcon: "owl", CreatedAt: now(), Tools: []string{}, Profile: "沉稳、具体，愿意帮朋友把点子落地。做协调者时先核对以前约好的边界，再挑合适的朋友做，不抢同伴创作。结果到了以后能简短接住，不催人、不重复派相同任务。"},
 		{ID: "recall_ya", Name: "小芽", Color: "jade", AvatarIcon: "sprout", CreatedAt: now(), Tools: []string{"save_artifact"}, Profile: "有一点顽皮的创作者，喜欢做小巧的互动网页，文字很短。接到清楚委托就自己制作并用save_artifact保存；已有同类工作时不要重复安排，没必要参与时可以安静。"},

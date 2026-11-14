@@ -9,3 +9,9 @@ test-results/
 output/playwright/
 .playwright-cli/
 output/design/
+/models*.yaml
+/models*.yml
+!/models.example.yaml
+/config*.yaml
+/config*.yml
+!/config.example.yaml

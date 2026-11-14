@@ -43,8 +43,9 @@ func TestActualInputCountOverridesByteFalsePositive(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.Model, cfg.Reasoning, cfg.BaseURL = "gpt-6.1-sol", "high", server.URL
-	cfg.ContextTokenBudget = 2000
+	cfg.setModelEndpoint(server.URL)
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.Model = "gpt-6.1-sol"; s.setReasoning("high") })
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.ContextTokenBudget = 2000 })
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	if _, err := model.Complete(context.Background(), largeArtifactChain(), nil, false); err != nil {
 		t.Fatal(err)
@@ -79,7 +80,8 @@ func TestNativeCompactionPreservesCoreProtocolAndContinuesFromReturnedWindow(t *
 			if !strings.Contains(body, "saved_call") || !strings.Contains(body, "saved_artifact") || !strings.Contains(body, "已保存的完整作品") {
 				t.Error("压缩输入必须包含完整调用和已保存结果")
 			}
-			json.NewEncoder(w).Encode(map[string]any{"output": returned, "usage": map[string]any{"input_tokens": 9000, "output_tokens": 40, "input_tokens_details": map[string]int{"cached_tokens": 3000, "cache_write_tokens": 2000}}})
+			json.NewEncoder(w).Encode(map[string]any{"output": returned, "usage": map[string]any{"input_tokens": 9000, "output_tokens": 40, "input_tokens_details": map[string]any{"cached_tokens": 3000, "cache_write_tokens": 2000,
+				"cache_write_tokens_details": map[string]int{"ttl_30m_tokens": 1000, "ttl_12h_tokens": 1000}}}})
 		case "/responses":
 			generations++
 			if strings.Count(body, profile) != 1 {
@@ -96,8 +98,9 @@ func TestNativeCompactionPreservesCoreProtocolAndContinuesFromReturnedWindow(t *
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.Model, cfg.Reasoning, cfg.BaseURL = "gpt-6.1-sol", "high", server.URL
-	cfg.ContextTokenBudget = 3000
+	cfg.setModelEndpoint(server.URL)
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.Model = "gpt-6.1-sol"; s.setReasoning("high") })
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.ContextTokenBudget = 3000 })
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	chain := largeArtifactChain()
 	chain[0].Content += "\n" + profile
@@ -122,13 +125,13 @@ func TestNativeCompactionPreservesCoreProtocolAndContinuesFromReturnedWindow(t *
 		t.Fatalf("压缩应只发生一次: compact=%d generate=%d count=%d", compactCalls, generations, countCalls)
 	}
 	usage, _ := s.Usage()
-	// 压缩为 $0.0137，两次生成各 $0.0014；缓存输入不能再按普通输入收费。
-	if usage.Calls != 3 || usage.InputTokens != 10200 || usage.CostMicros != 16500 {
+	// 压缩为 $0.0162（1000 个短缓存写，1000 个长缓存写），两次生成各 $0.0014；缓存输入不能再按普通输入收费。
+	if usage.Calls != 3 || usage.InputTokens != 10200 || usage.CostMicros != 19000 {
 		t.Fatalf("压缩和生成都应结算，计数不当作生成: %+v", usage)
 	}
 	start, end := budgetWeek(time.Now())
 	report, err := s.readUsageReport(context.Background(), start, end, time.Now())
-	if err != nil || len(report.Entries) != 3 || report.Entries[2].Purpose != "compact" || report.Entries[2].CostMicros != 13700 {
+	if err != nil || len(report.Entries) != 3 || report.Entries[2].Purpose != "compact" || report.Entries[2].CostMicros != 16200 {
 		t.Fatalf("应能单独查到压缩费用，计数不进入明细: %+v %v", report, err)
 	}
 }
@@ -143,8 +146,9 @@ func TestCountingFailurePreservesChainAndIsRecoverable(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.Model, cfg.Reasoning, cfg.BaseURL = "gpt-6.1-sol", "high", server.URL
-	cfg.ContextTokenBudget = 2000
+	cfg.setModelEndpoint(server.URL)
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.Model = "gpt-6.1-sol"; s.setReasoning("high") })
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.ContextTokenBudget = 2000 })
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	chain := largeArtifactChain()
 	_, err := completeModel(context.Background(), model, &chain, nil, false)
@@ -176,7 +180,7 @@ func TestLiveResponsesCountCompactAndContinue(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	cfg.ContextTokenBudget, cfg.MaxOutputTokens, cfg.Reasoning = 8000, 2000, "high"
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.ContextTokenBudget = 8000; s.setOutputLimit(2000); s.setReasoning("high") })
 	cfg.WeeklyBudgetMicros = 900000
 	model := &HTTPModel{Config: cfg, Store: s, Client: &http.Client{Timeout: 3 * time.Minute}}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)

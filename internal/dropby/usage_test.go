@@ -26,7 +26,7 @@ func TestUsageReportKeepsHistoryAndReconcilesPerRequest(t *testing.T) {
 	}
 	work := addWork(t, s, room, m, "research")
 	call := workUsage("compact", m.ID, room, work)
-	call.provider, call.model = "OpenAI", cfg.Model
+	call.provider, call.model = "OpenAI", cfg.Models.Scenes[sceneMemberSettings].Model
 	reserved, err := s.reserveBudget(ctx, cfg, 1000, at.Add(4*time.Hour), &call)
 	if err != nil {
 		t.Fatal(err)
@@ -38,7 +38,7 @@ func TestUsageReportKeepsHistoryAndReconcilesPerRequest(t *testing.T) {
 		}
 	}
 	call = workUsage("control", "", room, work)
-	call.provider, call.model = "OpenAI", cfg.Model
+	call.provider, call.model = "OpenAI", cfg.Models.Scenes[sceneMemberSettings].Model
 	pending, err := s.reserveBudget(ctx, cfg, 250, at, &call)
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func TestUsageCallPreservesReservationDateAndRestartsUnknown(t *testing.T) {
 	cfg := testConfig()
 	start, _ := budgetWeek(time.Now())
 	ctx := context.Background()
-	call := usageCall{purpose: "chat", provider: "OpenAI", model: cfg.Model}
+	call := usageCall{purpose: "chat", provider: "OpenAI", model: cfg.Models.Scenes[sceneMemberSettings].Model}
 	old, err := s.reserveBudget(ctx, cfg, 800000, start.Add(-time.Minute), &call)
 	if err != nil {
 		t.Fatal(err)

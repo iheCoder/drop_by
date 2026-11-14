@@ -57,10 +57,12 @@ func (e *Engine) Run(ctx context.Context) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
-		if e.Config.APIKey != "" {
+		if e.Config.Models.ready(sceneExploration) {
 			if err := e.Store.ScheduleExploration(); err != nil {
 				slog.Error("安排探索失败", "error", err)
 			}
+		}
+		if e.Config.Models.ready(sceneChat) || e.Config.Models.ready(sceneResearch) || e.Config.Models.ready(sceneExploration) {
 			e.dispatch(ctx)
 		}
 		select {
@@ -104,7 +106,7 @@ func (e *Engine) dispatch(ctx context.Context) {
 	if err := e.Store.recheckBudgetWait(e.Config); err != nil {
 		slog.Error("重新核对额度等待失败", "error", err)
 	}
-	works, err := e.Store.DueWorks()
+	works, err := e.Store.dueWorks(e.Config.Models.ready(sceneChat), e.Config.Models.ready(sceneResearch), e.Config.Models.ready(sceneExploration))
 	if err != nil {
 		slog.Error("读取后台工作失败", "error", err)
 		return
@@ -577,13 +579,13 @@ func (e *Engine) act(ctx context.Context, c Conversation, m Member, w Work, inst
 }
 
 func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work, instruction string) (Outcome, error) {
-	// 后续聊天仍使用发言模型。只有已经进入实际研究的工作才用主模型深入执行，
-	// 不以“第几句话”决定升级，也不改写成员自己的参与意愿。
-	role, purpose := "chat", "chat"
-	if w.Kind == "research" || c.Kind == "personal" {
-		role, purpose = "", "research"
+	// 只根据当前工作选择场景。成员身份、行动方式与工具权限由其原有逻辑决定。
+	scene := actionScene(c.Kind == "personal", w.Kind)
+	purpose := "chat"
+	if scene != sceneChat {
+		purpose = "research" // 沿用账本的统计口径，个人探索仍由自主来源字段区分。
 	}
-	ctx = context.WithValue(ctx, modelRoleKey{}, role)
+	ctx = context.WithValue(ctx, modelSceneKey{}, scene)
 	ctx = withUsageCall(ctx, workUsage(purpose, m.ID, c, w))
 	ctx = context.WithValue(ctx, personalSinceKey{}, w.CreatedAt)
 	if c.Kind == "personal" && w.Kind == "explore" && w.ID != "" {
@@ -602,10 +604,6 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 	noteActor(ctx, m.ID, c.ID)
 	e.setActivity(c.ID, m.ID, observationLabel(c, w))
 	defer e.setActivity(c.ID, m.ID, "")
-	// 研究使用更充分的推理；工具能力不按首轮/后续轮限制。
-	if w.Kind == "research" || c.Kind == "personal" {
-		ctx = context.WithValue(ctx, deepReasoningKey{}, true)
-	}
 	// 优先恢复未完调用；新行动接续本人的工作窗口，不借用其他成员的理解。
 	cp, loadErr := e.Store.loadAction(w.ID, m.ID)
 	if loadErr != nil && !errors.Is(loadErr, sql.ErrNoRows) {

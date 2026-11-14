@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"drop_by/internal/dropby/model"
+
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
@@ -68,7 +70,9 @@ func TestSteeringProtocolAccountingAndPendingTools(t *testing.T) {
 				if mode == "incomplete" {
 					status = "incomplete"
 				}
-				write(map[string]any{"type": "response." + status, "response": map[string]any{"id": "first", "status": status, "incomplete_details": map[string]string{"reason": "steered"}, "output": output, "usage": map[string]int{"input_tokens": 10, "output_tokens": 2}}})
+				write(map[string]any{"type": "response." + status, "response": map[string]any{"id": "first", "status": status, "incomplete_details": map[string]string{"reason": "steered"}, "output": output, "usage": map[string]any{"input_tokens": 10, "output_tokens": 2,
+					"input_tokens_details": map[string]any{"cached_tokens": 2, "cache_write_tokens": 4,
+						"cache_write_tokens_details": map[string]int{"ttl_30m_tokens": 2, "ttl_12h_tokens": 2}}}}})
 				if mode == "rejected" || mode == "tool_pending" {
 					return
 				}
@@ -77,15 +81,15 @@ func TestSteeringProtocolAccountingAndPendingTools(t *testing.T) {
 			}))
 			defer server.Close()
 			cfg := testConfig()
-			cfg.BaseURL = server.URL
-			cfg.MidTurnSteering = true
-			model := &HTTPModel{Store: s, Config: cfg, Client: server.Client()}
-			input := &steeringInput{Read: func() ([]Message, error) {
-				return []Message{{ID: "human_new", AuthorID: "user", Body: "新要求"}}, nil
+			cfg.setModelEndpoint(server.URL)
+			cfg.setSteering(true)
+			client := &HTTPModel{Store: s, Config: cfg, Client: server.Client()}
+			input := &steeringInput{Read: func() ([]model.Update, error) {
+				return []model.Update{{ID: "human_new", Data: json.RawMessage(asJSON(Message{ID: "human_new", AuthorID: "user", Body: "新要求"}))}}, nil
 			}}
 			ctx := context.WithValue(context.Background(), steeringKey{}, input)
 			chain := []ChatMessage{{Role: "user", Content: "original task"}}
-			result, err := completeModel(ctx, model, &chain, nil, false)
+			result, err := completeModel(ctx, client, &chain, nil, false)
 			usage, _ := s.Usage()
 			if mode == "disconnect" {
 				if err == nil || usage.UnsettledMicros == 0 {
@@ -98,6 +102,15 @@ func TestSteeringProtocolAccountingAndPendingTools(t *testing.T) {
 			}
 			if usage.UnsettledMicros != 0 {
 				t.Fatalf("已知结果仍留预留：%+v", usage)
+			}
+			// 第一笔 Terra 的输入拆成 4 普通、2 读、2 短写、2 长写，另计 2 输出。
+			// 每笔分别向上取整，第一笔 22 微美元；若收到续接，再加 35 微美元。
+			wantCost := int64(22)
+			if mode == "completed" || mode == "incomplete" {
+				wantCost += 35
+			}
+			if usage.CostMicros != wantCost {
+				t.Fatalf("WebSocket 缓存写入细分结算错误: %d, 预期 %d", usage.CostMicros, wantCost)
 			}
 			if mode == "tool_pending" {
 				if len(result.ToolCalls) != 1 || len(chain) != 1 || usage.InputTokens != 10 {
@@ -123,14 +136,14 @@ func TestSteeringReadsOnlyNewHumanMessages(t *testing.T) {
 	s.Publish(Message{ID: "peer", ConversationID: c.ID, AuthorID: m.ID, Body: "BOT 的建议", CreatedAt: now()}, c.Revision)
 	s.Publish(userMessage(c, "真人要求"), c.Revision)
 	cfg := testConfig()
-	cfg.MidTurnSteering = true
+	cfg.setSteering(true)
 	engine := NewEngine(s, modelFunc(func(ctx context.Context, _ []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		source := ctx.Value(steeringKey{}).(*steeringInput)
 		messages, err := source.Read()
 		if err != nil {
 			return ChatMessage{}, err
 		}
-		if len(messages) != 1 || messages[0].AuthorID != "user" {
+		if len(messages) != 1 || !strings.Contains(string(messages[0].Data), `"author_id":"user"`) {
 			t.Fatal("把 BOT 发言升级为真人 steering")
 		}
 		source.Applied[messages[0].ID] = true // 模拟该真人补充的自动续接已经完成。
@@ -165,16 +178,15 @@ func TestLiveGPT6Steering(t *testing.T) {
 	for _, name := range []string{"gpt-6.1-terra", "gpt-6.1-sol"} {
 		t.Run(name, func(t *testing.T) {
 			s, _, _ := fixture(t)
-			cfg.Model = name
-			cfg.MaxOutputTokens = 128
-			cfg.MidTurnSteering = true
-			model := &HTTPModel{Store: s, Config: cfg, Client: &http.Client{Timeout: 45 * time.Second}}
-			source := &steeringInput{Read: func() ([]Message, error) {
-				return []Message{{ID: "update", AuthorID: "user", Body: "Instead reply with the single word UPDATED."}}, nil
+			cfg.editScenes([]modelScene{sceneMemberSettings}, func(s *modelSettings) { s.Model = name; s.setOutputLimit(128) })
+			cfg.setSteering(true)
+			client := &HTTPModel{Store: s, Config: cfg, Client: &http.Client{Timeout: 45 * time.Second}}
+			source := &steeringInput{Read: func() ([]model.Update, error) {
+				return []model.Update{{ID: "update", Data: json.RawMessage(asJSON(Message{ID: "update", AuthorID: "user", Body: "Instead reply with the single word UPDATED."}))}}, nil
 			}}
 			ctx := context.WithValue(context.Background(), steeringKey{}, source)
 			chain := []ChatMessage{{Role: "user", Content: "Reply with the single word ORIGINAL."}}
-			reply, err := completeModel(ctx, model, &chain, nil, false)
+			reply, err := completeModel(ctx, client, &chain, nil, false)
 			if err != nil {
 				t.Fatal(err)
 			}

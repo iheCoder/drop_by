@@ -157,14 +157,14 @@ function usageRecord(row,daily,open) {
   const owner=usageIdentity(row,'member')[1], matter=usageMatterName(row);
   const time=(daily?'':usageDateLabel(row.day)+' ')+row.started_at.slice(11,16);
   const tokens=n=>n.toLocaleString('zh-CN');
-  const usage=!settled ? '等待核实' : row.provider==='DeepSeek' ? '1 次外部请求' :
+  const usage=!settled ? '等待核实' : (row.purpose==='search' || row.purpose==='read_page') ? '1 次外部请求' :
     `输入 ${tokens(row.input_tokens)} · 输出 ${tokens(row.output_tokens)} tokens${row.cached_tokens?'<br>缓存读取 '+tokens(row.cached_tokens):''}${row.cache_write_tokens?'<br>缓存写入 '+tokens(row.cache_write_tokens):''}${row.reasoning_tokens!=null?'<br>其中推理 '+tokens(row.reasoning_tokens)+' tokens':''}`;
   const room=state.conversations.find(c=>c.id===row.conversation_id);
   const link=room ? `<button type="button" class="usage-pill" data-action="usage-room" data-value="${escapeHTML(room.id)}">打开原会话 ${icon('chevron-right')}</button>` : '';
   return `<details class="usage-record" data-record="${row.id}" ${open?'open':''}><summary>${usageAvatar(row.member_id)}
     <span class="usage-record-label"><strong>${kind}${settled?'':` <span class="usage-pending">· ${row.status==='running'?'处理中':'待核实'}</span>`}</strong><small>${escapeHTML(time+' · '+owner+' · '+matter)}</small></span>
     <b>${amount}</b>${icon('chevron-down')}</summary>
-    <div class="usage-record-body"><dl><div><dt>模型 / 工具</dt><dd>${escapeHTML(row.model)}</dd></div><div><dt>用量</dt><dd>${usage}</dd></div><div><dt>结果</dt><dd>${status}</dd></div>
+    <div class="usage-record-body"><dl><div><dt>模型 / 工具</dt><dd>${escapeHTML(row.model)}</dd></div>${row.provider?`<div><dt>接入点</dt><dd>${escapeHTML(row.provider)}</dd></div>`:''}<div><dt>用量</dt><dd>${usage}</dd></div><div><dt>结果</dt><dd>${status}</dd></div>
     ${row.autonomous?'<div><dt>来源</dt><dd>成员自主行动</dd></div>':''}</dl>${link}</div></details>`;
 }
 function usageHistory(report,ascending) {

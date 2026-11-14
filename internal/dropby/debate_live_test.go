@@ -51,7 +51,7 @@ func TestLiveDebateParticipation(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := os.Getenv("DROPBY_DEBATE_DIR")
-	if dir == "" || cfg.APIKey == "" {
+	if dir == "" || !cfg.ModelReady() {
 		t.Fatal("需要独立目录和模型凭据")
 	}
 	raw, err := os.ReadFile(os.Getenv("DROPBY_DEBATE_MEMBERS"))
@@ -65,7 +65,7 @@ func TestLiveDebateParticipation(t *testing.T) {
 	cfg.WeeklyBudgetMicros = 2_000_000
 	cfg.TemporaryBudgetMicros = 0
 	// 口头辩论不生成大作品，缩小单请求预留；实际累计账本不清零。
-	cfg.MaxOutputTokens, cfg.DeepMaxOutputTokens = 2500, 7000
+	cfg.setModelLimit(2500, 7000)
 	s, err := OpenStore(dir)
 	if err != nil {
 		t.Fatal(err)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 )
 
@@ -44,65 +43,17 @@ func TestSelectedModelsUseResponses(t *testing.T) {
 			}))
 			defer server.Close()
 			cfg := testConfig()
-			cfg.Model = tc.model
-			cfg.Reasoning = tc.reasoning
-			cfg.BaseURL = server.URL
+			cfg.editScenes([]modelScene{sceneMemberSettings}, func(s *modelSettings) {
+				s.Model = tc.model
+				s.setReasoning(tc.reasoning)
+			})
+			cfg.setModelEndpoint(server.URL)
 			model := HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 			result, err := model.Complete(context.Background(), []ChatMessage{{Role: "user", Content: "Reply OK"}}, nil, false)
 			if err != nil || result.Content != "OK" {
 				t.Fatalf("请求未完成: %+v %v", result, err)
 			}
 		})
-	}
-}
-
-// 同一个 HTTPModel 可以同时处理判断、聊天和研究；职责配置只属于当前请求。
-// 特别检查普通后续发言不会因为旧的深入标记而误用研究模型。
-func TestModelRolesStayWithRequest(t *testing.T) {
-	s, _, _ := fixture(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		input := body["input"].([]any)
-		expected := input[0].(map[string]any)["content"].(string)
-		actual := body["model"].(string) + "/" + body["reasoning"].(map[string]any)["effort"].(string)
-		if r.URL.Path != "/responses" || actual != expected {
-			t.Errorf("请求配置串线: %s %s，期望 %s", r.URL.Path, actual, expected)
-		}
-		if _, exists := body["max_tokens"]; exists {
-			t.Error("Responses 混入旧参数")
-		}
-		w.Write([]byte(`{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}],"usage":{"input_tokens":10,"output_tokens":2}}`))
-	}))
-	defer server.Close()
-	cfg := testConfig()
-	cfg.BaseURL = server.URL
-	cfg.Model = "gpt-6.1-sol"
-	cfg.ChatModel = "gpt-6.1-terra"
-	cfg.Reasoning = "low"
-	cfg.DeepReasoning = "high"
-	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
-	var wg sync.WaitGroup
-	for _, tc := range []struct {
-		role, expected string
-		deep           bool
-	}{
-		{"chat", "gpt-6.1-terra/none", false},
-		{"chat", "gpt-6.1-terra/none", true}, {"", "gpt-6.1-sol/high", true}, {"", "gpt-6.1-sol/low", false},
-	} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ctx := context.WithValue(context.Background(), modelRoleKey{}, tc.role)
-			ctx = context.WithValue(ctx, deepReasoningKey{}, tc.deep)
-			if _, err := model.Complete(ctx, []ChatMessage{{Role: "user", Content: tc.expected}}, nil, false); err != nil {
-				t.Error(err)
-			}
-		}()
-	}
-	wg.Wait()
-	if model.Config.Model != cfg.Model || model.Config.Reasoning != cfg.Reasoning {
-		t.Fatal("共享模型配置被覆盖")
 	}
 }
 
@@ -115,9 +66,8 @@ func TestResponsesUsesFinalAnswerPhase(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.Model = "gpt-6-luna"
-	cfg.Reasoning = "none"
-	cfg.BaseURL = server.URL
+	cfg.editScenes([]modelScene{sceneMemberSettings}, func(s *modelSettings) { s.Model = "gpt-6-luna"; s.setReasoning("none") })
+	cfg.setModelEndpoint(server.URL)
 	model := HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	result, err := model.Complete(context.Background(), []ChatMessage{{Role: "user", Content: "返回判断 JSON"}}, nil, true)
 	if err != nil || result.Content != `{"action":"pass"}` || len(result.ResponseItems) != 2 {

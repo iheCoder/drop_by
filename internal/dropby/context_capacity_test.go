@@ -103,7 +103,8 @@ func TestCapacityContinuesWithNewBatchAfterOversizedCompaction(t *testing.T) {
 			}))
 			defer server.Close()
 			cfg := testConfig()
-			cfg.ContextTokenBudget, cfg.BaseURL = 25_000, server.URL
+			cfg.setModelEndpoint(server.URL)
+			cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.ContextTokenBudget = 25_000 })
 			model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 			engine := NewEngine(s, model, cfg)
 			_, err := engine.memberAction(context.Background(), room, member, work)
@@ -192,7 +193,8 @@ func TestCapacityPagesOversizedOrganizeSiblingWithoutLosingSmallResult(t *testin
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.ContextTokenBudget, cfg.BaseURL = 25_000, server.URL
+	cfg.setModelEndpoint(server.URL)
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.ContextTokenBudget = 25_000 })
 	engine := NewEngine(s, &HTTPModel{Config: cfg, Store: s, Client: server.Client()}, cfg)
 	if _, err := engine.memberAction(context.Background(), room, member, work); err != nil {
 		t.Fatal(err)
@@ -249,7 +251,8 @@ func TestCapacityKeepsNativeStateWhenNewResultNeedsPaging(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.ContextTokenBudget, cfg.BaseURL = 16_000, server.URL
+	cfg.setModelEndpoint(server.URL)
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.ContextTokenBudget = 16_000 })
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	defs := []ToolDefinition{definition("read_tool_result", "分页读取", map[string]any{"id": textField("来源")}, "id")}
 	if _, err := completeModel(context.Background(), model, &chain, defs, false); err != nil {

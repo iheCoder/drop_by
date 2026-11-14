@@ -51,8 +51,9 @@ func TestActualCountKeepsCompleteToolTextAndProtocol(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.Model, cfg.Reasoning, cfg.BaseURL = "gpt-6.1-sol", "high", server.URL
-	cfg.ContextTokenBudget = 8000
+	cfg.setModelEndpoint(server.URL)
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.Model = "gpt-6.1-sol"; s.setReasoning("high") })
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.ContextTokenBudget = 8000 })
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	if _, err := model.Complete(context.Background(), messages, nil, false); err != nil {
 		t.Fatal(err)
@@ -69,8 +70,9 @@ func TestInvalidOutputReservationDoesNotCallProvider(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1) }))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.Model, cfg.Reasoning, cfg.BaseURL = "gpt-6.1-sol", "high", server.URL
-	cfg.ContextTokenBudget, cfg.MaxOutputTokens = 1000, 1000
+	cfg.setModelEndpoint(server.URL)
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.Model = "gpt-6.1-sol"; s.setReasoning("high") })
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.ContextTokenBudget = 1000; s.setOutputLimit(1000) })
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	_, err := model.Complete(context.Background(), []ChatMessage{{Role: "user", Content: "第一句话"}}, nil, false)
 	u, _ := s.Usage()

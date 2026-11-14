@@ -158,7 +158,7 @@ func TestModelRequestRetriesOnlyTransientFailure(t *testing.T) {
 			}))
 			defer server.Close()
 			cfg := testConfig()
-			cfg.BaseURL = server.URL
+			cfg.setModelEndpoint(server.URL)
 			model := HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 			_, err := model.Complete(context.Background(), []ChatMessage{{Role: "user", Content: "test"}}, nil, true)
 			if status == 503 && (err != nil || calls.Load() != 2) {

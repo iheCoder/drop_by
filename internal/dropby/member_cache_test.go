@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"drop_by/internal/dropby/model/openai"
 )
 
 // 从有旧历史的个人窗口连续开启独立行动，捕获真正发出的请求。第一次仍用短缓存；
@@ -45,16 +47,19 @@ func TestPersonalExplorationKeepsLongCacheAtRepeatedHistory(t *testing.T) {
 		if number == 2 {
 			output = json.RawMessage(`{"type":"function_call","name":"remember","call_id":"call_cache_fixture","arguments":"{\"body\":\"本次新发现\"}"}`)
 		}
-		response := responseEnvelope{ID: "resp_" + strconv.Itoa(number), Status: "completed", Output: []json.RawMessage{output}}
-		response.Usage.InputTokens, response.Usage.OutputTokens = 2600, 50
+		response := map[string]any{"id": "resp_" + strconv.Itoa(number), "status": "completed", "output": []json.RawMessage{output},
+			"usage": responseUsage{InputTokens: 2600, OutputTokens: 50}}
 		if err := json.NewEncoder(w).Encode(response); err != nil {
 			t.Error(err)
 		}
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.BaseURL, cfg.Model, cfg.DeepReasoning = server.URL, "gpt-6.1-sol", "high"
-	engine := NewEngine(s, &HTTPModel{Store: s, Config: cfg, Client: server.Client()}, cfg)
+	cfg.setModelEndpoint(server.URL)
+	cfg.editScenes([]modelScene{sceneExploration}, func(s *modelSettings) { s.Model = "gpt-6.1-sol"; s.setReasoning("high") })
+	at := time.Now()
+	client := &HTTPModel{Store: s, Config: cfg, Client: server.Client(), cacheTime: func() time.Time { return at }}
+	engine := NewEngine(s, client, cfg)
 	run := func() {
 		t.Helper()
 		work := Work{ID: newID("work"), MemberID: member.ID, Kind: "explore", Status: "pending",
@@ -68,9 +73,9 @@ func TestPersonalExplorationKeepsLongCacheAtRepeatedHistory(t *testing.T) {
 	}
 	run()
 	// 模拟已过 30 分钟，只改变缓存观察时钟，不改成员当前情况与工具流程。
-	engine.gate(member.ID).requestCaches[""].lastAt = time.Now().Add(-31 * time.Minute)
+	at = at.Add(31 * time.Minute)
 	run()
-	engine.gate(member.ID).requestCaches[""].lastAt = time.Now().Add(-31 * time.Minute)
+	at = at.Add(31 * time.Minute)
 	run()
 	if len(requests) != 4 {
 		t.Fatalf("应捕获首次、下次行动、工具续接和第三次行动四份请求，实际 %d", len(requests))
@@ -100,52 +105,38 @@ func TestPersonalExplorationKeepsLongCacheAtRepeatedHistory(t *testing.T) {
 
 // 改写旧窗口后，即使最后那条消息文字相同，也不能继续按原来的开头写长缓存。
 func TestPersonalCacheDropsLongMarkWhenEarlierInputChanges(t *testing.T) {
-	model := &HTTPModel{Config: testConfig()}
+	call := responsesForTest(testConfig())
+	client := call.backend.(*openai.Client)
 	at := time.Now()
-	first := memberCacheRequest{workID: "one", at: at}
 	messages := []ChatMessage{
 		{Role: "system", Content: "角色设定"},
 		{Role: "user", Content: "旧记录"},
 		{Role: "user", Content: "仍原样保留的最后一句"},
 		{Role: "user", Content: `{"self":{},"trigger":{},"time":"today"}`},
 	}
-	plan := func(r *memberCacheRequest) {
+	plan := func(previous any, work string, gap time.Duration) (any, bool) {
 		t.Helper()
-		if _, err := model.responseBodyWithCache(messages, nil, true, r); err != nil {
+		client.BeginCache(previous, work, at.Add(gap))
+		raw, err := call.responseBody(messages, nil, true)
+		if err != nil {
 			t.Fatal(err)
 		}
-		r.record(t.Context(), model.Config.Model, modelResult{})
+		state, _ := client.FinishCache(modelResult{})
+		return state, strings.Contains(string(raw), `"ttl":"12h"`)
 	}
-	plan(&first)
-	quick := memberCacheRequest{next: first.next, workID: "quick", at: at.Add(time.Minute)}
-	plan(&quick)
-	if quick.longWrite {
+	first, _ := plan(nil, "one", 0)
+	if _, long := plan(first, "quick", time.Minute); long {
 		t.Fatal("短间隔的独立行动应沿用短缓存")
 	}
-	second := memberCacheRequest{next: first.next, workID: "two", at: at.Add(31 * time.Minute)}
-	plan(&second)
-	if !second.longWrite {
+	second, long := plan(first, "two", 31*time.Minute)
+	if !long {
 		t.Fatal("同一段历史跨活动出现，应启用长缓存")
 	}
 	messages[1] = ChatMessage{Role: "user", ResponseItems: []json.RawMessage{
 		json.RawMessage(`{"type":"compaction","encrypted_content":"opaque"}`),
 	}}
-	compacted := memberCacheRequest{next: second.next, workID: "two", at: at.Add(32 * time.Minute)}
-	plan(&compacted)
-	if compacted.longWrite || !compacted.next.longUntil.IsZero() {
+	if _, long := plan(second, "two", 32*time.Minute); long {
 		t.Fatal("压缩后沿用了旧缓存线")
-	}
-}
-
-func TestLongCacheCostWithMissingDurationBreakdown(t *testing.T) {
-	price, _ := priceForModel("gpt-6.1-sol")
-	model := &HTTPModel{longCacheRequested: true}
-	u := responseUsage{InputTokens: 2000}
-	u.InputDetails.CachedTokens, u.InputDetails.CacheWriteTokens = 1000, 1000
-	// 网关仅给出写入总量时，长标记可能覆盖这 1000 token。读中部分仍按读取价。
-	got, err := model.responseCost(u, price)
-	if err != nil || got != 5100 {
-		t.Fatalf("长标记缺时长明细应保守估算 $0.0051，实际 %d 微美元 (%v)", got, err)
 	}
 }
 

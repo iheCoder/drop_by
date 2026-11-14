@@ -77,13 +77,17 @@ func TestCompactionSavedBeforeFollowupNetworkFailure(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.Model = "gpt-6.1-sol"
-	cfg.BaseURL = server.URL
-	cfg.ContextTokenBudget = 2000
-	m := &HTTPModel{Store: s, Config: cfg, Client: server.Client()}
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.Model = "gpt-6.1-sol" })
+	cfg.setModelEndpoint(server.URL)
+	cfg.editScenes(modelScenes[:], func(s *modelSettings) { s.ContextTokenBudget = 2000 })
+	httpModel := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
+	m, err := httpModel.newModelCall(cfg.Models.route(sceneMemberSettings))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var saved []ChatMessage
 	ctx := context.WithValue(context.Background(), preparedContextKey{}, savePreparedContext(func(ms []ChatMessage) error { saved = ms; return nil }))
-	_, _, _, err := m.prepareLargeResponse(ctx, largeArtifactChain(), nil, false)
+	_, _, _, err = m.prepareLargeResponse(ctx, largeArtifactChain(), nil, false)
 	if err == nil || !strings.Contains(asJSON(saved), "saved") {
 		t.Fatalf("成功压缩丢失: %v %v", saved, err)
 	}
@@ -108,12 +112,13 @@ func (unsentTransport) RoundTrip(*http.Request) (*http.Response, error) {
 func TestUnsentRequestReleasesReservation(t *testing.T) {
 	s, _, _ := fixture(t)
 	cfg := testConfig()
-	m := &HTTPModel{Store: s, Config: cfg, Client: &http.Client{Transport: unsentTransport{}}}
+	m := responsesForTest(cfg)
+	m.Store = s
 	call, err := s.reserveCall(context.Background(), cfg, 10000, "OpenAI", "gpt-6.1-sol", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = requestJSON(context.Background(), m.Client, "http://unused/responses", "", []byte(`{}`), &map[string]any{})
+	err = requestJSON(context.Background(), &http.Client{Transport: unsentTransport{}}, "http://unused/responses", "", []byte(`{}`), &map[string]any{})
 	if err == nil {
 		t.Fatal("expected connection failure")
 	}
@@ -140,7 +145,7 @@ func TestSteeredCursorSavedWithResponseBeforeToolCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cfg := testConfig()
-	cfg.MidTurnSteering = true
+	cfg.setSteering(true)
 	var delivered Message
 	e := NewEngine(s, modelFunc(func(ctx context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		delivered = userMessage(c, "生成中追加的补充")

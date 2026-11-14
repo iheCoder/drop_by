@@ -732,7 +732,7 @@ func TestLiveWakeRhythmPrompts(t *testing.T) {
 		t.Skip("显式开启真实节律提示验收")
 	}
 	cfg, err := LoadConfig()
-	if err != nil || cfg.APIKey == "" {
+	if err != nil || !cfg.ModelReady() {
 		t.Fatal("真实模型配置不可用", err)
 	}
 	s, err := OpenStore(t.TempDir())
@@ -743,7 +743,7 @@ func TestLiveWakeRhythmPrompts(t *testing.T) {
 	model := &HTTPModel{Config: cfg, Store: s, Client: &http.Client{Timeout: 3 * time.Minute}}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	t.Log("model", cfg.Model)
+	t.Log("model", cfg.Models.Scenes[sceneMemberSettings].Model)
 	personas := []struct {
 		name, profile string
 		mustEnable    bool

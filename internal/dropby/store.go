@@ -563,7 +563,16 @@ func (s *Store) Participations(room string) ([]Participation, error) {
 	return list, rows.Err()
 }
 func (s *Store) DueWorks() ([]Work, error) {
-	rows, e := s.db.Query(`SELECT `+workColumns+` FROM work WHERE status IN ('pending','waiting_budget') AND due_at<=? ORDER BY CASE kind WHEN 'chat' THEN 0 WHEN 'share' THEN 1 WHEN 'revisit' THEN 2 WHEN 'research' THEN 2 ELSE 3 END,created_at LIMIT 100`, time.Now().UnixMilli())
+	return s.dueWorks(true, true, true)
+}
+
+// 在原有批次上限之前过滤。缺少某个供应商凭据的排队工作不占用其他场景的名额。
+func (s *Store) dueWorks(chat, research, exploration bool) ([]Work, error) {
+	rows, e := s.db.Query(`SELECT `+workColumns+` FROM work
+WHERE status IN ('pending','waiting_budget') AND due_at<=?
+  AND CASE WHEN kind='research' THEN ? WHEN coalesce(conversation_id,'')='' THEN ? ELSE ? END
+ORDER BY CASE kind WHEN 'chat' THEN 0 WHEN 'share' THEN 1 WHEN 'revisit' THEN 2 WHEN 'research' THEN 2 ELSE 3 END,created_at LIMIT 100`,
+		time.Now().UnixMilli(), research, exploration, chat)
 	if e != nil {
 		return nil, e
 	}

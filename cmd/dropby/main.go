@@ -49,7 +49,7 @@ func run() error {
 	go func() { errCh <- server.ListenAndServe() }()
 	done := make(chan struct{})
 	go func() { engine.Run(ctx); close(done) }()
-	slog.Info("drop_by 已启动", "url", "http://"+c.Address, "model", c.Model, "model_ready", c.APIKey != "", "search_ready", c.SearchKey != "")
+	slog.Info("drop_by 已启动", "url", "http://"+c.Address, "chat_model", c.ChatModelName(), "model_ready", c.ModelReady(), "search_ready", c.SearchKey != "")
 	select {
 	case err = <-errCh:
 		stop()

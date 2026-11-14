@@ -30,7 +30,18 @@ func replyIfWakeAdjust(messages []ChatMessage) (ChatMessage, bool) {
 	return ChatMessage{}, false
 }
 func testConfig() Config {
-	return Config{Address: "127.0.0.1:8090", APIKey: "test-only", Model: "gpt-6.1-terra", BaseURL: "http://localhost", SearchKey: "test-only", ExploreInterval: time.Hour, MaxOutputTokens: 400, WeeklyBudgetMicros: 1_000_000, ToolCostMicros: 750}
+	enabled := true
+	models := modelConfig{
+		Providers: map[string]modelProvider{
+			"OpenAI": {Protocol: responsesProtocol, BaseURL: "http://localhost", apiKey: "test-only", CacheBreakpoints: &enabled},
+		},
+		Scenes: make(map[modelScene]modelSettings),
+	}
+	for _, scene := range modelScenes {
+		models.Scenes[scene] = modelSettings{Provider: "OpenAI", Model: "gpt-6.1-terra", ContextTokenBudget: 100_000, maxOutputTokens: 400,
+			Options: map[string]any{"max_output_tokens": 400}}
+	}
+	return Config{Address: "127.0.0.1:8090", Models: models, SearchKey: "test-only", ExploreInterval: time.Hour, WeeklyBudgetMicros: 1_000_000, ToolCostMicros: 750}
 }
 func fixture(t *testing.T) (*Store, Conversation, Member) {
 	t.Helper()
@@ -399,7 +410,7 @@ func TestModelJSONErrorsAndUsageSettlement(t *testing.T) {
 			}))
 			defer upstream.Close()
 			cfg := testConfig()
-			cfg.BaseURL = upstream.URL
+			cfg.setModelEndpoint(upstream.URL)
 			model := HTTPModel{Config: cfg, Store: s, Client: upstream.Client()}
 			_, err := model.Complete(context.Background(), []ChatMessage{{Role: "user", Content: "返回 JSON"}}, nil, true)
 			if (err != nil) != tc.wantError {
@@ -743,26 +754,24 @@ func TestReasoningBudgetIsPerRequest(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.BaseURL = server.URL
-	cfg.Model = "gpt-6.1-terra"
-	cfg.Reasoning = "none"
-	cfg.DeepReasoning = "high"
-	cfg.MaxOutputTokens = 8000
-	cfg.DeepMaxOutputTokens = 25000
+	cfg.setModelEndpoint(server.URL)
+	cfg.setModelLimit(8000, 25000)
+	cfg.editScenes([]modelScene{sceneMemberSettings}, func(s *modelSettings) { s.setReasoning("none") })
+	cfg.editScenes([]modelScene{sceneResearch}, func(s *modelSettings) { s.setReasoning("high") })
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 	var wg sync.WaitGroup
-	for _, deep := range []bool{true, false, true, false} {
+	for _, scene := range []modelScene{sceneResearch, sceneMemberSettings, sceneResearch, sceneMemberSettings} {
 		wg.Add(1)
-		go func(deep bool) {
+		go func(scene modelScene) {
 			defer wg.Done()
-			ctx := context.WithValue(context.Background(), deepReasoningKey{}, deep)
+			ctx := context.WithValue(context.Background(), modelSceneKey{}, scene)
 			if _, err := model.Complete(ctx, []ChatMessage{{Role: "user", Content: "JSON"}}, nil, true); err != nil {
 				t.Error(err)
 			}
-		}(deep)
+		}(scene)
 	}
 	wg.Wait()
-	if model.Config.Reasoning != "none" || model.Config.MaxOutputTokens != 8000 {
+	if settings := model.Config.Models.Scenes[sceneMemberSettings]; settings.reasoningEffort() != "none" || settings.maxOutputTokens != 8000 {
 		t.Fatal("共享配置被改写")
 	}
 }
@@ -797,12 +806,14 @@ func TestResponsesPreservesReasoningAndToolOutput(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.Model = "gpt-6.1-sol"
-	cfg.BaseURL = server.URL
-	cfg.DeepReasoning = "high"
-	cfg.DeepMaxOutputTokens = 25000
+	cfg.setModelEndpoint(server.URL)
+	cfg.editScenes([]modelScene{sceneResearch}, func(s *modelSettings) {
+		s.Model = "gpt-6.1-sol"
+		s.setReasoning("high")
+		s.setOutputLimit(25000)
+	})
 	model := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
-	ctx := context.WithValue(context.Background(), deepReasoningKey{}, true)
+	ctx := context.WithValue(context.Background(), modelSceneKey{}, sceneResearch)
 	messages := []ChatMessage{{Role: "user", Content: "请核对历史，返回 JSON"}}
 	reply, err := model.Complete(ctx, messages, nil, false)
 	if err != nil {

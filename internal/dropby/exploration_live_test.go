@@ -59,7 +59,7 @@ func TestLiveExplorationPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.APIKey == "" || cfg.SearchKey == "" {
+	if !cfg.ModelReady() || cfg.SearchKey == "" {
 		t.Fatal("需要模型与搜索配置")
 	}
 	cfg.WeeklyBudgetMicros = 300_000

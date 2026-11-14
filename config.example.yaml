@@ -1,0 +1,64 @@
+# 复制为 config.yaml。实际地址、额度和密钥可写在本机文件里。
+# 省略的字段才由环境变量或默认值补齐。
+server:
+  address: 127.0.0.1:8090
+  data_dir: data
+
+search:
+  base_url: https://api.deepseek.com/v1/tools
+  # api_key: "在本机 config.yaml 中填写"
+
+budget:
+  weekly_usd: 20
+
+explore_interval: 30m
+
+models:
+  providers:
+    OpenAI:
+      protocol: openai_responses
+      base_url: https://api.openai.com/v1
+      # api_key: "在本机 config.yaml 中填写"
+      # 省略 api_key 时，OpenAI 条目会查 DROPBY_API_KEY、OPENAI_API_KEY。
+      # 由接入点的实际能力决定。复制此条目连接其他 Responses 服务时可分别关闭。
+      mid_turn_steering: true
+      cache_breakpoints: true
+
+  # provider 引用上面的名字；model 和 options 直接发送给该接入点。
+  # context_token_budget 是 Drop By 为完整请求和输出留出的本地容量。
+  scenes:
+    chat:
+      provider: OpenAI
+      model: gpt-6.1-terra
+      context_token_budget: 100000
+      options:
+        reasoning:
+          effort: "none"
+        max_output_tokens: 8000
+
+    research:
+      provider: OpenAI
+      model: gpt-6.1-sol
+      context_token_budget: 100000
+      options:
+        reasoning:
+          effort: high
+        max_output_tokens: 25000
+
+    personal_exploration:
+      provider: OpenAI
+      model: gpt-6.1-sol
+      context_token_budget: 100000
+      options:
+        reasoning:
+          effort: high
+        max_output_tokens: 25000
+
+    member_settings:
+      provider: OpenAI
+      model: gpt-6.1-sol
+      context_token_budget: 100000
+      options:
+        reasoning:
+          effort: low
+        max_output_tokens: 8000

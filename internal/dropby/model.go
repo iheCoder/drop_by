@@ -1,59 +1,28 @@
 package dropby
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
-	"net/http/httptrace"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
+
+	"drop_by/internal/dropby/model"
+	"drop_by/internal/dropby/upstream"
 )
 
-type ChatMessage struct {
-	ResponseItems   []json.RawMessage `json:"response_items,omitempty"` // Responses 的推理与工具项目仅在本次行动中回传。
-	OutputTokens    int               `json:"output_tokens,omitempty"`  // 服务商报告的输出量；加密推理不能按 Base64 字节当作输入 token。
-	Role            string            `json:"role"`
-	Content         string            `json:"content"`
-	ToolCalls       []ToolCall        `json:"tool_calls,omitempty"`
-	ToolCallID      string            `json:"tool_call_id,omitempty"`
-	PendingDelivery bool              `json:"pending_delivery,omitempty"` // 已进入断点、尚未交给正常生成的原话或工具回执。
-}
-type ToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
-}
-type ToolDefinition struct {
-	Type     string       `json:"type"`
-	Function ToolFunction `json:"function"`
-}
-type ToolFunction struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Parameters  any    `json:"parameters"`
-}
+type ChatMessage = model.ChatMessage
+type ToolCall = model.ToolCall
+type ToolDefinition = model.ToolDefinition
+type ToolFunction = model.ToolFunction
+type responseUsage = model.Tokens
+type modelResult = model.Result
 
 // 测试替换这个边界即可检验真实调度、取消和落盘路径；生产只使用 HTTPModel。
 type Model interface {
 	Complete(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error)
 }
-
-// 只标记本次调用需要深入推理；不改变成员身份，也不持久化额外生命周期。
-type deepReasoningKey struct{}
-
-// 只在现有调用节点标记职责。没有另一次模型分类，也不保存新的任务状态。
-// 空职责使用主模型，供控制理解和实际研究使用。
-type modelRoleKey struct{}
 
 // 调用记账失败属于共享存储故障，不能被参与层当作某位成员的请求失败忽略。
 type modelAccountingError struct{ error }
@@ -61,10 +30,18 @@ type modelAccountingError struct{ error }
 func (e *modelAccountingError) Unwrap() error { return e.error }
 
 type HTTPModel struct {
-	Config             Config
-	Store              *Store
-	Client             *http.Client
-	longCacheRequested bool // 仅本次请求的副本使用，用于没有时长明细时的保守计价。
+	Config    Config
+	Store     *Store
+	Client    *http.Client
+	cacheTime func() time.Time
+}
+
+// 应用侧管理完整行动窗口和每笔费用。网络请求与原生状态都由选中的供应商处理。
+type modelCall struct {
+	*HTTPModel
+	modelRoute
+	backend       model.Session
+	reserveMicros func(input, output int) int64
 }
 
 type Usage struct {
@@ -198,17 +175,8 @@ func (s *Store) weeklyUsageAt(at time.Time) (Usage, error) {
 }
 
 // 模型边界只保留当前 Responses 的结果，不再转换成旧 choices 协议。
-type modelResult struct {
-	ID              string
-	Message         ChatMessage
-	Usage           responseUsage
-	Incomplete      bool
-	CacheDiagnostic *cacheDiagnostic
-	Raw             string // 供应商原文，只给观测，不进入成员上下文。
-}
-
 // 只描述供应商响应的形态。生成正文并不等同于发布，非成员调用也不猜测内部决策。
-func (r modelResult) usageOutcome(ctx context.Context) string {
+func usageOutcome(ctx context.Context, r model.Result) string {
 	if r.Incomplete {
 		return "incomplete"
 	}
@@ -235,49 +203,34 @@ func (m *HTTPModel) Complete(ctx context.Context, messages []ChatMessage, defs [
 }
 
 func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs []ToolDefinition, jsonOutput bool, chain *[]ChatMessage) (ChatMessage, error) {
-	// 使用副本调整请求配置，避免多个成员并发调用时互相污染。
-	local := *m
-	m = &local
-	role, _ := ctx.Value(modelRoleKey{}).(string)
-	selected := ""
-	switch role {
-	case "chat":
-		selected = m.Config.ChatModel
-	}
-	if selected != "" {
-		m.Config.Model = selected
-		m.Config.Reasoning = "none"
-	}
-	if deep, _ := ctx.Value(deepReasoningKey{}).(bool); deep && selected == "" {
-		m.Config.Reasoning = m.Config.DeepReasoning
-		if m.Config.DeepMaxOutputTokens > 0 {
-			m.Config.MaxOutputTokens = m.Config.DeepMaxOutputTokens
-		}
-	}
-	// 当前本地 API 的 Sol 不接受 none。只修正这个已实测的参数组合，
-	// 不因调用失败悄悄换型号或重放已经完成的工具动作。
-	if m.Config.Model == "gpt-6.1-sol" && m.Config.Reasoning == "none" {
-		m.Config.Reasoning = "low"
-	}
-	// 角色模型已经选定，再查该型号费率；不允许悄悄退回统一旧价。
-	price, priceErr := priceForModel(m.Config.Model)
-	if priceErr != nil {
-		return ChatMessage{}, priceErr
-	}
-	if m.Config.APIKey == "" {
+	route := m.Config.Models.route(sceneFromContext(ctx))
+	if route.apiKey == "" {
 		return ChatMessage{}, ErrUnavailable
 	}
+	call, err := m.newModelCall(route)
+	if err != nil {
+		return ChatMessage{}, err
+	}
+	return call.complete(ctx, messages, defs, jsonOutput, chain)
+}
+
+func (m *modelCall) responseBody(messages []ChatMessage, defs []ToolDefinition, jsonOutput bool) ([]byte, error) {
+	ordered, boundary := memberRequestMessages(messages)
+	return m.backend.Build(ordered, boundary, defs, jsonOutput)
+}
+
+func (m *modelCall) complete(ctx context.Context, messages []ChatMessage, defs []ToolDefinition, jsonOutput bool, chain *[]ChatMessage) (ChatMessage, error) {
 	beginCall(ctx)
 	// 在模型边界统一检查完整请求，参与判断与行动共用此处。
 	// 不先截短工具正文；保守估算超出时使用实际计数与原生压缩。
-	encoded, inputEstimate, e := boundedRequest(messages, m.Config.ContextTokenBudget, m.Config.MaxOutputTokens, func(input []ChatMessage) ([]byte, error) {
+	encoded, inputEstimate, e := boundedRequest(messages, m.ContextTokenBudget, m.maxOutputTokens, m.backend.Estimate, func(input []ChatMessage) ([]byte, error) {
 		return m.responseBody(input, defs, jsonOutput)
 	})
-	capacity := m.Config.ContextTokenBudget
+	capacity := m.ContextTokenBudget
 	if capacity == 0 {
 		capacity = 100000
 	}
-	if e != nil && capacity > m.Config.MaxOutputTokens {
+	if e != nil && capacity > m.maxOutputTokens {
 		var prepared []ChatMessage
 		encoded, inputEstimate, prepared, e = m.prepareLargeResponse(ctx, messages, defs, jsonOutput)
 		if e == nil && chain != nil {
@@ -292,22 +245,25 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	}
 	// 容量检查结束后才观察实际会发送的请求。若压缩过，比较的是整理后的内容。
 	cache, _ := ctx.Value(memberCacheKey{}).(memberCacheScope)
-	var cacheRequest memberCacheRequest
-	if cache.state != nil {
-		cacheRequest = memberCacheRequest{next: *cache.state, workID: cache.workID, at: time.Now()}
-		encoded, e = m.responseBodyWithCache(messages, defs, jsonOutput, &cacheRequest)
+	cacheBackend, _ := m.backend.(model.CacheSession)
+	if cacheBackend != nil && m.cacheEnabled() && cache.state != nil {
+		at := time.Now()
+		if m.cacheTime != nil {
+			at = m.cacheTime()
+		}
+		cacheBackend.BeginCache(cache.state.value, cache.workID, at)
+		encoded, e = m.responseBody(messages, defs, jsonOutput)
 		if e != nil {
 			return ChatMessage{}, e
 		}
-		m.longCacheRequested = cacheRequest.longWrite
 	}
-	reserve := price.reserveMicros(inputEstimate, m.Config.MaxOutputTokens)
+	reserve := m.reserveMicros(inputEstimate, m.maxOutputTokens)
 	var response modelResult
 	// 每个真正发出的请求单独预留、结算。网络结果未知的旧请求不冒充免费；
 	// 自动恢复只重发模型请求，已完成的本地工具不会再执行。
 	steering, _ := ctx.Value(steeringKey{}).(*steeringInput)
-	if steering != nil && m.Config.MidTurnSteering {
-		response, e = m.steeredResponse(ctx, encoded, price, reserve, inputEstimate, steering, chain)
+	if steerer, ok := m.backend.(model.SteeringSession); ok && steering != nil && m.steeringEnabled() {
+		response, e = steerer.Steer(ctx, encoded, inputEstimate, steering, chain, m.steeringHooks(ctx))
 	} else {
 		var previous string
 		attempt := 0
@@ -317,17 +273,17 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 			var call usageReservation
 			settled := false
 			var actual int64
-			stepID := beginModelAttempt(ctx, m.Config.Model, string(encoded), attempt, previous, "")
+			stepID := beginModelAttempt(ctx, m.Model, string(encoded), attempt, previous, "")
 			previous = stepID
 			defer func() {
-				finishModelAttempt(ctx, stepID, response.Message, response.Raw, err, settled, actual, reserve, call, m.Config.APIKey)
+				finishModelAttempt(ctx, stepID, response.Message, response.Raw, err, settled, actual, reserve, call, m.apiKey)
 			}()
-			call, err = m.Store.reserveCall(ctx, m.Config, reserve, "OpenAI", m.Config.Model, "")
+			call, err = m.Store.reserveCall(ctx, m.Config, reserve, m.Provider, m.Model, "")
 			if err != nil {
 				return &modelAccountingError{err}
 			}
 			defer m.Store.finishUsageCall(call)
-			response, err = m.responses(ctx, encoded)
+			response, err = m.backend.Generate(ctx, encoded)
 			if err != nil {
 				if releaseErr := m.releaseUnsent(call, err); releaseErr != nil {
 					return releaseErr
@@ -335,11 +291,11 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 				return err
 			}
 			if response.Usage.InputTokens+response.Usage.OutputTokens > 0 {
-				actual, err = m.responseCost(response.Usage, price)
+				actual, err = response.CostMicros, response.CostError
 				if err != nil {
 					return err
 				}
-				if err = m.Store.settleCall(call, actual, response.Usage, response.usageOutcome(ctx)); err != nil {
+				if err = m.Store.settleCall(call, actual, response.Usage, usageOutcome(ctx, response)); err != nil {
 					return &modelAccountingError{err}
 				}
 				settled = true
@@ -356,86 +312,29 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	if strings.TrimSpace(response.Message.Content) == "" && len(response.Message.ToolCalls) == 0 {
 		return ChatMessage{}, fmt.Errorf("模型返回了空内容，本次没有生成消息")
 	}
-	if cache.state != nil {
-		cacheRequest.record(ctx, m.Config.Model, response)
-		*cache.state = cacheRequest.next
+	if cacheBackend != nil && m.cacheEnabled() && cache.state != nil {
+		state, observation := cacheBackend.FinishCache(response)
+		cache.state.value = state
+		recordCache(ctx, observation, m.Model)
 	}
-	response.Message.OutputTokens = response.Usage.OutputTokens
 	return response.Message, nil
 }
 
 func requestJSON(ctx context.Context, client *http.Client, endpoint, key string, body []byte, out any) error {
-	req, e := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if e != nil {
-		return e
+	return upstream.PostJSON(ctx, serviceClient(client), endpoint, key, body, out, nil)
+}
+
+func serviceClient(client *http.Client) *http.Client {
+	if client.Transport != nil {
+		return client
 	}
-	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("Content-Type", "application/json")
-	// 共享连接池遵循显式代理或当前系统代理；保留测试或调用方显式提供的 transport。
-	if client.Transport == nil {
-		copy := *client
-		copy.Transport = serviceTransport
-		client = &copy
-	}
-	if ctx.Err() != nil {
-		return &requestFailure{Stage: ctx.Err().Error(), Cause: ctx.Err(), NotSent: true}
-	}
-	var wroteHeaders atomic.Bool
-	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{WroteHeaders: func() { wroteHeaders.Store(true) }}))
-	r, e := client.Do(req)
-	if e != nil {
-		var op *net.OpError
-		var dns *net.DNSError
-		notSent := !wroteHeaders.Load() && ((errors.As(e, &op) && op.Op == "dial") || errors.As(e, &dns))
-		var ne net.Error
-		stage := "服务连接失败"
-		if errors.As(e, &ne) && ne.Timeout() {
-			stage = "等待服务响应超时"
-		}
-		// 取消和超时仍交由上层按原语义恢复，NotSent 只决定本笔预留如何结算。
-		cause := e
-		if ctx.Err() != nil {
-			cause, stage = ctx.Err(), ctx.Err().Error()
-		}
-		return &requestFailure{Stage: stage, Cause: cause, Temporary: ctx.Err() == nil, NotSent: notSent}
-	}
-	defer r.Body.Close()
-	if r.StatusCode < 200 || r.StatusCode >= 300 {
-		wait := time.Duration(0)
-		if seconds, err := strconv.Atoi(r.Header.Get("Retry-After")); err == nil {
-			wait = time.Duration(seconds) * time.Second
-		} else if date, err := http.ParseTime(r.Header.Get("Retry-After")); err == nil {
-			wait = time.Until(date)
-		}
-		var detail struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		rawBody, _ := io.ReadAll(r.Body)
-		rememberRaw(ctx, rawBody)
-		_ = json.NewDecoder(bytes.NewReader(rawBody)).Decode(&detail)
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		message := strings.ReplaceAll(detail.Error.Message, key, "[credential]")
-		return &requestFailure{Detail: message, Stage: "服务请求失败", Status: r.StatusCode, RetryAfter: wait, Temporary: r.StatusCode == 429 || r.StatusCode == 408 || r.StatusCode >= 500}
-	}
-	b, e := io.ReadAll(r.Body)
-	rememberRaw(ctx, b)
-	if e != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return &requestFailure{Stage: "读取服务结果中断", Temporary: true}
-	}
-	if e = json.Unmarshal(b, out); e != nil {
-		return fmt.Errorf("服务返回了无法识别的 JSON")
-	}
-	return nil
+	copy := *client
+	copy.Transport = serviceTransport
+	return &copy
 }
 
 func modelJSON(ctx context.Context, m Model, system string, input any, out any) error {
+	ctx = context.WithValue(ctx, modelSceneKey{}, sceneMemberSettings)
 	r, e := m.Complete(ctx, []ChatMessage{{Role: "system", Content: system + "\n只返回 JSON 对象。"}, {Role: "user", Content: asJSON(input), PendingDelivery: true}}, nil, true)
 	if e != nil {
 		return e
@@ -498,162 +397,4 @@ func CompleteMember(ctx context.Context, model Model, m Member) (Member, error) 
 		m.Profile = strings.TrimSpace(*out.Profile)
 	}
 	return m, nil
-}
-
-// 高推理工具链需携带供应商返回的推理项目，不能只把工具结果拼成聊天文本。
-// store=false + 加密推理项目让服务不依赖供应商保存会话；原始推理不显示给用户。
-func (m *HTTPModel) responseBody(messages []ChatMessage, defs []ToolDefinition, jsonOutput bool) ([]byte, error) {
-	return m.responseBodyWithCache(messages, defs, jsonOutput, nil)
-}
-
-func (m *HTTPModel) responseBodyWithCache(messages []ChatMessage, defs []ToolDefinition, jsonOutput bool, cache *memberCacheRequest) ([]byte, error) {
-	messages, cacheEnd := memberRequestMessages(messages)
-	input := []any{}
-	shortEnd := -1
-	for i, msg := range messages {
-		if len(msg.ResponseItems) > 0 {
-			for _, item := range msg.ResponseItems {
-				input = append(input, item)
-			}
-			continue
-		}
-		if i == cacheEnd {
-			shortEnd = len(input)
-		}
-		if msg.Role == "tool" {
-			input = append(input, map[string]any{"type": "function_call_output", "call_id": msg.ToolCallID, "output": msg.Content})
-			continue
-		}
-		input = append(input, map[string]any{"role": msg.Role, "content": msg.Content})
-	}
-	body := map[string]any{"model": m.Config.Model, "max_output_tokens": m.Config.MaxOutputTokens, "store": false, "include": []string{"reasoning.encrypted_content"}}
-	if m.Config.Reasoning != "" {
-		body["reasoning"] = map[string]string{"effort": m.Config.Reasoning}
-	}
-	if len(defs) > 0 {
-		tools := []any{}
-		for _, d := range defs {
-			tools = append(tools, map[string]any{"type": "function", "name": d.Function.Name, "description": d.Function.Description, "parameters": d.Function.Parameters, "strict": false})
-		}
-		body["tools"] = tools
-	}
-	if jsonOutput {
-		body["text"] = map[string]any{"format": map[string]string{"type": "json_object"}}
-	}
-
-	longEnd := -1
-	if cache != nil {
-		var err error
-		longEnd, err = cache.longBoundary(body, input, shortEnd)
-		if err != nil {
-			return nil, err
-		}
-		if cache.next.model == m.Config.Model && cache.next.responseID != "" {
-			body["prompt_cache_options"] = map[string]string{"comparison_response_id": cache.next.responseID}
-		}
-	}
-	// 默认缓存仍可覆盖同一轮续接。长线与短线重合时，一个 12 小时标记即可。
-	if shortEnd >= 0 && shortEnd != longEnd {
-		markResponseCache(input[shortEnd], "")
-	}
-	if longEnd >= 0 {
-		markResponseCache(input[longEnd], "12h")
-	}
-	body["input"] = input
-	return json.Marshal(body)
-}
-
-func markResponseCache(raw any, ttl string) {
-	item := raw.(map[string]any)
-	field := "content"
-	if item["type"] == "function_call_output" {
-		field = "output"
-	}
-	marker := map[string]string{"mode": "explicit"}
-	if ttl != "" {
-		marker["ttl"] = ttl
-	}
-	item[field] = []map[string]any{{"type": "input_text", "text": item[field], "prompt_cache_breakpoint": marker}}
-}
-func (m *HTTPModel) responses(ctx context.Context, raw []byte) (modelResult, error) {
-	var err error
-	var out responseEnvelope
-	box := &rawBox{}
-	ctx = context.WithValue(ctx, rawResponseKey{}, box)
-	if err = requestJSON(ctx, m.Client, m.Config.BaseURL+"/responses", m.Config.APIKey, raw, &out); err != nil {
-		return modelResult{Raw: box.text}, err
-	}
-	result, err := decodeResponse(out)
-	result.Raw = box.text
-	return result, err
-}
-
-type rawResponseKey struct{}
-
-type rawBox struct{ text string }
-
-func rememberRaw(ctx context.Context, body []byte) {
-	box, _ := ctx.Value(rawResponseKey{}).(*rawBox)
-	if box == nil || len(body) == 0 {
-		return
-	}
-	box.text = string(body)
-}
-
-type responseEnvelope struct {
-	ID                string            `json:"id"`
-	Status            string            `json:"status"`
-	Output            []json.RawMessage `json:"output"`
-	Usage             responseUsage     `json:"usage"`
-	CacheDiagnostic   *cacheDiagnostic  `json:"prompt_cache_diagnostics"`
-	IncompleteDetails struct {
-		Reason string `json:"reason"`
-	} `json:"incomplete_details"`
-}
-
-func decodeResponse(out responseEnvelope) (modelResult, error) {
-	var err error
-	result := modelResult{ID: out.ID, Usage: out.Usage, CacheDiagnostic: out.CacheDiagnostic}
-	msg := ChatMessage{Role: "assistant", ResponseItems: out.Output}
-	finalText, unphasedText := "", ""
-	hasFinal := false
-	for _, rawItem := range out.Output {
-		var item struct {
-			Type, Name, Arguments, Phase string
-			CallID                       string `json:"call_id"`
-			Content                      []struct{ Type, Text string }
-		}
-		if err = json.Unmarshal(rawItem, &item); err != nil {
-			return result, err
-		}
-		switch item.Type {
-		case "message":
-			// 新模型可能同时返回 commentary 与 final_answer。中间说明不是
-			// 业务 JSON，不能拼接成最终答案；原始项目仍完整保留用于下一轮续接。
-			if item.Phase == "final_answer" {
-				hasFinal = true
-			}
-			for _, part := range item.Content {
-				if part.Type == "output_text" {
-					if item.Phase == "final_answer" {
-						finalText += part.Text
-					} else if item.Phase == "" {
-						unphasedText += part.Text
-					}
-				}
-			}
-		case "function_call":
-			call := ToolCall{ID: item.CallID, Type: "function"}
-			call.Function.Name = item.Name
-			call.Function.Arguments = item.Arguments
-			msg.ToolCalls = append(msg.ToolCalls, call)
-		}
-	}
-	msg.Content = unphasedText
-	if hasFinal {
-		msg.Content = finalText
-	}
-	result.Message = msg
-	result.Incomplete = out.Status == "incomplete"
-	return result, nil
 }

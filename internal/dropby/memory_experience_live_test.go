@@ -20,7 +20,7 @@ func TestLivePersonalExperienceContinuity(t *testing.T) {
 		t.Skip("显式开启个人经历连续场景验收")
 	}
 	cfg, err := LoadConfig()
-	if err != nil || cfg.APIKey == "" {
+	if err != nil || !cfg.ModelReady() {
 		t.Fatalf("真实模型配置不可用：%v", err)
 	}
 	raw, err := os.ReadFile(os.Getenv("DROPBY_MEMORY_MEMBERS_FILE"))
@@ -42,7 +42,7 @@ func TestLivePersonalExperienceContinuity(t *testing.T) {
 	defer s.Close()
 	// 同一验收目录的账本累积保留，失败重试也计费；不重置生产或验收消费。
 	cfg.WeeklyBudgetMicros = min(cfg.WeeklyBudgetMicros, 3_000_000)
-	cfg.MaxOutputTokens, cfg.DeepMaxOutputTokens = 2500, 7000
+	cfg.setModelLimit(2500, 7000)
 	runID := newID("memory_eval")
 	// 可在同一份隔离经历上继续观察合作理解，不重复前面的付费场景。
 	// 继续时保留原成员 ID 与消费账本，不能把新演员当成已经经历过的人。
@@ -115,7 +115,7 @@ func TestLivePersonalExperienceContinuity(t *testing.T) {
 	stages := []map[string]any{}
 	saveReport := func() {
 		usage, _ := s.Usage()
-		payload := map[string]any{"run_id": runID, "continued_from": continuedFrom, "model": cfg.Model, "reasoning": cfg.Reasoning, "deep_reasoning": cfg.DeepReasoning,
+		payload := map[string]any{"run_id": runID, "continued_from": continuedFrom, "model": cfg.Models.Scenes[sceneMemberSettings].Model, "reasoning": cfg.Models.Scenes[sceneMemberSettings].reasoningEffort(), "deep_reasoning": cfg.Models.Scenes[sceneExploration].reasoningEffort(),
 			"members": members, "stages": stages, "usage": usage, "run_cost_micros": usage.CostMicros - before.CostMicros, "run_calls": usage.Calls - before.Calls}
 		data, _ := json.MarshalIndent(payload, "", "  ")
 		if err := os.WriteFile(filepath.Join(dir, runID+".json"), data, 0600); err != nil {

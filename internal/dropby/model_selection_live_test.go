@@ -68,7 +68,7 @@ func TestLiveModelSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.APIKey == "" {
+	if !cfg.ModelReady() {
 		t.Fatal("缺少 API 凭据")
 	}
 	root := os.Getenv("DROPBY_SELECTION_DIR")
@@ -103,15 +103,13 @@ func TestLiveModelSelection(t *testing.T) {
 					}
 					defer s.Close()
 					local := cfg
-					local.Model = name
-					local.ChatModel = ""
-					local.Reasoning = "none"
+					effort := "none"
 					if name == "gpt-6.1-sol" {
-						local.Reasoning = "low"
+						effort = "low"
 					}
-					local.DeepReasoning = "high"
-					local.MaxOutputTokens = 2400
-					local.DeepMaxOutputTokens = 4500
+					local.editScenes(modelScenes[:], func(s *modelSettings) { s.Model = name; s.setReasoning(effort) })
+					local.editScenes([]modelScene{sceneResearch, sceneExploration}, func(s *modelSettings) { s.setReasoning("high") })
+					local.setModelLimit(2400, 4500)
 					local.WeeklyBudgetMicros = 700000
 					local.SearchKey = "" // 固定本地工具与输入，不调用外部搜索。
 					transport := &selectionTransport{total: &total}
@@ -186,9 +184,11 @@ func TestLiveModelSelection(t *testing.T) {
 					case strings.HasPrefix(scenario, "chat_") || scenario == "research_html":
 						value, runErr = e.act(ctx, c, member, w, prompt)
 					case scenario == "compaction":
-						model.Config.ContextTokenBudget = 8000
-						model.Config.MaxOutputTokens = 2000
-						model.Config.Reasoning = "high"
+						model.Config.editScenes([]modelScene{sceneMemberSettings}, func(s *modelSettings) {
+							s.ContextTokenBudget = 8000
+							s.setOutputLimit(2000)
+							s.setReasoning("high")
+						})
 						chain := largeArtifactChain()
 						chain[0].Content = "这是接口兼容性测试。保留已完成作品的证据，只返回 JSON，不调用工具。"
 						chain[1].Content = "已有作品无需再做。请在 JSON 的 artifact_id 和 version 字段写出已保存真实 ID 和版本。用户禁止倒计时，这个约定仍有效。用 forbidden 字段写出禁止的功能。"
@@ -232,7 +232,7 @@ func TestLiveModelSelection(t *testing.T) {
 						checks["no_extra_work"] = len(works) == 1
 					}
 					checks["completed_without_error"] = runErr == nil
-					report := map[string]any{"model": name, "scenario": scenario, "trial": trial, "reasoning": local.Reasoning, "deep_reasoning": local.DeepReasoning, "seconds": time.Since(start).Seconds(), "output": value, "checks": checks, "tools": runs, "work": works, "artifacts": artifacts, "usage": usage, "trace": transport.traces}
+					report := map[string]any{"model": name, "scenario": scenario, "trial": trial, "reasoning": effort, "deep_reasoning": local.Models.Scenes[sceneResearch].reasoningEffort(), "seconds": time.Since(start).Seconds(), "output": value, "checks": checks, "tools": runs, "work": works, "artifacts": artifacts, "usage": usage, "trace": transport.traces}
 					if runErr != nil {
 						report["error"] = runErr.Error()
 					}

@@ -21,13 +21,14 @@ func TestLiveMemberContextReplay(t *testing.T) {
 		t.Skip("显式开启收费的成员整理回放")
 	}
 	cfg, err := LoadConfig()
-	if err != nil || cfg.APIKey == "" {
+	if err != nil || !cfg.ModelReady() {
 		t.Fatalf("需要可用的模型配置: %v", err)
 	}
-	cfg.MidTurnSteering = false
+	cfg.setSteering(false)
 	cfg.SearchKey = ""
 	// 预留按请求字节的保守上界计算，和已结算成本分开限制。
-	cfg.WeeklyBudgetMicros, cfg.TemporaryBudgetMicros, cfg.MaxOutputTokens = 150_000, 0, 1500
+	cfg.WeeklyBudgetMicros, cfg.TemporaryBudgetMicros = 150_000, 0
+	cfg.editScenes([]modelScene{sceneChat, sceneMemberSettings}, func(s *modelSettings) { s.setOutputLimit(1500) })
 	angle := "很多时候都在评价人物、评价事件，但是你别忘了，我们写的是短篇小说，真就没人去评价文字、对话、有趣、浪漫这些东西吗？"
 	scoreTopic := "下次我们还聊这篇《最后一张照片》。请更新你留给下次的工作窗口，把我那句问评价角度的原话留在里面，然后讲一个你自己真正在意的地方。"
 	cases := []struct {

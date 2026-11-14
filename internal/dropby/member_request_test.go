@@ -69,15 +69,16 @@ func TestMemberRequestsKeepDeliveredHistoryAcrossActions(t *testing.T) {
 			return
 		}
 		requests <- request
-		response := responseEnvelope{Status: "completed", Output: []json.RawMessage{output}}
-		response.Usage.InputTokens, response.Usage.OutputTokens = 1000, 50
+		response := map[string]any{"status": "completed", "output": []json.RawMessage{output},
+			"usage": responseUsage{InputTokens: 1000, OutputTokens: 50}}
 		if err := wsjson.Write(ctx, conn, map[string]any{"type": "response.completed", "response": response}); err != nil {
 			t.Error(err)
 		}
 	}))
 	defer server.Close()
 	cfg := testConfig()
-	cfg.BaseURL, cfg.MidTurnSteering = server.URL, true
+	cfg.setModelEndpoint(server.URL)
+	cfg.setSteering(true)
 	engine := NewEngine(s, &HTTPModel{Store: s, Config: cfg, Client: server.Client()}, cfg)
 	first := addWork(t, s, room, member, "chat")
 	if _, err := engine.memberAction(t.Context(), room, member, first); err != nil {

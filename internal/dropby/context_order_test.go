@@ -102,7 +102,7 @@ func TestMessageDedupKeepsProtocolAndDistinctSpeakers(t *testing.T) {
 	}
 	// 内部 ChatMessage 同时保存可执行调用与原生项目，实际 HTTP 只发送原生
 	// 版本。核对真实序列化输入，避免把内部两份表示误算成模型收到两次。
-	request, err := (&HTTPModel{Config: testConfig()}).responseBody(got, nil, false)
+	request, err := responsesForTest(testConfig()).responseBody(got, nil, false)
 	if err != nil || strings.Count(string(request), "我喜欢这个结尾") != 2 || !strings.Contains(got[1].Content, "保留扩展") || !strings.Contains(got[2].Content, "peer") {
 		t.Fatal("不同来源被合并，或回执字段丢失", got)
 	}

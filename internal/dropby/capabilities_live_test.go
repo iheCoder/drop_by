@@ -20,7 +20,7 @@ func TestLiveCreativeToolsAndFollowup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.APIKey == "" {
+	if !cfg.ModelReady() {
 		t.Fatal("缺少模型配置")
 	}
 	dir := os.Getenv("DROPBY_CAPABILITIES_DATA_DIR")
@@ -35,7 +35,7 @@ func TestLiveCreativeToolsAndFollowup(t *testing.T) {
 	// 保留正式模型和 high 推理；这是一张小卡片，测试输出容量和账本单独有界。
 	// 目录已有的用量不会清空，反复运行仍受同一上限约束。
 	cfg.WeeklyBudgetMicros = 650_000
-	cfg.MaxOutputTokens, cfg.DeepMaxOutputTokens = 2000, 8000
+	cfg.setModelLimit(2000, 8000)
 	m := Member{ID: "capability_amo", Name: "阿墨", Color: "blue", AvatarIcon: "moon", CreatedAt: now(), Tools: []string{"save_artifact"}, Profile: "喜欢把朋友的荒诞点子做成小巧的互动网页。说话简短，不催人回复；喜欢自己试出一个不同的结尾，可以决定不分享。会按明确要求使用选择题和保存实际作品。"}
 	if _, err := s.Member(m.ID); err != nil {
 		if err := s.AddMember(m); err != nil {

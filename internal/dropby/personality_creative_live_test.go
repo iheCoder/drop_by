@@ -18,7 +18,7 @@ func TestLivePersonalityCreativeWriting(t *testing.T) {
 		t.Skip("显式开启人格创作验收")
 	}
 	cfg, err := LoadConfig()
-	if err != nil || cfg.APIKey == "" {
+	if err != nil || !cfg.ModelReady() {
 		t.Fatal("真实模型配置不可用", err)
 	}
 	s, err := OpenStore(t.TempDir())
@@ -29,7 +29,7 @@ func TestLivePersonalityCreativeWriting(t *testing.T) {
 	cfg.WeeklyBudgetMicros = min(cfg.WeeklyBudgetMicros, 2_000_000)
 	cfg.TemporaryBudgetMicros = 0
 	cfg.SearchKey = ""
-	cfg.MidTurnSteering = false
+	cfg.setSteering(false)
 	e := NewEngine(s, &HTTPModel{Config: cfg, Store: s, Client: &http.Client{Timeout: 3 * time.Minute}}, cfg)
 
 	direction := `梁野很容易听出一本正经的话里藏着的荒唐。越是大家觉得规矩就该如此，他越手痒，想试出这规矩究竟管什么。他有点散漫，爱抄近路，愿意自嘲，也肯为好奇惹麻烦。他不服头衔，遇到真有本事的人却会主动请教。熟了会互相拆台，也会偏袒朋友。
@@ -50,7 +50,7 @@ func TestLivePersonalityCreativeWriting(t *testing.T) {
 	}
 	defer func() {
 		usage, _ := s.Usage()
-		report := map[string]any{"creation_model": cfg.Model, "chat_model": cfg.ChatModel, "direction": direction, "prompt": prompt, "member": member, "samples": samples, "usage": usage}
+		report := map[string]any{"creation_model": cfg.Models.Scenes[sceneMemberSettings].Model, "chat_model": cfg.ChatModelName(), "direction": direction, "prompt": prompt, "member": member, "samples": samples, "usage": usage}
 		raw, err := json.MarshalIndent(report, "", "  ")
 		if err == nil {
 			path := filepath.Join(dir, newID("personality_creative")+".json")

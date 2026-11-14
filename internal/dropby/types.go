@@ -159,7 +159,7 @@ var (
 	ErrContextCapacity = errors.New("上下文需要整理后继续")
 	ErrStale           = errors.New("用户已补充新消息，本次结果不再适用")
 	ErrBudget          = errors.New("本周运行预算不足，未完工作已保留")
-	ErrUnavailable     = errors.New("尚未配置模型服务，请设置 OPENAI_API_KEY 或 DROPBY_API_KEY")
+	ErrUnavailable     = errors.New("场景的模型服务尚未配置，请检查 config.yaml 中的供应商配置")
 )
 
 func newID(prefix string) string {

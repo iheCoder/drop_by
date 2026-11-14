@@ -170,7 +170,7 @@ func (a *API) state(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	respond(w, 200, map[string]any{"profile": profile, "personal_focus": focus, "budget_blocked": blocked, "members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.APIKey != "", "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Model, "chat_model": a.engine.Config.ChatModel, "weekly_budget_micros": limit, "budget_source": source, "weekly_budget_options": weeklyBudgetStops(), "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes()), "reaction_palette": reactionPalette})
+	respond(w, 200, map[string]any{"profile": profile, "personal_focus": focus, "budget_blocked": blocked, "members": members, "conversations": rooms, "active_rooms": active, "activities": activities, "usage": usage, "model_ready": a.engine.Config.ModelReady(), "search_ready": a.engine.Config.SearchKey != "", "model": a.engine.Config.Models.Scenes[sceneResearch].Model, "chat_model": a.engine.Config.ChatModelName(), "weekly_budget_micros": limit, "budget_source": source, "weekly_budget_options": weeklyBudgetStops(), "explore_interval_minutes": int(a.engine.Config.ExploreInterval.Minutes()), "reaction_palette": reactionPalette})
 }
 func (a *API) questions(w http.ResponseWriter, r *http.Request) {
 	var in struct {

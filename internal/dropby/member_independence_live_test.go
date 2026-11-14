@@ -23,7 +23,7 @@ func TestLiveResumeActualConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.APIKey == "" {
+	if !cfg.ModelReady() {
 		t.Fatal("缺少真实模型配置")
 	}
 	cfg.DataDir = dir

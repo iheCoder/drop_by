@@ -22,7 +22,7 @@ func TestLiveCharacterConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.APIKey == "" {
+	if !cfg.ModelReady() {
 		t.Fatal("缺少真实模型配置")
 	}
 	dir := os.Getenv("DROPBY_CHARACTER_DATA_DIR")

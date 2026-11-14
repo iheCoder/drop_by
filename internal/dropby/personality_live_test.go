@@ -18,7 +18,7 @@ func TestLivePersonalityContinuity(t *testing.T) {
 		t.Skip("显式开启人格连续场景验收")
 	}
 	cfg, err := LoadConfig()
-	if err != nil || cfg.APIKey == "" {
+	if err != nil || !cfg.ModelReady() {
 		t.Fatal("真实模型配置不可用", err)
 	}
 	dir := os.Getenv("DROPBY_PERSONALITY_DATA_DIR")
@@ -41,7 +41,7 @@ func TestLivePersonalityContinuity(t *testing.T) {
 	// 失败也保存已发生的行为与费用，便于区分没有更新、模型故障和实现错误。
 	defer func() {
 		after, _ := s.Usage()
-		report := map[string]any{"run_id": runID, "model": cfg.Model, "chat_model": cfg.ChatModel, "stages": stages, "usage_before": before, "usage_after": after}
+		report := map[string]any{"run_id": runID, "model": cfg.Models.Scenes[sceneMemberSettings].Model, "chat_model": cfg.ChatModelName(), "stages": stages, "usage_before": before, "usage_after": after}
 		raw, _ := json.MarshalIndent(report, "", "  ")
 		path := filepath.Join(dir, runID+".json")
 		if err := os.WriteFile(path, raw, 0600); err != nil {
@@ -177,7 +177,7 @@ func TestLivePersonalityScenarioAnswer(t *testing.T) {
 		t.Skip("显式开启真实情景卡片验收")
 	}
 	cfg, err := LoadConfig()
-	if err != nil || cfg.APIKey == "" {
+	if err != nil || !cfg.ModelReady() {
 		t.Fatal("真实模型不可用", err)
 	}
 	dir := os.Getenv("DROPBY_PERSONALITY_DATA_DIR")
