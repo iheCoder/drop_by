@@ -33,7 +33,7 @@ func run() error {
 	go func() { errCh <- server.ListenAndServe() }()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	slog.Info("测光已启动", "url", "http://"+addr, "source", "sample")
+	slog.Info("测光已启动", "url", "http://"+addr)
 	select {
 	case err = <-errCh:
 	case <-ctx.Done():

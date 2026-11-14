@@ -55,6 +55,10 @@ func TestAttemptsShareCallAndRetryLink(t *testing.T) {
 	if steps[1].CostMicros != nil || steps[1].ReservedMicros == nil || *steps[1].ReservedMicros != 84000 || steps[1].CostStatus != "unknown" {
 		t.Fatalf("未知费用被写成了数字: %+v", steps[1])
 	}
+	// The list reports whether a snapshot exists without returning its payload.
+	if !steps[0].HasSnapshot {
+		t.Fatal("压缩步骤应有快照")
+	}
 	input, output, err := Snapshot(db, "compact_1")
 	if err != nil || input != "压缩前的完整请求" || output != "压缩结果" {
 		t.Fatalf("snapshot %q %q %v", input, output, err)

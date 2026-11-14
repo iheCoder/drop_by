@@ -30,11 +30,21 @@ func ListenAddress() (string, error) {
 }
 
 func NewHandler() http.Handler {
+	return newHandler(newChatReader("http://127.0.0.1:8090"))
+}
+
+func newHandler(chat chatReader) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
+	mux.HandleFunc("GET /api/catalog", chat.catalog)
+	mux.HandleFunc("GET /api/conversations/{id}/messages", chat.messages)
 	mux.HandleFunc("GET /api/runs", listRuns)
 	mux.HandleFunc("GET /api/runs/{id}", listSteps)
 	mux.HandleFunc("GET /api/steps/{id}", readSnapshot)
+	// 首页和演示共用同一个页面壳。脚本根据入口加载实际记录或样例。
+	mux.HandleFunc("GET /demo.html", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, webFiles, "web/index.html")
+	})
 	mux.HandleFunc("GET /observe", serveObserve)
 	mux.HandleFunc("GET /observe/", serveObserve)
 	root, err := fs.Sub(webFiles, "web")
@@ -48,7 +58,7 @@ func NewHandler() http.Handler {
 func health(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "source": "sample"})
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func listRuns(w http.ResponseWriter, r *http.Request) {

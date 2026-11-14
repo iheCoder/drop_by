@@ -69,6 +69,7 @@ type StepView struct {
 	ReservedMicros *int64 `json:"reserved_micros"`
 	StartedAt      string `json:"started_at"`
 	EndedAt        string `json:"ended_at"`
+	HasSnapshot    bool   `json:"has_snapshot"`
 }
 
 type Gap struct {
@@ -119,7 +120,8 @@ func recentGaps(db *sql.DB) ([]Gap, error) {
 }
 
 func ListSteps(db *sql.DB, runID string) ([]StepView, error) {
-	rows, err := db.Query(`SELECT id,run_id,call_id,parent_id,retry_of,kind,name,status,attempt,summary,business_id,member_id,conversation_id,target_conversation_id,cost_status,cost_micros,reserved_micros,started_at,ended_at
+	rows, err := db.Query(`SELECT id,run_id,call_id,parent_id,retry_of,kind,name,status,attempt,summary,business_id,member_id,conversation_id,target_conversation_id,cost_status,cost_micros,reserved_micros,started_at,ended_at,
+ EXISTS(SELECT 1 FROM snapshots WHERE step_id=steps.id)
  FROM steps WHERE run_id=? ORDER BY seq, started_at, id`, runID)
 	if err != nil {
 		return nil, err
@@ -128,7 +130,7 @@ func ListSteps(db *sql.DB, runID string) ([]StepView, error) {
 	list := []StepView{}
 	for rows.Next() {
 		var s StepView
-		if err = rows.Scan(&s.ID, &s.RunID, &s.CallID, &s.ParentID, &s.RetryOf, &s.Kind, &s.Name, &s.Status, &s.Attempt, &s.Summary, &s.BusinessID, &s.MemberID, &s.ConversationID, &s.TargetID, &s.CostStatus, &s.CostMicros, &s.ReservedMicros, &s.StartedAt, &s.EndedAt); err != nil {
+		if err = rows.Scan(&s.ID, &s.RunID, &s.CallID, &s.ParentID, &s.RetryOf, &s.Kind, &s.Name, &s.Status, &s.Attempt, &s.Summary, &s.BusinessID, &s.MemberID, &s.ConversationID, &s.TargetID, &s.CostStatus, &s.CostMicros, &s.ReservedMicros, &s.StartedAt, &s.EndedAt, &s.HasSnapshot); err != nil {
 			return nil, err
 		}
 		list = append(list, s)

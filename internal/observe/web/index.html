@@ -5,27 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>测光</title>
   <link rel="icon" href="/favicon.svg">
-  <link rel="stylesheet" href="/live.css">
+  <link rel="stylesheet" href="/studio.css?v=17">
 </head>
-<body>
-  <header class="top">
-    <a class="brand" href="/">测光</a>
-    <p>实际记录。<a href="/demo.html">样例</a>仍是 11 月 11 日那一版。</p>
-  </header>
-  <main>
-    <p id="gaps" class="gaps" hidden></p>
-    <div class="layout">
-      <section>
-        <h1>行动</h1>
-        <div id="runs"></div>
-      </section>
-      <section>
-        <h1>步骤</h1>
-        <div id="steps" class="muted">选一次行动。</div>
-        <article id="snap" hidden></article>
-      </section>
-    </div>
-  </main>
-  <script src="/live.js"></script>
+<body class="skin-spectrum" data-skin="spectrum">
+  <div id="app"><p class="origin" role="status">正在载入测光…</p></div>
+  <script type="module" src="/studio.js?v=17"></script>
 </body>
 </html>

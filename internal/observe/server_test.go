@@ -15,20 +15,20 @@ func TestObservatoryServesItself(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8097"+path, nil))
 		return rec
 	}
-	home := get("/")
-	if home.Code != http.StatusOK || !strings.Contains(home.Body.String(), "实际记录") || strings.Contains(home.Body.String(), "studio.js") {
-		t.Fatalf("主页应是实际记录 %d", home.Code)
+	// 正式首页和样例从同一份 HTML 加载渲染器，随后由脚本选择数据源。
+	home, demo := get("/"), get("/demo.html")
+	if home.Code != http.StatusOK || demo.Code != http.StatusOK || home.Body.String() != demo.Body.String() {
+		t.Fatalf("首页和样例应共用页面，分别返回 %d 和 %d", home.Code, demo.Code)
 	}
-	demo := get("/demo.html")
-	if demo.Code != http.StatusOK || !strings.Contains(demo.Body.String(), "测光") || !strings.Contains(demo.Body.String(), "/studio.js") {
-		t.Fatalf("样例页 %d", demo.Code)
+	if !strings.Contains(home.Body.String(), `type="module" src="/studio.js`) {
+		t.Fatal("测光首页缺少共用渲染器")
 	}
 	page := get("/spectrum.html")
 	if page.Code != http.StatusOK {
 		t.Fatalf("色谱页面状态 %d", page.Code)
 	}
 	body := page.Body.String()
-	if !strings.Contains(body, "测光") || !strings.Contains(body, "/studio.js") || !strings.Contains(body, "/meter.js") {
+	if !strings.Contains(body, "测光") || !strings.Contains(body, "/studio.js") {
 		t.Fatal("色谱页面缺少自己的前端")
 	}
 	if strings.Contains(body, "glass.css") || strings.Contains(body, "有空，来坐坐") {
@@ -40,7 +40,7 @@ func TestObservatoryServesItself(t *testing.T) {
 	}
 	health := get("/api/health")
 	var payload map[string]string
-	if health.Code != http.StatusOK || json.Unmarshal(health.Body.Bytes(), &payload) != nil || payload["source"] != "sample" {
+	if health.Code != http.StatusOK || json.Unmarshal(health.Body.Bytes(), &payload) != nil || payload["status"] != "ok" {
 		t.Fatalf("健康检查 %d %s", health.Code, health.Body.String())
 	}
 	old := get("/observe")
@@ -74,5 +74,39 @@ func TestListenAddressStaysLoopback(t *testing.T) {
 	addr, err := ListenAddress()
 	if err != nil || addr != "127.0.0.1:8097" {
 		t.Fatalf("默认地址 %q %v", addr, err)
+	}
+}
+
+func TestChatProjectionReturnsOnlyObservatoryFields(t *testing.T) {
+	// 用假聊天服务复现正式页的两种只读请求，检查真实上游路径和浏览器收到的字段。
+	chat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("测光只能读取聊天接口，收到 %s", r.Method)
+		}
+		switch r.URL.RequestURI() {
+		case "/api/state":
+			w.Write([]byte(`{"members":[{"id":"m1","name":"阿澄","profile":"不需要的画像"}],"conversations":[{"id":"room1","name":"群聊","kind":"group","member_ids":["m1"],"guidance":"不需要的指令"}]}`))
+		case "/api/conversations/room1?activity=paged":
+			w.Write([]byte(`{"messages":[{"id":"message1","author_id":"m1","body":"已发出的正文","created_at":"2026-11-14T21:28:00+08:00","evidence":["不需要的引用"]}],"has_earlier":true,"work":[{"instruction":"不需要的行动指令"}]}`))
+		default:
+			t.Errorf("意外的聊天接口 %s", r.URL.RequestURI())
+			http.NotFound(w, r)
+		}
+	}))
+	defer chat.Close()
+
+	h := newHandler(newChatReader(chat.URL))
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{"/api/catalog", `{"members":[{"id":"m1","name":"阿澄"}],"conversations":[{"id":"room1","name":"群聊","kind":"group","member_ids":["m1"]}]}`},
+		{"/api/conversations/room1/messages", `{"messages":[{"id":"message1","author_id":"m1","body":"已发出的正文","created_at":"2026-11-14T21:28:00+08:00"}],"has_earlier":true}`},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://www.dropby.ob.ai"+tc.path, nil))
+		if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != tc.want {
+			t.Fatalf("%s 返回 %d %s", tc.path, rec.Code, rec.Body.String())
+		}
 	}
 }

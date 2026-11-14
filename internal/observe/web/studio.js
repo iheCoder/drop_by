@@ -1,22 +1,23 @@
-const M = window.Meter;
+import { display } from "./studio-data.js?v=1";
+
+const M = display;
+let source;
+let people = [];
+let rooms = [];
 const ui = {
   scope: "room",
-  room: "chat",
-  person: "cheng",
+  room: "",
+  person: "",
   item: "",
-  work: "cheng_research",
-  step: "r_compact",
+  step: "",
   hideCache: false,
   open: "",
-  sec: 470,
-  note: "",
   folds: {},
   q: "",
   hit: 0,
   focus: "end",
   local: null,
   shown: 12,
-  depth: "step",
   space: "browse",
   threadAnchor: null,
   threadTop: 0,
@@ -26,119 +27,6 @@ const ui = {
   hold: false,
   anchor: null
 };
-
-const RATES = {
-  "gpt-6.1-sol": { input: 2000, cached: 100, write: 2500, output: 10000 },
-  "gpt-6.1-terra": { input: 1000, cached: 50, write: 1250, output: 5000 }
-};
-
-function callStep(partial) {
-  const rate = RATES[partial.model];
-  const usage = partial.usage;
-  const normal = usage.input - usage.cached - usage.write;
-  const nano = normal * rate.input + usage.cached * rate.cached + usage.write * rate.write + usage.output * rate.output;
-  return Object.assign({
-    kind: "model",
-    price: Math.ceil(nano / 1000),
-    usageText: `输入 ${usage.input.toLocaleString("zh-CN")} · 缓存读 ${usage.cached.toLocaleString("zh-CN")} · 缓存写 ${usage.write.toLocaleString("zh-CN")} · 输出 ${usage.output.toLocaleString("zh-CN")}`
-  }, partial);
-}
-
-const people = [
-  { id: "cheng", name: "阿澄", face: "portrait-sky", note: "研究还开着" },
-  { id: "zhou", name: "老周", face: "portrait-traveler", note: "群里已经说完" },
-  { id: "man", name: "小满", face: "portrait-cat", note: "有一件在等预算" }
-];
-
-const rooms = [
-  { id: "chat", place: "群", name: "随便聊聊", blurb: "11 月 11 日这场。话和没说出来的调用在同一条里", members: ["cheng", "zhou", "man"] },
-  {
-    id: "wood", place: "群", name: "木板和雨", blurb: "更早的一小段，从最新一条往上翻", members: ["cheng", "zhou", "man"],
-    messages: [
-      { id: "w1", who: "你", time: "11 月 2 日 21:12", text: "木板被雨打得太闷了。" },
-      { id: "w2", who: "老周", time: "11 月 2 日 21:18", text: "闷就对了。木头吸了水，声音就发不出去。" },
-      { id: "w3", who: "小满", time: "11 月 2 日 21:24", text: "我想听干一点的。这种闷得人发慌。" },
-      { id: "w4", who: "你", time: "11 月 2 日 21:31", text: "那得换个屋顶。先记着，别在这儿下结论。" }
-    ]
-  },
-  {
-    id: "dm-cheng", place: "私聊", name: "阿澄", blurb: "很长，从最新一条往上翻", members: ["cheng"],
-    messages: [
-      { id: "d1", who: "你", time: "11 月 3 日 22:04", text: "昨晚那个雨声太闷了，像整块木板捂在耳朵上。" },
-      { id: "d2", who: "阿澄", time: "11 月 3 日 22:11", text: "闷多半是木头。铁皮会干一点，声音收得紧。我还不能断定你听到的是哪一种。", call: callStep({
-        id: "d2c", title: "私聊里的第一次回复", model: "gpt-6.1-terra", reasoning: "none", purpose: "私聊", ms: 14000,
-        usage: { input: 1800, cached: 0, write: 1500, output: 90 },
-        output: "闷多半是木头。铁皮会干一点，声音收得紧。我还不能断定你听到的是哪一种。",
-        segments: [
-          { k: "系统身份", tokens: 860, text: "你是阿澄。我习惯把没弄清的声音先留着，不急着起名字。对人可以很近，对结论要慢一点。" },
-          { k: "已有窗口", tokens: 640, text: "私聊里还没有更早的话。这是这段私聊的开头。" },
-          { k: "这次来由", tokens: 300, text: "你：昨晚那个雨声太闷了，像整块木板捂在耳朵上。" }
-        ]
-      }) },
-      { id: "d3", who: "你", time: "11 月 3 日 22:16", text: "你怎么会想到铁皮。" },
-      { id: "d4", who: "阿澄", time: "11 月 3 日 22:20", text: "还不知道。先把铁皮记成一个可能，不把它当成答案。" },
-      { id: "d5", who: "你", time: "11 月 5 日 19:40", text: "我好像玩过一个游戏，雨打在屋顶上，画面几乎是灰的。名字忘了。" },
-      { id: "d6", who: "阿澄", time: "11 月 5 日 19:48", text: "名字先别找。你记得的灰，是平的，还是有雨的纹理。", call: callStep({
-        id: "d6c", title: "先拦住名字", model: "gpt-6.1-terra", reasoning: "low", purpose: "私聊", ms: 16000,
-        usage: { input: 3200, cached: 1800, write: 0, output: 70 },
-        output: "名字先别找。你记得的灰，是平的，还是有雨的纹理。",
-        note: "开头那一轮已经写进缓存。这次缓存读了 1,800，没有按输入全价再计。",
-        segments: [
-          { k: "系统身份", tokens: 860, cache: true, text: "你是阿澄。我习惯把没弄清的声音先留着，不急着起名字。" },
-          { k: "已有窗口", tokens: 940, cache: true, text: "11 月 3 日：闷是木头，铁皮先只是一个可能。" },
-          { k: "这次来由", tokens: 1400, text: "你：我好像玩过一个游戏，雨打在屋顶上，画面几乎是灰的。名字忘了。" }
-        ]
-      }) },
-      { id: "d7", who: "你", time: "11 月 5 日 19:55", text: "忘了。当时觉得它就是灰，没有别的颜色。" },
-      { id: "d8", who: "阿澄", time: "11 月 6 日 08:12", text: "那我先不把灰和雨声并成同一个东西。" },
-      { id: "d9", who: "你", time: "11 月 7 日 23:02", text: "老周说两块灰并排的时候，左边其实更暖。我当时完全当它们是一样的。" },
-      { id: "d10", who: "阿澄", time: "11 月 7 日 23:10", text: "我没听见暖。等我自己看，不借用他的眼睛。" },
-      { id: "d11", who: "你", time: "11 月 8 日 12:20", text: "你要是去查，查完跟我说一声就行，不用写很长。" },
-      { id: "d12", who: "阿澄", time: "11 月 8 日 12:36", text: "有一页超时了，没有正文。我换了一个地址，还没有读完。", call: {
-        id: "d12c", kind: "tool", title: "读网页失败", tool: "read_page", price: 750, ms: 500,
-        note: "超时，没有正文。费用仍按次记 $0.000750。下一笔换了地址，所以是另一次调用，不是把这一次重放成功。",
-        args: '{\n  "url": "https://example.invalid/dry-rain-full"\n}',
-        result: "超时。没有正文。"
-      } },
-      { id: "d13", who: "你", time: "11 月 8 日 12:40", text: "超时就超时。别为了有个结果硬凑一个名字。" },
-      { id: "d14", who: "阿澄", time: "11 月 9 日 18:05", text: "换地址之后读到了。铁皮屋顶把雨收成很密的声音，房间里只有一种灰。" },
-      { id: "d15", who: "你", time: "11 月 9 日 18:22", text: "这句我有印象。名字呢。" },
-      { id: "d16", who: "阿澄", time: "11 月 9 日 18:28", text: "文末没有名字。颜色是平的，而且不动。" },
-      { id: "d17", who: "你", time: "11 月 10 日 21:15", text: "群里你如果要说，就说你自己听见的。别把老周的暖也说成你的。" },
-      { id: "d18", who: "阿澄", time: "11 月 10 日 21:24", text: "知道。平灰先别并成同一个游戏。" },
-      { id: "d19", who: "你", time: "11 月 11 日 21:36", text: "刚才群里你说名字先不下。私聊里也可以先留着。" },
-      { id: "d20", who: "阿澄", time: "11 月 11 日 21:41", text: "留着。铁皮对得上声音，对不上那块灰。明天再听一次，不在这里补一个名字。", call: callStep({
-        id: "d20c", title: "最新一条回复", model: "gpt-6.1-sol", reasoning: "low", purpose: "私聊", ms: 18000,
-        usage: { input: 6400, cached: 4000, write: 0, output: 180 },
-        output: "留着。铁皮对得上声音，对不上那块灰。明天再听一次，不在这里补一个名字。",
-        note: "私聊已经很长。前缀里有 4,000 是缓存读，剩下的新话才按未命中计。",
-        segments: [
-          { k: "系统身份", tokens: 860, cache: true, text: "你是阿澄。我习惯把没弄清的声音先留着，不急着起名字。对人可以很近，对结论要慢一点。" },
-          { k: "已有窗口", tokens: 3140, cache: true, text: "从 11 月 3 日的闷，到铁皮只是可能，再到名字先别找、页超时、换地址后读到平灰。" },
-          { k: "这次来由", tokens: 2400, text: "你：刚才群里你说名字先不下。私聊里也可以先留着。" }
-        ]
-      }) }
-    ]
-  },
-  {
-    id: "dm-zhou", place: "私聊", name: "老周", blurb: "几句，都围绕那块灰", members: ["zhou"],
-    messages: [
-      { id: "z1", who: "你", time: "11 月 7 日 20:02", text: "你说的那块灰，是平的吗？" },
-      { id: "z2", who: "老周", time: "11 月 7 日 20:08", text: "平的。没有雨的纹理。" },
-      { id: "z3", who: "你", time: "11 月 7 日 20:11", text: "和声音对得上吗？" },
-      { id: "z4", who: "老周", time: "11 月 7 日 20:16", text: "铁皮对得上声音，对不上这块灰。" },
-      { id: "z5", who: "你", time: "11 月 7 日 20:20", text: "行。我让阿澄自己看，不把你的话塞给她。" }
-    ]
-  },
-  {
-    id: "dm-man", place: "私聊", name: "小满", blurb: "还没真正接上", members: ["man"],
-    messages: [
-      { id: "m1", who: "小满", time: "11 月 11 日 18:02", text: "我还在听屋顶，先不发到群里。" },
-      { id: "m2", who: "你", time: "11 月 11 日 18:10", text: "群里先不用接。" },
-      { id: "m3", who: "小满", time: "11 月 11 日 21:02", text: "到点了，可是这次预留放不进本周额度。还没有模型调用，也没有在这里催你。" }
-    ]
-  }
-];
 
 const TONE_NAME = {
   sol: "Sol",
@@ -162,14 +50,7 @@ function toneKey(step) {
   if (step.kind === "capacity") return "capacity";
   if (step.kind === "quiet" || step.kind === "budget") return "quiet";
   if (step.model && step.model.includes("sol")) return "sol";
-  return "terra";
-}
-
-function barKey(bar) {
-  if (bar.tone === "wait") return "wait";
-  if (bar.tone === "quiet") return "quiet";
-  if (bar.open || bar.tone === "sky") return "sol";
-  if (bar.work === "man_personal") return "personal";
+  if (step.snapshot && !step.model) return "wait";
   return "terra";
 }
 
@@ -177,8 +58,7 @@ function roomById(id) { return rooms.find(room => room.id === id) || rooms[0]; }
 function currentRoom() { return roomById(ui.room); }
 function current() {
   if (ui.local) return ui.local;
-  const work = M.workById(ui.work);
-  return { work, step: M.stepById(work, ui.step) };
+  return { work: null, step: null };
 }
 function parseUsage(text) {
   if (!text || !text.includes("输入")) return null;
@@ -193,7 +73,7 @@ function nanoMoney(nano) {
 }
 function billOf(step) {
   const usage = step.usage || parseUsage(step.usageText);
-  const rate = RATES[step.model];
+  const rate = source.rates?.[step.model];
   if (!usage || !rate) return null;
   const normal = usage.input - usage.cached - usage.write;
   const rows = [
@@ -204,56 +84,33 @@ function billOf(step) {
   ].map(([name, tokens, unit]) => ({ name, tokens, nano: tokens * unit, unit }));
   return { usage, rate, rows, cachedFull: usage.cached * rate.input };
 }
-function messageView(room, msg) {
-  const call = msg.call;
-  if (call) {
-    const step = Object.assign({ sec: 0 }, call);
-    return {
-      work: { who: msg.who, kind: room.place, title: room.name, status: room.place === "私聊" ? "已写回私聊" : "已写回这段群聊", steps: [step] },
-      step
-    };
-  }
-  return {
-    work: { who: msg.who, kind: room.place, title: room.name, status: "原话", steps: [] },
-    step: { id: msg.id, kind: "said", title: msg.who === "你" ? "你写的" : "这条没有单独的模型记录", body: msg.who === "你" ? "这是你写的。没有模型调用，没有上下文，也没有费用。" : "样例里这条没有挂上单独的调用记录。话在对话里，费用和上下文要到挂了调用的那几条才看得到。", who: msg.who, text: msg.text }
-  };
-}
-function hitsIn(room) {
-  const q = ui.q.trim().toLowerCase();
-  if (!q || !room.messages) return [];
-  return room.messages.filter(msg => msg.text.toLowerCase().includes(q));
-}
 function markText(text) {
   const q = ui.q.trim();
   const safe = M.esc(text);
   if (!q) return safe;
   return safe.split(M.esc(q)).join("<mark>" + M.esc(q) + "</mark>");
 }
-function personById(id) { return people.find(person => person.id === id) || people[0]; }
+function personById(id) { return people.find(person => person.id === id); }
 function personKey(name) {
   if (name === "你") return "you";
   const found = people.find(person => person.name === name);
   return found ? found.id : "you";
 }
-function atOf(time) {
-  const matched = String(time).match(/(\d+)\s*月\s*(\d+)\s*日\s*(\d+):(\d+)/);
-  if (!matched) return 0;
-  const month = matched[1].padStart(2, "0");
-  const day = matched[2].padStart(2, "0");
-  return Date.parse(`2026-${month}-${day}T${matched[3]}:${matched[4]}:00+08:00`);
-}
-function sceneAt(sec) { return Date.parse("2026-11-11T21:10:00+08:00") + sec * 1000; }
 function faceHTML(id, small) {
   if (id === "you") return `<span class="ava you${small ? " sm" : ""}" aria-hidden="true">你</span>`;
   const person = personById(id);
-  return `<span class="ava${small ? " sm" : ""}"><img src="/assets/${person.face}.webp" alt=""></span>`;
+  const image = person?.avatar;
+  const content = image
+    ? `<img src="${M.esc(image)}" alt="">`
+    : M.esc(person?.name?.slice(0, 1) || "·");
+  return `<span class="ava${small ? " sm" : ""}">${content}</span>`;
 }
 function facesHTML(ids, large) {
   return `<span class="faces${large ? " lg" : ""}">${ids.map(id => faceHTML(id)).join("")}</span>`;
 }
 function stepOf(item) {
   if (!item) return null;
-  if (item.stepRef) return M.stepById(M.workById(item.stepRef.work), item.stepRef.step);
+  if (item.stepRef) return source.workById(item.stepRef.work)?.steps.find(step => step.id === item.stepRef.step);
   return item.call || null;
 }
 function hasAction(item) {
@@ -265,17 +122,17 @@ function currentItem() {
 }
 function stepStatus(step) {
   if (!step || step.kind === "said") return "没有单独的调用";
+  if (step.statusLabel) return step.statusLabel;
   if (step.reserve) return "未回执";
   if (step.kind === "tool" && /超时|失败/.test((step.title || "") + (step.result || ""))) return "失败";
   if (step.kind === "quiet" || step.kind === "budget") return "未发送";
-  if (step.id === "z1" || step.id === "c2" || step.id === "z2") return "已发到群";
   const item = currentItem();
   if (item && item.call && String(item.where || "").includes("私聊")) return "已发到私聊";
   if (item && item.kind === "say" && item.call) return String(item.where || "").startsWith("群") ? "已发到群" : "已发到私聊";
   return "未发送";
 }
-function kickerFor(step, where) {
-  if (where && where !== "群 · 随便聊聊") return where;
+function kickerFor(step) {
+  if (step.kicker) return step.kicker;
   if (step.kind === "quiet" || step.kind === "budget") return "看过，没有说话";
   if (step.kind === "compact") return "压缩了窗口";
   if (step.kind === "organize") return "整理了自己的窗口";
@@ -287,6 +144,7 @@ function kickerFor(step, where) {
 }
 function snippet(step) {
   if (!step) return "";
+  if (step.snapshot) return step.note;
   if (step.reserve) return "没有用量回执，预留还在。";
   if (step.kind === "tool" && /超时|失败/.test((step.title || "") + (step.result || ""))) return "没有拿到正文。费用仍按这一次记下。";
   if (step.kind === "tool" && step.result) return step.result.split("\n")[0];
@@ -297,107 +155,8 @@ function snippet(step) {
   if (step.kind === "capacity") return "旧正文换成了可定位的回读入口。";
   return step.title || "";
 }
-function sceneFeed() {
-  const names = { you: "你", cheng: "阿澄", zhou: "老周", man: "小满" };
-  const spoken = {
-    290: { work: "zhou_1", step: "z1" },
-    345: { work: "cheng_chat", step: "c2" },
-    500: { work: "zhou_2", step: "z2" }
-  };
-  const attached = new Set(["z1", "c2", "z2"]);
-  const items = M.ticks.map(tick => ({
-    id: "say-" + tick.lane + "-" + tick.sec,
-    kind: tick.kind === "steer" ? "steer" : "say",
-    who: names[tick.lane],
-    person: tick.lane,
-    sec: tick.sec,
-    at: sceneAt(tick.sec),
-    time: "11 月 11 日 " + M.clock(tick.sec).slice(0, 5),
-    text: tick.text,
-    stepRef: spoken[tick.sec] || null,
-    where: "群 · 随便聊聊"
-  }));
-  for (const work of M.works) {
-    if (work.id === "man_personal" || work.id === "man_budget") continue;
-    for (const step of work.steps) {
-      if (attached.has(step.id)) continue;
-      items.push({
-        id: "ev-" + work.id + "-" + step.id,
-        kind: "event",
-        who: work.who,
-        person: personKey(work.who),
-        sec: step.sec,
-        at: sceneAt(step.sec),
-        time: "11 月 11 日 " + M.clock(step.sec).slice(0, 5),
-        title: step.title,
-        stepRef: { work: work.id, step: step.id },
-        where: "群 · 随便聊聊"
-      });
-    }
-  }
-  items.sort((a, b) => a.at - b.at || (a.kind === "event" ? 1 : -1));
-  return items;
-}
-function roomFeed(room) {
-  if (room.id === "chat") return sceneFeed();
-  return (room.messages || []).map(msg => ({
-    id: msg.id,
-    kind: "say",
-    who: msg.who,
-    person: personKey(msg.who),
-    at: atOf(msg.time),
-    time: msg.time,
-    text: msg.text,
-    call: msg.call || null,
-    where: room.place === "私聊" ? "私聊" : room.place + " · " + room.name
-  }));
-}
-function whereOf(work) {
-  if (work.kind === "个人") return "个人活动";
-  if (work.kind === "后续") return "还没进任何聊天";
-  return "群 · 随便聊聊";
-}
-function personFeed(person) {
-  const items = [];
-  for (const work of M.works) {
-    if (work.who !== person.name) continue;
-    for (const step of work.steps) {
-      const at = work.id === "man_budget" ? Date.parse("2026-11-11T21:00:00+08:00") : sceneAt(step.sec || 0);
-      items.push({
-        id: "pf-" + work.id + "-" + step.id,
-        kind: "event",
-        who: person.name,
-        person: person.id,
-        at,
-        time: work.id === "man_budget" ? "11 月 11 日 21:00" : "11 月 11 日 " + M.clock(step.sec || 0).slice(0, 5),
-        title: step.title,
-        stepRef: { work: work.id, step: step.id },
-        where: whereOf(work)
-      });
-    }
-  }
-  for (const room of rooms) {
-    if (room.place !== "私聊" || !room.members.includes(person.id)) continue;
-    for (const msg of room.messages || []) {
-      if (msg.who !== person.name || !msg.call) continue;
-      items.push({
-        id: "pf-" + msg.id,
-        kind: "event",
-        who: person.name,
-        person: person.id,
-        at: atOf(msg.time),
-        time: msg.time,
-        title: msg.call.title,
-        call: msg.call,
-        where: "私聊"
-      });
-    }
-  }
-  items.sort((a, b) => a.at - b.at);
-  return items;
-}
 function feed() {
-  return ui.scope === "person" ? personFeed(personById(ui.person)) : roomFeed(currentRoom());
+  return ui.scope === "person" ? source.personFeed(personById(ui.person)) : source.roomFeed(currentRoom());
 }
 function itemSearch(item) {
   const step = stepOf(item);
@@ -411,7 +170,7 @@ function feedHits() {
 function viewOf(item) {
   const step = stepOf(item);
   if (step && item.stepRef) {
-    const work = M.workById(item.stepRef.work);
+    const work = source.workById(item.stepRef.work);
     return { work, step };
   }
   if (step) {
@@ -444,12 +203,9 @@ function applyItem(item, focus) {
   ui.focus = focus || "end";
   ui.local = viewOf(item);
   ui.step = ui.local.step.id;
-  ui.depth = "step";
   ui.chainTop = 0;
   ui.revealStep = true;
   ui.keepBody = false;
-  if (item.stepRef) ui.work = item.stepRef.work;
-  if (item.sec) ui.sec = item.sec;
   reveal(item);
 }
 function sumFeed(items) {
@@ -458,7 +214,7 @@ function sumFeed(items) {
   const seen = new Set();
   for (const item of items) {
     const step = stepOf(item);
-    if (!step || seen.has(step.id)) continue;
+    if (!step || seen.has(step.id) || (step.snapshot && item.kind === "say")) continue;
     seen.add(step.id);
     if (step.reserve) reserve += step.reserve;
     else if (step.price) settled += step.price;
@@ -472,81 +228,6 @@ function fold(id, text) {
   const body = `<p class="${long && !open ? "clamp" : ""}">${M.esc(text)}</p>`;
   const button = long ? `<button type="button" class="fold" data-fold="${M.esc(id)}">${open ? "收起" : "展开全文"}</button>` : "";
   return body + button;
-}
-
-function terrain() {
-  const n = 64;
-  const counts = [];
-  for (let i = 0; i < n; i++) {
-    const t = (i + 0.5) * (M.HORIZON / n);
-    counts.push(M.bars.filter(bar => t >= bar.a && t < bar.b && bar.tone !== "wait").length);
-  }
-  const max = Math.max(...counts, 1);
-  const width = 1000;
-  const height = 72;
-  const pts = counts.map((count, i) => {
-    const x = (i / (n - 1)) * width;
-    const y = height - 6 - (count / max) * 52;
-    return [x.toFixed(1), y.toFixed(1)];
-  });
-  const line = pts.map(point => point.join(",")).join(" ");
-  const area = `M0,${height} L${pts.map(point => point.join(",")).join(" L")} L${width},${height} Z`;
-  return `<svg class="terrain" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="terrain-fill" x1="0" y1="0" x2="1" y2="0"><stop class="s1" offset="0"/><stop class="s2" offset="0.55"/><stop class="s3" offset="1"/></linearGradient></defs><path d="${area}" fill="url(#terrain-fill)"/><polyline points="${line}" fill="none" stroke="url(#terrain-fill)" stroke-width="3" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>`;
-}
-
-function mapHTML() {
-  const marks = [0, 360, 720, 1080].map((sec, i) => {
-    const cls = i === 0 ? "start" : i === 3 ? "end" : "";
-    return `<span class="${cls}" style="left:${sec / M.HORIZON * 100}%">${M.clock(sec).slice(0, 5)}</span>`;
-  }).join("");
-  const rows = M.lanes.map(([id, name]) => {
-    const spans = M.bars.filter(bar => bar.lane === id).map(bar => {
-      const width = Math.max((bar.b - bar.a) / M.HORIZON * 100, 0.9);
-      const show = width >= 11 ? M.esc(bar.label) : "";
-      const key = barKey(bar);
-      const on = ui.work === bar.work ? " on" : "";
-      const open = bar.open ? " open" : "";
-      return `<button type="button" class="span tone-${key}${on}${open}" style="left:${bar.a / M.HORIZON * 100}%;width:${width}%" data-span="${bar.work}" data-seek="${bar.a}" aria-label="${M.esc(bar.label)}，${TONE_NAME[key]}"><i></i><span>${show}</span></button>`;
-    }).join("");
-    const pips = M.bars.filter(bar => bar.lane === id && bar.work === ui.work).flatMap(bar => {
-      const work = M.workById(bar.work);
-      return work.steps.filter(step => step.sec >= bar.a && step.sec < bar.b).map(step => {
-        const on = ui.step === step.id ? " on" : "";
-        return `<button type="button" class="pip tone-${toneKey(step)}${on}" style="left:${step.sec / M.HORIZON * 100}%" data-step="${step.id}" data-work="${work.id}" aria-label="${M.esc(step.title)}，${M.dur(step.ms)}，${M.priceLabel(step)}"></button>`;
-      });
-    }).join("");
-    const ticks = M.ticks.filter(tick => tick.lane === id).map(tick => `<button type="button" class="tick ${tick.kind}" style="left:${tick.sec / M.HORIZON * 100}%" data-tick="${tick.sec}" data-text="${M.esc(tick.text)}" aria-label="${tick.kind === "steer" ? "真人补充" : "消息"}"></button>`).join("");
-    return `<div class="lane"><div class="lane-name">${M.esc(name)}</div><div class="track">${ticks}${spans}${pips}</div></div>`;
-  }).join("");
-  const near = M.frames.reduce((best, frame) => Math.abs(frame.sec - ui.sec) < Math.abs(best.sec - ui.sec) ? frame : best);
-  const lede = ui.note ? ui.note : (Math.abs(near.sec - ui.sec) <= 12 ? near.label : "正在看这一刻");
-  const who = { you: "你", cheng: "阿澄", zhou: "老周", man: "小满" };
-  const talk = [...M.ticks].sort((a, b) => a.sec - b.sec).map(tick => `<li><button type="button" data-tick="${tick.sec}" data-text="${M.esc(tick.text)}"><b>${who[tick.lane]}</b><time>${M.clock(tick.sec).slice(0, 5)}</time><span>${M.esc(tick.text)}</span></button></li>`).join("");
-  return `<div class="problems"><button type="button" data-step="r_fail" data-work="cheng_research">读网页超时</button><button type="button" data-step="r_drop" data-work="cheng_research">连接断了，预留还在</button></div><div class="sheet" style="--at:${ui.sec / M.HORIZON}"><div class="terrain-wrap">${terrain()}</div><div class="ruler"><div class="marks">${marks}</div><input id="scrub" type="range" min="0" max="${M.HORIZON}" step="1" value="${ui.sec}" aria-label="移动时刻"></div><div class="lanes">${rows}</div><div class="play" id="play"></div></div><p class="readout"><time>${M.esc(M.clock(ui.sec))}</time><span>${M.esc(lede)}</span></p><section class="talk"><h3>这场说出来的话</h3><p class="aside">上面的菱形是这些话的位置。这里按说话顺序读，点一句就回到那一刻。</p><ol>${talk}</ol></section>`;
-}
-
-function transportHTML() {
-  const frames = M.frames.map(frame => {
-    const on = Math.abs(frame.sec - ui.sec) <= 8;
-    return `<button type="button" class="moment${on ? " on" : ""}" data-frame="${frame.sec}" aria-pressed="${on}"><time>${M.clock(frame.sec).slice(0, 5)}</time><span>${M.esc(frame.label)}</span></button>`;
-  }).join("");
-  const budgetOn = ui.work === "man_budget" ? " on" : "";
-  return `${frames}<button type="button" class="moment ghost${budgetOn}" data-span="man_budget"><time>21:00</time><span>等预算</span></button>`;
-}
-
-function metricsHTML(step) {
-  const bill = billOf(step);
-  const cached = bill ? bill.usage.cached : 0;
-  const failed = step.kind === "tool" && /超时|失败/.test((step.title || "") + (step.result || ""));
-  const cells = step.kind === "tool"
-    ? [["时长", M.dur(step.ms)], ["按次", M.priceLabel(step)], ["结果", failed ? "失败" : "拿到了"]]
-    : [
-      ["时长", step.reserve ? "未知" : M.dur(step.ms)],
-      ["这次金额", step.reserve ? "预留 " + M.money(step.reserve) : M.priceLabel(step)],
-      ["缓存读", cached ? cached.toLocaleString("zh-CN") + " tokens" : "没有"]
-    ];
-  if (step.beforeTokens) cells.push(["拿回来", step.afterTokens.toLocaleString("zh-CN")]);
-  return `<div class="metrics">${cells.map(([k, v]) => `<div><small>${k}</small><b>${M.esc(v)}</b></div>`).join("")}</div>`;
 }
 
 function billHTML(step) {
@@ -578,27 +259,63 @@ function blocksHTML(step, segments) {
 
 function costSummary(step) {
   if (step.reserve) return "预留 " + M.money(step.reserve) + "，还没有回执";
-  if (!step.price) return "不另计";
+  if (step.costStatus === "unknown") return "金额待确认";
+  if (!step.price) return M.priceLabel(step);
   const bill = billOf(step);
-  const cache = bill && bill.usage.cached ? " · 缓存读 " + bill.usage.cached.toLocaleString("zh-CN") : "";
+  const cached = bill?.usage.cached || step.snapshot?.data?.usage?.cached;
+  const cache = cached ? " · 缓存读 " + cached.toLocaleString("zh-CN") : "";
   const time = step.ms ? M.dur(step.ms) + " · " : "";
   return time + M.priceLabel(step) + cache;
 }
+function usageHTML(usage) {
+  const rows = [["输入", usage.input], ["缓存读", usage.cached], ["缓存写", usage.write], ["输出", usage.output]];
+  return `<table class="bill"><tbody>${rows.map(([label, tokens]) => `<tr><th>${label}</th><td>${tokens.toLocaleString("zh-CN")} tokens</td></tr>`).join("")}</tbody></table>`;
+}
+
 function costBlock(step) {
   const id = "bill:" + step.id;
   const open = !!ui.folds[id];
-  const can = step.kind === "tool" || (!step.reserve && !!billOf(step));
-  const button = can ? `<button type="button" class="text-btn" data-fold="${id}" aria-expanded="${open ? "true" : "false"}">${open ? "收起费用明细" : "费用明细"}</button>` : "";
-  const detail = open
-    ? (step.kind === "tool"
-      ? `<p class="aside">搜索和读网页按次另计，每笔 $0.000750，不进模型的缓存账。</p>`
-      : billHTML(step))
-    : "";
+  const usage = step.snapshot?.data?.usage;
+  const can = !!usage || (!step.snapshot && step.kind === "tool") || (!step.reserve && !!billOf(step));
+  const button = can ? `<button type="button" class="text-btn" data-fold="${M.esc(id)}" aria-expanded="${open ? "true" : "false"}">${open ? "收起费用明细" : "费用明细"}</button>` : "";
+  const detail = open ? (usage ? usageHTML(usage) : billHTML(step)) : "";
   return `<div class="cost-line"><b>${M.esc(costSummary(step))}</b>${button}</div>${detail}`;
+}
+
+function snapshotHTML(step) {
+  const { data, state } = step.snapshot;
+  if (state === "missing") return `<div class="empty-well">这一步没有保存输入或输出。</div>`;
+  if (state === "error") return `<div class="empty-well">暂时读不到快照。<button type="button" data-retry-snapshot>重试</button></div>`;
+  if (!data) return `<div class="empty-well" role="status">正在读取原始快照…</div>`;
+
+  const entries = step.kind === "tool"
+    ? [["结果", "output"], ["参数", "input"]]
+    : [["原始输出", "output"], ["原始输入", "input"]];
+  return entries.filter(([, field]) => data[field])
+    .map(([label, field]) => `<h3>${label}</h3><article class="block tone-${toneKey(step)}">${fold(step.id + ":" + field, data[field])}</article>`)
+    .join("") || `<div class="empty-well">这一步没有保存输入或输出。</div>`;
+}
+
+function loadSnapshot(step) {
+  const snapshot = step?.snapshot;
+  if (!snapshot || snapshot.state) return;
+  snapshot.state = "loading";
+  snapshot.load().then(data => {
+    snapshot.data = data;
+    snapshot.state = "ready";
+  }).catch(error => {
+    snapshot.state = error.status === 404 ? "missing" : "error";
+  }).finally(() => {
+    // If the user changes selection before the response arrives, keep their current panel.
+    if (ui.space === "focus" && current().step === step) render();
+  });
 }
 
 function payloadHTML(work, step) {
   const tone = toneKey(step);
+  if (step.snapshot) {
+    return `${snapshotHTML(step)}${costBlock(step)}`;
+  }
   if (step.kind === "model" || step.kind === "compact") {
     const all = step.segments || [];
     const cached = all.filter(seg => seg.cache).reduce((sum, seg) => sum + (seg.tokens || 0), 0);
@@ -658,17 +375,13 @@ function alertIcon() {
 }
 function failedStep(step) {
   if (!step) return false;
+  if (step.failed != null) return step.failed;
   if (step.reserve) return true;
   return step.kind === "tool" && /超时|失败/.test((step.title || "") + (step.result || ""));
 }
-function sourceQuote() {
-  const item = feed().find(entry => entry.id === ui.item);
-  if (!item) return "";
-  const text = (item.text || snippet(stepOf(item)) || item.title || "").replace(/\s+/g, " ");
-  return text.length > 42 ? text.slice(0, 42) + "…" : text;
-}
 function stepClock(step) {
-  if (step && step.sec != null) return M.clock(step.sec).slice(0, 5);
+  if (step?.clock) return step.clock;
+  if (step && step.sec != null && source.clock) return source.clock(step.sec).slice(0, 5);
   const item = feed().find(entry => entry.id === ui.item);
   const matched = item && String(item.time || "").match(/\d+:\d+/);
   return matched ? matched[0] : "";
@@ -680,7 +393,7 @@ function stepsHTML(work) {
     const bad = failedStep(step) ? " bad" : "";
     const width = Math.max(4, Math.round((step.ms || 0) / max * 100));
     const mark = failedStep(step) ? alertIcon() : "";
-    return `<li><button type="button" class="tone-${toneKey(step)}${on}${bad}" data-step="${step.id}"${on ? ` aria-current="step"` : ""}><i></i><time>${M.esc(stepClock(step))}</time><span>${mark}<b>${M.esc(step.title)}</b><span class="meter" aria-hidden="true"><i style="width:${width}%"></i></span></span><em>${step.ms ? M.dur(step.ms) : (step.reserve ? "未回执" : M.dur(step.ms))} · ${M.priceLabel(step)}</em></button></li>`;
+    return `<li><button type="button" class="tone-${toneKey(step)}${on}${bad}" data-step="${M.esc(step.id)}"${on ? ` aria-current="step"` : ""}><i></i><time>${M.esc(stepClock(step))}</time><span>${mark}<b>${M.esc(step.title)}</b><span class="meter" aria-hidden="true"><i style="width:${width}%"></i></span></span><em>${step.ms ? M.dur(step.ms) : (step.reserve ? "未回执" : M.dur(step.ms))} · ${M.priceLabel(step)}</em></button></li>`;
   }).join("")}</ol>`;
 }
 function jumpButtons(work) {
@@ -690,58 +403,43 @@ function jumpButtons(work) {
   const costliest = priced.reduce((best, step) => step.price > best.price ? step : best, priced[0] || null);
   const slowest = steps.reduce((best, step) => (step.ms || 0) > ((best && best.ms) || 0) ? step : best, null);
   const jumps = [];
-  if (failed) jumps.push(`<button type="button" class="bad" data-step="${failed.id}">${alertIcon()}失败的一步</button>`);
-  if (priced.length > 1 && costliest) jumps.push(`<button type="button" data-step="${costliest.id}">最贵的一步</button>`);
-  if (slowest && slowest.ms && (!failed || slowest.id !== failed.id) && (!costliest || slowest.id !== costliest.id)) jumps.push(`<button type="button" data-step="${slowest.id}">最慢的一步</button>`);
+  if (failed) jumps.push(`<button type="button" class="bad" data-step="${M.esc(failed.id)}">${alertIcon()}失败的一步</button>`);
+  if (priced.length > 1 && costliest) jumps.push(`<button type="button" data-step="${M.esc(costliest.id)}">最贵的一步</button>`);
+  if (slowest && slowest.ms && (!failed || slowest.id !== failed.id) && (!costliest || slowest.id !== costliest.id)) jumps.push(`<button type="button" data-step="${M.esc(slowest.id)}">最慢的一步</button>`);
   return jumps;
 }
 function chainHead(work) {
   const jumps = jumpButtons(work);
   return `<div class="chain-head"><h3>这次行动的调用</h3>${jumps.length ? `<div class="chain-jumps">${jumps.join("")}</div>` : ""}</div>`;
 }
-function stepSwitch(work) {
-  if (!work.steps || work.steps.length < 2) return "";
-  const jumps = jumpButtons(work);
-  const rail = work.steps.map(step => {
-    const on = step.id === ui.step ? " on" : "";
-    const bad = failedStep(step) ? " bad" : "";
-    const mark = failedStep(step) ? alertIcon() : "";
-    return `<button type="button" class="tone-${toneKey(step)}${on}${bad}" data-step="${step.id}"${on ? ` aria-current="step"` : ""}>${mark}<b>${M.esc(step.title)}</b></button>`;
-  }).join("");
-  return `<div class="step-switch">${jumps.length ? `<div class="chain-jumps">${jumps.join("")}</div>` : ""}<div class="step-rail">${rail}</div></div>`;
-}
 function pinHTML(work, step, spoken, tone) {
   const spent = (work.steps || []).reduce((sum, item) => sum + (item.ms || 0), 0);
   const money = spoken ? "没有单独的调用" : `${spent ? "调用合计 " + M.dur(spent) + " · " : ""}${M.costLine(work)}`;
   const fault = !spoken && (work.steps || []).find(item => item.reserve)
     ? "有一步还没有回执。预留还在，不能写成已经花掉。"
-    : (!spoken && (work.steps || []).some(item => item.kind === "tool" && /超时|失败/.test((item.title || "") + (item.result || ""))) ? "有一步失败了。费用仍按那一次记下。" : "");
+    : (!spoken && (work.steps || []).some(failedStep) ? "有一步失败了。" : "");
   const title = spoken ? step.title : work.title;
   const kicker = spoken ? `${work.who} · 原话` : `${work.who} · ${work.kind || ""}`;
   const outcome = !spoken && work.status ? `<p class="pin-outcome">${M.esc(work.status)}</p>` : "";
-  return `<header class="pin pin-tight tone-${tone}"><div class="pin-row">${faceHTML(personKey(work.who), true)}<div class="pin-copy"><p class="kicker">${M.esc(kicker)}</p><h2>${M.esc(title)}</h2></div></div><p class="pin-meta">${M.esc(money)}</p>${outcome}${fault ? `<p class="fault">${alertIcon()}${M.esc(fault)}</p>` : ""}</header>`;
+  return `<header class="pin pin-tight tone-${tone}"><div class="pin-row">${faceHTML(work.person || personKey(work.who), true)}<div class="pin-copy"><p class="kicker">${M.esc(kicker)}</p><h2>${M.esc(title)}</h2></div></div><p class="pin-meta">${M.esc(money)}</p>${outcome}${fault ? `<p class="fault">${alertIcon()}${M.esc(fault)}</p>` : ""}</header>`;
 }
 function stepHead(step) {
   if (!step || step.kind === "said") return "";
   return `<header class="step-head"><h3>${M.esc(step.title)}</h3><p><b>${M.esc(costSummary(step))}</b> · ${M.esc(stepStatus(step))}</p></header>`;
 }
 
-function faultLine(step) {
-  if (step.reserve) return "系统没有拿到用量回执。预留还在，不能写成已经花掉，也不能写成免费。";
-  if (step.kind === "tool" && /超时|失败/.test((step.title || "") + (step.result || ""))) return "工具失败。没有拿到正文。费用仍按这一次记下，没有抹成没发生。";
-  return "";
-}
-
 function inspectHTML() {
   const { work, step } = current();
+  if (!step) return `<div class="inspect-body"><p class="empty-well">选一条记录查看详情。</p></div>`;
   const spoken = step.kind === "said" || !(work.steps && work.steps.length);
-  const tone = spoken ? "wait" : toneKey(ui.depth === "step" ? step : (work.steps.find(item => item.id === ui.step) || step));
+  const tone = spoken ? "wait" : toneKey(step);
   const pin = pinHTML(work, step, spoken, tone);
   if (ui.space !== "focus" || spoken) {
     const text = spoken ? (step.text || "") : snippet(step);
     const state = spoken ? (step.body || "") : stepStatus(step);
     return `${pin}<div class="inspect-body"><section class="card summary"><p class="status">${M.esc(state)}</p><p>${M.esc(text)}</p></section></div>`;
   }
+  loadSnapshot(step);
   const payload = `<section class="card payload tone-${toneKey(step)}">${stepHead(step)}${payloadHTML(work, step)}</section>`;
   if (work.steps.length > 1) {
     return `${pin}<div class="inspect-body workbench"><section class="card chain-card">${chainHead(work)}${stepsHTML(work)}</section>${payload}</div>`;
@@ -749,21 +447,17 @@ function inspectHTML() {
   return `${pin}<div class="inspect-body">${payload}</div>`;
 }
 
-function legendHTML() {
-  return ["terra", "sol", "personal", "tool", "compact", "quiet", "hold"].map(key => `<span><i class="tone-${key}"></i>${TONE_NAME[key]}</span>`).join("");
-}
-
 function sayHTML(item, grouped) {
   const you = item.person === "you";
   const step = stepOf(item);
   const on = item.id === ui.item;
   const hit = ui.q && itemSearch(item).toLowerCase().includes(ui.q.trim().toLowerCase());
-  const chip = step ? `<span class="callchip tone-${toneKey(step)}">${TONE_NAME[toneKey(step)]} · ${M.priceLabel(step)}</span>` : "";
+  const chip = step ? `<span class="callchip tone-${toneKey(step)}">${M.esc(step.model && step.snapshot ? step.model : TONE_NAME[toneKey(step)])} · ${M.priceLabel(step)}</span>` : "";
   const steer = item.kind === "steer" ? `<em class="steer-note">只进队列，不插进正在进行的调用</em>` : "";
   const clock = (item.time.match(/\d+:\d+/) || [""])[0];
   const head = grouped ? "" : `<header><b>${M.esc(item.who)}</b><time>${M.esc(clock)}</time></header>`;
   const avatar = you || grouped ? "" : faceHTML(item.person);
-  return `<article class="bubble ${you ? "you" : "them"}${grouped ? " grouped" : ""}${on ? " on" : ""}${hit ? " hit" : ""}${ui.focus === "hit" && on ? " focus" : ""}" id="item-${item.id}">${avatar}<div class="bubble-main">${head}<button type="button" class="bubble-hit" data-item="${item.id}"><span class="line">${markText(item.text || "")}</span>${steer}${chip}</button></div></article>`;
+  return `<article class="bubble ${you ? "you" : "them"}${grouped ? " grouped" : ""}${on ? " on" : ""}${hit ? " hit" : ""}${ui.focus === "hit" && on ? " focus" : ""}" id="item-${M.esc(item.id)}">${avatar}<div class="bubble-main">${head}<button type="button" class="bubble-hit" data-item="${M.esc(item.id)}"><span class="line">${markText(item.text || "")}</span>${steer}${chip}</button></div></article>`;
 }
 function eventHTML(item) {
   const step = stepOf(item);
@@ -774,11 +468,13 @@ function eventHTML(item) {
   const clock = (item.time.match(/\d+:\d+/) || [""])[0];
   const label = ui.scope === "person"
     ? `<span class="where">${M.esc(item.where || "")}</span>`
-    : `${M.esc(item.who)} · ${M.esc(kickerFor(step, ""))}`;
-  return `<article class="event tone-${tone}${on ? " on" : ""}${hit ? " hit" : ""}${ui.focus === "hit" && on ? " focus" : ""}" id="item-${item.id}"><button type="button" data-item="${item.id}">${faceHTML(item.person, true)}<span class="event-copy"><b>${label}</b><strong>${M.esc(step.title)}</strong><small>${markText(text)}</small></span><span class="event-side"><em>${M.esc(M.priceLabel(step))}</em><time>${M.esc(clock)}</time></span></button></article>`;
+    : `${M.esc(item.who)} · ${M.esc(kickerFor(step))}`;
+  return `<article class="event tone-${tone}${on ? " on" : ""}${hit ? " hit" : ""}${ui.focus === "hit" && on ? " focus" : ""}" id="item-${M.esc(item.id)}"><button type="button" data-item="${M.esc(item.id)}">${faceHTML(item.person, true)}<span class="event-copy"><b>${label}</b><strong>${M.esc(step.title)}</strong><small>${markText(text)}</small></span><span class="event-side"><em>${M.esc(M.priceLabel(step))}</em><time>${M.esc(clock)}</time></span></button></article>`;
 }
 function threadBody(items, more) {
-  let html = `<div class="spacer"></div>${more ? `<button type="button" class="earlier" data-earlier>往上还有 ${more} 条</button>` : `<p class="origin">样例停在 11 月 11 日 21:28，不是正在发生的记录。</p>`}`;
+  const origin = (ui.scope === "room" && currentRoom()?.origin) || source.origin;
+  let html = `<div class="spacer"></div>${more ? `<button type="button" class="earlier" data-earlier>往上还有 ${more} 条</button>` : (origin ? `<p class="origin">${M.esc(origin)}</p>` : "")}`;
+  if (!items.length) html += `<p class="origin">${M.esc(source.emptyText || "这里还没有记录。")}</p>`;
   let day = "";
   let who = "";
   for (const item of items) {
@@ -804,18 +500,23 @@ function railButton(selected, attrs, face, name, preview) {
 }
 function railHTML() {
   const personRows = people.map(person => {
-    const last = personFeed(person).at(-1);
+    const last = source.personFeed(person).at(-1);
     const step = stepOf(last);
     const preview = step ? step.title + " · " + M.priceLabel(step) : person.note;
-    return railButton(ui.scope === "person" && ui.person === person.id, `data-person="${person.id}"`, faceHTML(person.id), person.name, preview);
+    return railButton(ui.scope === "person" && ui.person === person.id, `data-person="${M.esc(person.id)}"`, faceHTML(person.id), person.name, preview);
   }).join("");
   const roomRows = place => rooms.filter(room => room.place === place).map(room => {
-    const last = roomFeed(room).at(-1);
+    const last = source.roomFeed(room).at(-1);
     const preview = last ? (last.text || last.title || room.blurb) : room.blurb;
     const face = room.place === "群" ? facesHTML(room.members) : faceHTML(room.members[0]);
-    return railButton(ui.scope === "room" && ui.room === room.id, `data-room="${room.id}"`, face, room.name, preview);
+    return railButton(ui.scope === "room" && ui.room === room.id, `data-room="${M.esc(room.id)}"`, face, room.name, preview);
   }).join("");
-  return `<nav class="rail" aria-label="角色和聊天"><p class="rail-label">角色</p>${personRows}<p class="rail-label">群聊</p>${roomRows("群")}<p class="rail-label">私聊</p>${roomRows("私聊")}</nav>`;
+  const sections = [["群", "群聊"], ["私聊", "私聊"], ["个人", "个人活动"], ["会话", "其他会话"]];
+  const roomSections = sections.map(([place, label]) => {
+    const rows = roomRows(place);
+    return rows ? `<p class="rail-label">${label}</p>${rows}` : "";
+  }).join("");
+  return `<nav class="rail" aria-label="角色和聊天">${personRows ? `<p class="rail-label">角色</p>${personRows}` : ""}${roomSections}</nav>`;
 }
 function openRoom(room) {
   ui.scope = "room";
@@ -825,11 +526,9 @@ function openRoom(room) {
   ui.focus = "end";
   ui.item = "";
   ui.local = null;
-  ui.note = "";
   ui.folds = {};
   ui.hideCache = false;
   ui.shown = 12;
-  ui.depth = "step";
   ui.chainTop = 0;
   ui.space = "browse";
 }
@@ -841,11 +540,9 @@ function openPerson(id) {
   ui.focus = "end";
   ui.item = "";
   ui.local = null;
-  ui.note = "";
   ui.folds = {};
   ui.hideCache = false;
   ui.shown = 12;
-  ui.depth = "step";
   ui.chainTop = 0;
   ui.space = "browse";
 }
@@ -904,18 +601,6 @@ function revealChainStep() {
   if (stepRect.top < chainRect.top) chain.scrollTop += stepRect.top - chainRect.top - 8;
   else if (stepRect.bottom > chainRect.bottom) chain.scrollTop += stepRect.bottom - chainRect.bottom + 8;
 }
-function savedChatWidth() {
-  try {
-    const width = Number(localStorage.getItem("dropby.spectrum.chatWidth"));
-    if (width >= 220 && width <= 480) return width;
-  } catch (error) { /* 样例页没有存储时用默认宽度 */ }
-  return 300;
-}
-function setChatWidth(px) {
-  ui.chatWidth = Math.min(480, Math.max(220, Math.round(px)));
-  document.body.style.setProperty("--chat-w", ui.chatWidth + "px");
-  try { localStorage.setItem("dropby.spectrum.chatWidth", String(ui.chatWidth)); } catch (error) { /* 记不住就只留在这一次 */ }
-}
 function render() {
   const oldThread = document.getElementById("thread");
   if (ui.focus === "stay" && oldThread) ui.threadTop = oldThread.scrollTop;
@@ -929,20 +614,20 @@ function render() {
   const sum = sumFeed(items);
   const hits = feedHits();
   const person = ui.scope === "person" ? personById(ui.person) : null;
-  const room = currentRoom();
+  const room = currentRoom() || { name: "测光", place: "", members: [], blurb: "" };
   const title = person ? person.name : room.name;
   const place = person ? "角色" : room.place;
-  const blurb = person ? "这个人在群、私聊和个人活动里的全部调用。从最近一次往上翻。" : (room.id === "chat" ? "话、补充，还有没发出来的调用，按时间排在同一条里。" : room.blurb);
+  const blurb = person ? "这个人在群、私聊和个人活动里的调用。从最近一次往上翻。" : room.blurb;
   const totals = sum.settled || sum.reserve
     ? `<div class="totals"><p><small>已结算</small><strong>${M.money(sum.settled)}</strong></p>${sum.reserve ? `<p class="hold"><small>未回执</small><strong>${M.money(sum.reserve)}</strong></p>` : ""}</div>`
     : "";
   const face = person ? faceHTML(person.id) : (room.place === "群" ? facesHTML(room.members, true) : faceHTML(room.members[0]));
-  const live = room.id === "chat" && ui.scope === "room" ? `<div class="live">${people.map(one => `<button type="button" data-person="${one.id}">${faceHTML(one.id, true)}<span>${M.esc(one.name)}</span><small>${M.esc(one.note)}</small></button>`).join("")}</div>` : "";
+  const live = room.featured && ui.scope === "room" ? `<div class="live">${people.filter(one => room.members.includes(one.id)).map(one => `<button type="button" data-person="${M.esc(one.id)}">${faceHTML(one.id, true)}<span>${M.esc(one.name)}</span><small>${M.esc(one.note)}</small></button>`).join("")}</div>` : "";
   const hint = person ? "往上翻更早的调用。" : "从最新一条开始。往上翻更早的。";
   const count = ui.q ? (ui.focus === "hit" && hits.length ? `${ui.hit + 1} / ${hits.length}` : `${hits.length} 处`) : "";
   const jumps = ui.q ? `<span class="hit-count">${count}</span><button type="button" data-jump="-1" aria-label="上一个结果">上一个</button><button type="button" data-jump="1" aria-label="下一个结果">下一个</button>` : "";
   document.body.classList.toggle("space-focus", ui.space === "focus");
-  document.getElementById("app").innerHTML = `<a class="skip" href="#thread">跳到对话</a><header class="top"><a class="brand" href="/"><small>drop_by</small>测光</a><nav class="switch" aria-label="原型"><a href="/spectrum.html"${document.body.dataset.skin === "spectrum" ? ` aria-current="page"` : ""}>色谱</a><a href="/night.html"${document.body.dataset.skin === "night" ? ` aria-current="page"` : ""}>夜航</a><a href="/strata.html"${document.body.dataset.skin === "strata" ? ` aria-current="page"` : ""}>层叠</a></nav><button type="button" class="find" id="open-find"><span>查找</span><kbd>/</kbd></button></header><div class="body">${railHTML()}<main class="stage"><div class="stage-head">${face}<div class="stage-copy"><p class="kicker">${M.esc(place)}</p><h1>${M.esc(title)}</h1><p>${M.esc(blurb)}</p></div>${totals}</div>${live}<div class="finder"><svg class="ico" aria-hidden="true"><use href="/icons.svg#search"/></svg><input id="thread-q" value="${M.esc(ui.q)}" placeholder="${person ? "在这个人的调用里找" : "在这段对话里找"}" aria-label="${person ? "在这个人的调用里找" : "在这段对话里找"}">${jumps}</div><p class="hint">${hint}</p><div id="thread">${threadBody(visible, more)}</div></main><aside class="inspect">${inspectHTML()}</aside></div>`;
+  document.getElementById("app").innerHTML = `<a class="skip" href="#thread">跳到对话</a><header class="top"><a class="brand" href="/"><small>drop_by</small>测光</a><nav class="switch" aria-label="测光页面"><a href="/"${location.pathname === "/" ? ` aria-current="page"` : ""}>实际记录</a><a href="/demo.html"${location.pathname === "/demo.html" || location.pathname === "/spectrum.html" ? ` aria-current="page"` : ""}>样例</a><a href="/night.html"${document.body.dataset.skin === "night" ? ` aria-current="page"` : ""}>夜航</a><a href="/strata.html"${document.body.dataset.skin === "strata" ? ` aria-current="page"` : ""}>层叠</a></nav><button type="button" class="find" id="open-find"><span>查找</span><kbd>/</kbd></button></header><div class="body">${railHTML()}<main class="stage"><div class="stage-head">${face}<div class="stage-copy"><p class="kicker">${M.esc(place)}</p><h1>${M.esc(title)}</h1><p>${M.esc(blurb)}</p></div>${totals}</div>${source.notice ? `<p class="origin" role="status">${M.esc(source.notice)}</p>` : ""}${live}<div class="finder"><svg class="ico" aria-hidden="true"><use href="/icons.svg#search"/></svg><input id="thread-q" value="${M.esc(ui.q)}" placeholder="${person ? "在这个人的调用里找" : "在这段对话里找"}" aria-label="${person ? "在这个人的调用里找" : "在这段对话里找"}">${jumps}</div><p class="hint">${hint}</p><div id="thread">${threadBody(visible, more)}</div></main><aside class="inspect">${inspectHTML()}</aside></div>`;
   const box = document.getElementById("thread");
   requestAnimationFrame(() => {
     pinThread();
@@ -1014,15 +699,6 @@ window.addEventListener("resize", () => {
   if (ui.focus === "end") pinThread();
 });
 
-function secFromBar(event, button) {
-  const start = Number(button.dataset.seek);
-  const bar = M.bars.find(item => item.work === button.dataset.span && item.a === start);
-  if (!bar) return start;
-  const rect = button.getBoundingClientRect();
-  const ratio = rect.width ? Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)) : 0;
-  return Math.round(bar.a + (bar.b - bar.a) * ratio);
-}
-
 document.body.addEventListener("click", event => {
   const foldBtn = event.target.closest("[data-fold]");
   const hide = event.target.closest("[data-hide-cache]");
@@ -1032,6 +708,11 @@ document.body.addEventListener("click", event => {
   const roomBtn = event.target.closest("[data-room]");
   const open = event.target.closest("[data-open]");
   const step = event.target.closest("[data-step]");
+  if (event.target.closest("[data-retry-snapshot]")) {
+    current().step.snapshot.state = "";
+    render();
+    return;
+  }
   if (foldBtn) {
     ui.folds[foldBtn.dataset.fold] = !ui.folds[foldBtn.dataset.fold];
     ui.keepBody = true;
@@ -1047,7 +728,6 @@ document.body.addEventListener("click", event => {
     return;
   }
   if (jump) { jumpHit(Number(jump.dataset.jump)); return; }
-  if (event.target.closest("[data-back]")) return;
   if (event.target.closest("[data-earlier]")) {
     const box = document.getElementById("thread");
     ui.hold = true;
@@ -1105,7 +785,6 @@ document.body.addEventListener("click", event => {
     ui.keepBody = false;
     ui.local = { work: ui.local.work, step: picked };
     ui.step = picked.id;
-    ui.depth = "step";
     ui.revealStep = true;
     if (ui.focus === "end") ui.focus = "stay";
     render();
@@ -1143,12 +822,6 @@ document.body.addEventListener("input", event => {
     }
     return;
   }
-  if (event.target.id !== "scrub") return;
-  ui.sec = Number(event.target.value);
-  ui.note = "";
-  document.querySelector(".sheet")?.style.setProperty("--at", String(ui.sec / M.HORIZON));
-  const out = document.querySelector(".readout time");
-  if (out) out.textContent = M.clock(ui.sec);
 });
 
 document.body.addEventListener("keydown", event => {
@@ -1156,13 +829,6 @@ document.body.addEventListener("keydown", event => {
     event.preventDefault();
     jumpHit(1);
   }
-});
-
-document.body.addEventListener("change", event => {
-  if (event.target.id !== "scrub") return;
-  M.syncFromTime(ui);
-  ui.folds = {};
-  render();
 });
 
 const pal = document.createElement("div");
@@ -1182,7 +848,7 @@ function palRows() {
   const hitRows = [];
   if (q) {
     for (const room of rooms) {
-      for (const item of roomFeed(room)) {
+      for (const item of source.roomFeed(room)) {
         if (itemSearch(item).toLowerCase().includes(q)) hitRows.push({ type: "hit", room, item });
       }
     }
@@ -1261,7 +927,7 @@ function keyTarget(event) {
 }
 window.addEventListener("keydown", event => {
   const target = keyTarget(event);
-  if (event.key === "/" && document.activeElement.tagName !== "INPUT") {
+  if (source && event.key === "/" && document.activeElement.tagName !== "INPUT") {
     event.preventDefault();
     palOpen();
     return;
@@ -1272,7 +938,7 @@ window.addEventListener("keydown", event => {
     leaveOneLevel();
     return;
   }
-  if (!pal.hidden || event.target.tagName === "INPUT") return;
+  if (!source || !pal.hidden || event.target.tagName === "INPUT") return;
   if (event.key !== "j" && event.key !== "k") return;
   const items = feed();
   const index = items.findIndex(item => item.id === ui.item);
@@ -1288,4 +954,18 @@ document.body.addEventListener("click", event => {
   if (event.target.closest("#open-find")) palOpen();
 });
 
-render();
+const app = document.getElementById("app");
+try {
+  source = location.pathname === "/"
+    ? await (await import("./studio-observe.js?v=1")).observeSource()
+    : (await import("./studio-demo.js?v=1")).demoSource();
+  if (source.origin) document.title = "样例 · 测光";
+  people = source.people;
+  rooms = source.rooms;
+  ui.room = source.defaultRoom || rooms[0]?.id || "";
+  ui.person = people[0]?.id || "";
+  render();
+} catch (error) {
+  console.error(error);
+  app.textContent = "测光暂时读不到记录。请刷新重试。";
+}

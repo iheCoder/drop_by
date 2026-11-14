@@ -767,3 +767,6 @@ body.space-focus .nav-row > .ava { width: 28px; height: 28px; flex-basis: 28px; 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* Observed payloads include raw JSON and other lines without natural break points. */
+.block p { overflow-wrap: anywhere; }

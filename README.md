@@ -35,7 +35,7 @@ nohup ./bin/dropby >data/server.log 2>&1 &
 
 服务必须保持运行，电脑也必须处于可运行状态；关机、休眠时无法执行网络探索。重新启动会恢复中断的工作。停止服务用正常的 `SIGTERM` 或终端 `Ctrl+C`，程序会取消生成并保留未完工作。同一数据目录只允许一个服务进程。
 
-测光是另一个进程，不打开聊天数据库，也不进入成员上下文。主页读数据目录里的 `observe.sqlite`；测光用 `OBSERVE_DB` 指向这个文件，默认是 `data/observe.sqlite`。样例在 <http://127.0.0.1:8097/demo.html>。公开名称是 <https://www.dropby.ob.ai/>，和聊天的 <https://www.dropby.ai/> 分开。进程仍只监听本机回环，并接受这个域名的 Host。
+测光是另一个进程，不打开聊天数据库，也不进入成员上下文。主页与 [样例](https://www.dropby.ob.ai/demo.html) 共用界面。主页从 `OBSERVE_DB` 指定的观测库读取行动、步骤与快照（默认 `data/observe.sqlite`），并从本机聊天服务的只读 API 取得成员、会话和消息。样例继续使用独立的示例数据。公开名称是 <https://www.dropby.ob.ai/>，和聊天的 <https://www.dropby.ai/> 分开。进程仍只监听本机回环，并接受这个域名的 Host。
 
 ```sh
 go run ./cmd/observe
