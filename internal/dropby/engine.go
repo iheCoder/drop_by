@@ -27,6 +27,7 @@ type Engine struct {
 	activities  map[string]Activity
 	wg          sync.WaitGroup
 	memberGates sync.Map
+	wakeReviews sync.Map
 }
 
 func NewEngine(s *Store, m Model, c Config) *Engine {
@@ -64,6 +65,9 @@ func (e *Engine) Run(ctx context.Context) {
 		}
 		if e.Config.Models.ready(sceneChat) || e.Config.Models.ready(sceneResearch) || e.Config.Models.ready(sceneExploration) {
 			e.dispatch(ctx)
+		}
+		if e.Model != nil && e.Config.Models.ready(sceneMemberSettings) {
+			e.dispatchProfileWakeReviews(ctx)
 		}
 		select {
 		case <-ctx.Done():

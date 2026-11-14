@@ -615,10 +615,10 @@ func TestMemberAndRhythmCommitTogether(t *testing.T) {
 	}
 }
 
-func TestProfileSaveJudgesRhythmWithTheSameCommit(t *testing.T) {
+func TestProfileEditsUpdateRhythm(t *testing.T) {
 	s, c, m := fixture(t)
 	original := m.Profile
-	h := NewHandler(NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+	engine := NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		if !strings.Contains(ms[0].Content, "判断这次人物修改") {
 			t.Fatal("人物修改没有判断节律", ms[0].Content)
 		}
@@ -638,32 +638,42 @@ func TestProfileSaveJudgesRhythmWithTheSameCommit(t *testing.T) {
 		default:
 			return jsonReply(map[string]any{"unchanged": true}), nil
 		}
-	}), testConfig()))
+	}), testConfig())
+	h := NewHandler(engine)
+	review := func() {
+		engine.dispatchProfileWakeReviews(t.Context())
+		engine.wg.Wait()
+	}
 	tone := preferenceRequest(h, "PATCH", "/api/members/"+m.ID, map[string]any{"profile": original + "语气轻一点。", "profile_revision": m.ProfileRevision})
 	if tone.Code != 200 {
 		t.Fatal(tone.Body.String())
 	}
+	review()
 	saved, _ := s.Member(m.ID)
 	rhythm, _ := s.WakeRhythm(m.ID)
 	if !strings.Contains(saved.Profile, "语气轻一点") || rhythm.Windows[0].MeanMinutes != defaultWakeMinutes {
 		t.Fatal("无关修改改动了节律", saved.Profile, rhythm.Windows)
 	}
 	bad := preferenceRequest(h, "PATCH", "/api/members/"+saved.ID, map[string]any{"profile": saved.Profile + "星期写错。", "profile_revision": saved.ProfileRevision})
-	if bad.Code == 200 {
-		t.Fatal("非法节律仍保存了人物", bad.Body.String())
+	// 模型作息参数非法时只放弃作息更新。手动保存的人格已经提交。
+	if bad.Code != 200 {
+		t.Fatal("无效的后台判断阻止了保存", bad.Body.String())
 	}
+	review()
 	kept, _ := s.Member(m.ID)
-	if kept.Profile != saved.Profile || kept.ProfileRevision != saved.ProfileRevision {
-		t.Fatal("节律失败时人物已经写入", kept.Profile)
+	afterBad, _ := s.WakeRhythm(m.ID)
+	if !strings.Contains(kept.Profile, "星期写错") || kept.ProfileRevision != saved.ProfileRevision+1 || !sameRhythm(rhythm, afterBad) {
+		t.Fatal("不应回滚已提交的人格，也不应应用非法节律", kept.Profile, afterBad.Windows)
 	}
-	active := preferenceRequest(h, "PATCH", "/api/members/"+kept.ID, map[string]any{"profile": kept.Profile + "我会自己找事情做。", "profile_revision": kept.ProfileRevision})
+	active := preferenceRequest(h, "PATCH", "/api/members/"+kept.ID, map[string]any{"profile": saved.Profile + "我会自己找事情做。", "profile_revision": kept.ProfileRevision})
 	if active.Code != 200 {
 		t.Fatal(active.Body.String())
 	}
+	review()
 	finalMember, _ := s.Member(m.ID)
 	finalRhythm, _ := s.WakeRhythm(m.ID)
 	if !strings.Contains(finalMember.Profile, "自己找事情做") || finalRhythm.Windows[0].MeanMinutes != 45 {
-		t.Fatal("人物和节律没有一起保存", finalMember.Profile, finalRhythm.Windows)
+		t.Fatal("后台判断没有应用到已保存的人格版本", finalMember.Profile, finalRhythm.Windows)
 	}
 
 	answer := NewHandler(NewEngine(s, modelFunc(func(_ context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
@@ -832,4 +842,68 @@ func maxIndex(values []float64) int {
 		}
 	}
 	return best
+}
+
+func TestManualProfileSaveOvertakesPendingWakeReview(t *testing.T) {
+	// 让第一笔模型请求挂起，再保存第二版。两个 PATCH 都应先落盘，
+	// 第一版晚回来的关闭结果不能修改作息，也不能清掉第二版的待办。
+	s, _, member := fixture(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	calls := 0
+	engine := NewEngine(s, modelFunc(func(ctx context.Context, _ []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		calls++
+		if calls == 1 {
+			close(started)
+			select {
+			case <-release:
+				return jsonReply(map[string]any{"enabled": false}), nil
+			case <-ctx.Done():
+				return ChatMessage{}, ctx.Err()
+			}
+		}
+		return jsonReply(map[string]any{"set_windows": []wakeWindow{{Start: "00:00", End: "24:00", MeanMinutes: 45}}}), nil
+	}), testConfig())
+	defer func() { cancel(); engine.wg.Wait() }()
+	h := NewHandler(engine)
+	path := "/api/members/" + member.ID
+	save := func(profile string, revision int) Member {
+		t.Helper()
+		w := preferenceRequest(h, "PATCH", path, map[string]any{"profile": profile, "profile_revision": revision})
+		var result Member
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &result) != nil ||
+			result.Profile != profile || result.ProfileRevision != revision+1 {
+			t.Fatalf("保存应直接返回新版本：%d %s", w.Code, w.Body)
+		}
+		return result
+	}
+
+	first := save("我平时很少自己行动。", member.ProfileRevision)
+	engine.dispatchProfileWakeReviews(ctx)
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("第一版作息判断没有启动")
+	}
+	second := save("我现在喜欢自己找事情做。", first.ProfileRevision)
+	persisted, err := s.Member(member.ID)
+	if err != nil || persisted.ProfileRevision != second.ProfileRevision {
+		t.Fatal("模型未返回时第二版应已写入", err)
+	}
+
+	close(release)
+	engine.wg.Wait()
+	rhythm, err := s.WakeRhythm(member.ID)
+	if err != nil || !rhythm.Enabled || rhythm.Windows[0].MeanMinutes != defaultWakeMinutes {
+		t.Fatalf("旧作息结果覆盖了新版本：%+v %v", rhythm, err)
+	}
+
+	engine.dispatchProfileWakeReviews(ctx)
+	engine.wg.Wait()
+	rhythm, err = s.WakeRhythm(member.ID)
+	if err != nil || calls != 2 || !rhythm.Enabled || rhythm.Windows[0].MeanMinutes != 45 {
+		t.Fatalf("应应用最新一版的判断：调用 %d，作息 %+v，错误 %v", calls, rhythm, err)
+	}
 }

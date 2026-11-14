@@ -203,40 +203,6 @@ func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 		respond(w, 400, map[string]string{"error": "请选择已有头像颜色"})
 		return
 	}
-	var patch wakePatch
-	adjust := false
-	if in.Profile != nil || in.DomainProfiles != nil {
-		current, err := a.engine.Store.Member(r.PathValue("id"))
-		if err != nil {
-			respond(w, 404, map[string]string{"error": "成员不存在"})
-			return
-		}
-		if in.ProfileRevision != nil && current.ProfileRevision != *in.ProfileRevision {
-			respond(w, http.StatusConflict, map[string]string{"error": errProfileChanged.Error()})
-			return
-		}
-		profile, domains := current.Profile, current.DomainProfiles
-		if in.Profile != nil {
-			profile = strings.TrimSpace(*in.Profile)
-		}
-		if in.DomainProfiles != nil {
-			domains = *in.DomainProfiles
-		}
-		if profile != current.Profile || !slices.Equal(domains, current.DomainProfiles) {
-			after := current
-			after.Profile, after.DomainProfiles = profile, domains
-			rhythm, err := a.engine.Store.WakeRhythm(current.ID)
-			if err != nil {
-				a.fail(w, err)
-				return
-			}
-			patch, adjust, err = judgeWakeRhythm(r.Context(), a.engine.Model, current, after, "用户直接编辑了人物设定", rhythm)
-			if err != nil {
-				a.fail(w, err)
-				return
-			}
-		}
-	}
 	tx, err := a.engine.Store.db.Begin()
 	if err != nil {
 		a.fail(w, err)
@@ -276,8 +242,8 @@ func (a *API) updateMember(w http.ResponseWriter, r *http.Request) {
 			a.fail(w, err)
 			return
 		}
-		if profileChanged && adjust {
-			if err = applyWakeDecision(tx, m.ID, patch); err != nil {
+		if profileChanged {
+			if err = queueProfileWakeReview(tx, m); err != nil {
 				a.fail(w, err)
 				return
 			}

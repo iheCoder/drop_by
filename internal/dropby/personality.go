@@ -111,6 +111,9 @@ func (s *Store) initPersonality() error {
  member_id TEXT NOT NULL REFERENCES members(id), revision INTEGER NOT NULL,
  profile TEXT NOT NULL, origin TEXT NOT NULL, change_note TEXT NOT NULL,
  source_ids TEXT NOT NULL, created_at TEXT NOT NULL, domain_profiles TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(member_id,revision));
+CREATE TABLE IF NOT EXISTS profile_wake_reviews(
+ member_id TEXT PRIMARY KEY REFERENCES members(id), before_revision INTEGER NOT NULL,
+ revision INTEGER NOT NULL, due_at INTEGER NOT NULL);
 -- 旧版后台工作不再恢复为普通个人活动；保留已发生的工作、用量和人物版本。
 UPDATE work SET status='stopped' WHERE kind='reflect' AND status IN ('pending','running','waiting_budget','paused','failed');
 -- 两张表只保存重复来源引用与整理游标，原始消息和工具结果仍在各自记录中。
