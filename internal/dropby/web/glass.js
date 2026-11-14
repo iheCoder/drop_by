@@ -181,4 +181,5 @@ stream.addEventListener('ready', () => { $('connection-dot').className = 'ready'
 stream.addEventListener('change',scheduleRefresh);
 stream.addEventListener('reactions',event=>refreshReactions(JSON.parse(event.data).conversation_id));
 stream.onerror = () => { $('connection-dot').className = ''; $('connection-label').textContent = '正在重连'; };
-refresh();
+syncMessages();
+setInterval(() => syncMessages(true), messageCheckInterval);

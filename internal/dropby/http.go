@@ -2,6 +2,7 @@ package dropby
 
 import (
 	"bytes"
+	"database/sql"
 	"embed"
 	"encoding/base64"
 	"encoding/json"
@@ -43,6 +44,7 @@ func NewHandler(engine *Engine) http.Handler {
 	mux.HandleFunc("POST /api/members/{id}/preferences", a.preferences)
 	mux.HandleFunc("POST /api/conversations", a.createConversation)
 	mux.HandleFunc("GET /api/conversations/{id}", a.conversation)
+	mux.HandleFunc("GET /api/conversations/{id}/latest", a.latestMessage)
 	mux.HandleFunc("PATCH /api/conversations/{id}/coordinator", a.coordinator)
 	mux.HandleFunc("POST /api/conversations/{id}/messages", a.sendMessage)
 	mux.HandleFunc("PUT /api/conversations/{id}/messages/{message}/reaction", a.messageReaction)
@@ -445,6 +447,20 @@ func (a *API) createConversation(w http.ResponseWriter, r *http.Request) {
 	a.engine.Hub.Publish(c.ID)
 	respond(w, 201, c)
 }
+func (a *API) latestMessage(w http.ResponseWriter, r *http.Request) {
+	// 补查只读取消息编号，跳过聊天正文、活动和其他会话。
+	seq, err := a.engine.Store.latestMessageSeq(r.Context(), r.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		respond(w, http.StatusNotFound, map[string]string{"error": "聊天不存在"})
+		return
+	}
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, map[string]int64{"last_seq": seq})
+}
+
 func (a *API) conversation(w http.ResponseWriter, r *http.Request) {
 	c, err := a.engine.Store.Conversation(r.PathValue("id"))
 	if err != nil {

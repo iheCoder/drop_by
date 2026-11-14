@@ -7,6 +7,9 @@ let state = { members: [], conversations: [], active_rooms: [] };
 let selected = localStorage.getItem('dropby-room') || '';
 let roomData = null, messages = [], replyTo = null, loadSequence = 0, hasEarlier = false;
 let refreshTimer, toastTimer, budgetRefreshTimer, currentVersions = [];
+let syncingMessages = false, refreshQueued = false, waitingForMessageCheck = false;
+const messageCheckInterval = 15_000;
+const messageRetryDelay = 2_000;
 let currentArtifactIndex = 0, artifactMode = 'preview', panelRequest = 0;
 let panelView = '', avatarData = '', avatarIcon = 'cat', avatarColor = 'jade';
 let sideTab = 'chats', sending = false, renderedMessages = '', profileBaseline = null;
@@ -92,14 +95,14 @@ function richText(text) {
   return container.outerHTML;
 }
 
-async function refresh() {
+async function refresh(signal) {
   try {
-    state = await api('/api/state');
+    state = await api('/api/state', {signal});
     // 新私聊也能提醒；通知游标和已读游标分开，围观其他群不会把它们误标为已读。
     for (const c of state.conversations) {
       const previous = notificationCursor[c.id];
       if (!initialLoad && document.hidden && c.last_seq > (previous || 0) && 'Notification' in window && Notification.permission === 'granted') {
-        const data = await api(`/api/conversations/${c.id}`);
+        const data = await api(`/api/conversations/${c.id}`, {signal});
         for (const m of data.messages.filter(m => m.seq > (previous || 0) && m.notify && m.author_id !== 'user' && m.author_id !== 'system')) {
           const n = new Notification(`${authorName(m.author_id)} · ${c.name}`, { body: m.body.slice(0, 120), tag: m.id });
           n.onclick = () => { window.focus(); openRoom(c.id); n.close(); };
@@ -120,10 +123,64 @@ async function refresh() {
     if (workspaceView === 'budget') updateBudgetPreview();
     if (workspaceView === 'usage') refreshUsageAnalysis();
     if (!selected || !state.conversations.some(c => c.id === selected)) selected = state.conversations[0]?.id || '';
-    if (selected) await loadConversation(selected, true); else renderWelcome();
-  } catch (error) { toast(error.message); }
+    if (selected) await loadConversation(selected, true, signal); else renderWelcome();
+  } catch (error) {
+    if (signal) throw error;
+    toast(error.message);
+  }
 }
-function scheduleRefresh() { clearTimeout(refreshTimer); refreshTimer = setTimeout(refresh, 150); }
+
+function scheduleRefresh() {
+  // 实时通知合并处理。连续失败后由定时检查接手，避免通知不断触发重试。
+  if (waitingForMessageCheck) return;
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => {
+    refreshTimer = undefined;
+    syncMessages();
+  }, 150);
+}
+
+async function syncMessages(checkOnly = false) {
+  if (syncingMessages) {
+    if (!checkOnly) refreshQueued = true;
+    return;
+  }
+  if (checkOnly && (document.hidden || $('workspace-page').open || refreshTimer)) return;
+  if (checkOnly && !selected && !waitingForMessageCheck) return;
+
+  syncingMessages = true;
+  const notice = $('message-sync-notice');
+  // 如果上一次更新失败，直接补读，避免只查到相同编号就误判为恢复。
+  let needsRefresh = !checkOnly || waitingForMessageCheck;
+  try {
+    const attempts = waitingForMessageCheck ? 1 : 2;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const signal = AbortSignal.timeout(8_000);
+      try {
+        if (!needsRefresh) {
+          const room = selected;
+          const {last_seq} = await api(`/api/conversations/${room}/latest`, {signal});
+          if (selected !== room) return;
+          needsRefresh = roomData?.conversation.id !== room || last_seq > (messages.at(-1)?.seq || 0);
+        }
+        if (needsRefresh) await refresh(signal);
+        waitingForMessageCheck = false;
+        notice.hidden = true;
+        return;
+      } catch {
+        if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, messageRetryDelay));
+      }
+    }
+    waitingForMessageCheck = true;
+    notice.hidden = false;
+  } finally {
+    syncingMessages = false;
+    if (refreshQueued) {
+      refreshQueued = false;
+      scheduleRefresh();
+    }
+  }
+}
 
 function renderSidebar() {
   const query = $('chat-search').value.trim().toLocaleLowerCase();
@@ -176,9 +233,9 @@ async function openRoom(id) {
   localStorage.setItem('dropby-room', id); $('sidebar').classList.remove('open'); $('mobile-nav').setAttribute('aria-expanded','false'); renderSidebar();
   await loadConversation(id, false);
 }
-async function loadConversation(id, preserve) {
+async function loadConversation(id, preserve, signal) {
   const sequence = ++loadSequence;
-  const data = await api(`/api/conversations/${id}`);
+  const data = await api(`/api/conversations/${id}`, {signal});
   if (sequence !== loadSequence || selected !== id) return;
   const changedRoom = roomData?.conversation.id !== id;
   roomData = data;
@@ -752,4 +809,9 @@ async function requestNotifications() {
   if (!('Notification' in window)) return toast('这个浏览器不支持系统通知，聊天中的新消息仍会保留。');
   const result = await Notification.requestPermission(); toast(result === 'granted' ? '已开启通知。值得及时提醒的新消息会通知你。' : '继续在聊天里查看新消息就好。');
 };
-document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleRefresh(); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    if (waitingForMessageCheck) syncMessages(true);
+    else scheduleRefresh();
+  }
+});

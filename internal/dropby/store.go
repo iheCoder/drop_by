@@ -1,6 +1,7 @@
 package dropby
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -299,6 +300,17 @@ func (s *Store) Conversations() ([]Conversation, error) {
 		result = append(result, c)
 	}
 	return result, nil
+}
+
+func (s *Store) latestMessageSeq(ctx context.Context, room string) (int64, error) {
+	var seq int64
+	// 与会话详情保持相同的可见范围。空会话返回 0，已删除的会话则返回 ErrNoRows。
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE((
+		SELECT seq FROM messages WHERE conversation_id=c.id
+		AND NOT (author_id='system' AND substr(id,1,7)='budget_')
+		ORDER BY seq DESC LIMIT 1
+	), 0) FROM conversations c WHERE c.id=?`, room).Scan(&seq)
+	return seq, err
 }
 
 func (s *Store) Messages(room string, before int64, limit int) ([]Message, error) {
