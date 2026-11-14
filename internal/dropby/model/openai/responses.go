@@ -27,7 +27,7 @@ type Client struct {
 
 // 高推理工具链需携带供应商返回的推理项目，不能只把工具结果拼成聊天文本。
 // store=false + 加密推理项目让服务不依赖供应商保存会话；原始推理不显示给用户。
-func (m *Client) Build(messages []model.ChatMessage, cacheEnd int, defs []model.ToolDefinition, jsonOutput bool) ([]byte, error) {
+func (m *Client) Build(messages []model.ChatMessage, cacheEnd int, defs []model.ToolDefinition, jsonOutput bool, schema *model.OutputSchema) ([]byte, error) {
 	messages = m.responsesHistory(messages, &cacheEnd)
 	input := []any{}
 	shortEnd := -1
@@ -61,7 +61,11 @@ func (m *Client) Build(messages []model.ChatMessage, cacheEnd int, defs []model.
 		body["tools"] = tools
 	}
 	if jsonOutput {
-		text := map[string]any{"format": map[string]string{"type": "json_object"}}
+		format := map[string]any{"type": "json_object"}
+		if schema != nil {
+			format = map[string]any{"type": "json_schema", "name": schema.Name, "schema": schema.Schema, "strict": true}
+		}
+		text := map[string]any{"format": format}
 		if native, ok := m.Options["text"].(map[string]any); ok {
 			maps.Copy(text, native)
 		}

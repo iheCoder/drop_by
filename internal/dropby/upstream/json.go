@@ -17,11 +17,23 @@ import (
 )
 
 func PostJSON(ctx context.Context, client *http.Client, endpoint, key string, body []byte, out any, raw *string) error {
+	return postJSON(ctx, client, endpoint, "Authorization", "Bearer "+key, key, body, out, raw)
+}
+
+// Gemini 原生端点使用自己的密钥请求头。HTTP 客户端默认会在跳转时复制
+// 这种自定义头，因而只向配置明确指定的 endpoint 发出请求。
+func PostJSONWithAPIKey(ctx context.Context, client *http.Client, endpoint, header, key string, body []byte, out any, raw *string) error {
+	local := *client
+	local.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return postJSON(ctx, &local, endpoint, header, key, key, body, out, raw)
+}
+
+func postJSON(ctx context.Context, client *http.Client, endpoint, header, credential, key string, body []byte, out any, raw *string) error {
 	req, e := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if e != nil {
 		return e
 	}
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set(header, credential)
 	req.Header.Set("Content-Type", "application/json")
 	if ctx.Err() != nil {
 		return &Failure{Stage: ctx.Err().Error(), Cause: ctx.Err(), NotSent: true}

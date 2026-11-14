@@ -3,7 +3,9 @@ package dropby
 import (
 	"fmt"
 	"strconv"
+	"time"
 
+	"drop_by/internal/dropby/model/gemini"
 	"drop_by/internal/dropby/model/openai"
 )
 
@@ -22,6 +24,17 @@ func (m *HTTPModel) newModelCall(route modelRoute) (*modelCall, error) {
 			CacheBreakpoints: route.cacheEnabled(), AllowLegacyHistory: route.Provider == defaultModelProvider,
 		}
 		return &modelCall{HTTPModel: m, modelRoute: route, backend: backend, reserveMicros: price.ReserveMicros}, nil
+	case gemini.Protocol:
+		price, err := gemini.PriceForModel(route.Model, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		backend := &gemini.Client{
+			HTTP: serviceClient(m.Client), Provider: route.Provider, BaseURL: route.BaseURL,
+			APIKey: route.apiKey, Model: route.Model, Options: route.Options, Price: price,
+			LocalTokenCounting: route.TokenCounting == "local",
+		}
+		return &modelCall{HTTPModel: m, modelRoute: route, backend: backend, reserveMicros: price.ReserveMicros}, nil
 	default:
 		return nil, fmt.Errorf("未接入模型协议 %q", route.Protocol)
 	}
@@ -29,10 +42,10 @@ func (m *HTTPModel) newModelCall(route modelRoute) (*modelCall, error) {
 
 func validateProviderProtocol(protocol string) error {
 	switch protocol {
-	case openai.Protocol:
+	case openai.Protocol, gemini.Protocol:
 		return nil
 	default:
-		return fmt.Errorf("当前支持 %s", openai.Protocol)
+		return fmt.Errorf("当前支持 %s、%s", openai.Protocol, gemini.Protocol)
 	}
 }
 
@@ -40,6 +53,22 @@ func resolveProviderScene(s *modelSettings, scene modelScene, protocol string, l
 	switch protocol {
 	case openai.Protocol:
 		return resolveOpenAIScene(s, scene, legacyFallback, getenv)
+	case gemini.Protocol:
+		if _, err := gemini.PriceForModel(s.Model, time.Now()); err != nil {
+			return fmt.Errorf("model：%w", err)
+		}
+		limit, err := gemini.ValidateOptions(s.Model, s.Options)
+		if err != nil {
+			return err
+		}
+		s.maxOutputTokens = limit
+		if s.ContextTokenBudget == 0 {
+			s.ContextTokenBudget = 100_000
+		}
+		if s.ContextTokenBudget > gemini.ContextLimit || s.ContextTokenBudget <= limit {
+			return fmt.Errorf("context_token_budget 必须大于输出上限 %d，且不超过 %d", limit, gemini.ContextLimit)
+		}
+		return nil
 	default:
 		return validateProviderProtocol(protocol)
 	}

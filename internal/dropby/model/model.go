@@ -3,8 +3,12 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+// ErrInputTooLarge 表示生成服务明确拒绝了请求的输入容量。
+var ErrInputTooLarge = errors.New("供应商输入容量超限")
 
 type ChatMessage struct {
 	ResponseItems   []json.RawMessage `json:"response_items,omitempty"` // 原生项目仅由相容的模型接入复用。
@@ -86,8 +90,14 @@ type SteeringHooks struct {
 	FinishUpdate func(id string, accepted bool)
 }
 
+// OutputSchema 描述调用方实际消费的 JSON。各接入点将同一份定义装入各自的原生字段。
+type OutputSchema struct {
+	Name   string
+	Schema json.RawMessage
+}
+
 type Session interface {
-	Build(messages []ChatMessage, boundary int, tools []ToolDefinition, jsonOutput bool) ([]byte, error)
+	Build(messages []ChatMessage, boundary int, tools []ToolDefinition, jsonOutput bool, schema *OutputSchema) ([]byte, error)
 	Estimate([]ChatMessage, func([]ChatMessage) ([]byte, error)) (int, error)
 	Generate(context.Context, []byte) (Result, error)
 }

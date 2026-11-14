@@ -3,6 +3,7 @@ package dropby
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"drop_by/internal/dropby/model"
 	"drop_by/internal/dropby/upstream"
+	"drop_by/internal/observe"
 )
 
 type ChatMessage = model.ChatMessage
@@ -42,6 +44,8 @@ type modelCall struct {
 	modelRoute
 	backend       model.Session
 	reserveMicros func(input, output int) int64
+	outputSchema  *model.OutputSchema
+	inputRejected bool
 }
 
 type Usage struct {
@@ -174,7 +178,6 @@ func (s *Store) weeklyUsageAt(at time.Time) (Usage, error) {
 	return u, err
 }
 
-// 模型边界只保留当前 Responses 的结果，不再转换成旧 choices 协议。
 // 只描述供应商响应的形态。生成正文并不等同于发布，非成员调用也不猜测内部决策。
 func usageOutcome(ctx context.Context, r model.Result) string {
 	if r.Incomplete {
@@ -211,16 +214,21 @@ func (m *HTTPModel) complete(ctx context.Context, messages []ChatMessage, defs [
 	if err != nil {
 		return ChatMessage{}, err
 	}
+	call.outputSchema, _ = ctx.Value(outputSchemaKey{}).(*model.OutputSchema)
 	return call.complete(ctx, messages, defs, jsonOutput, chain)
 }
 
 func (m *modelCall) responseBody(messages []ChatMessage, defs []ToolDefinition, jsonOutput bool) ([]byte, error) {
 	ordered, boundary := memberRequestMessages(messages)
-	return m.backend.Build(ordered, boundary, defs, jsonOutput)
+	return m.backend.Build(ordered, boundary, defs, jsonOutput, m.outputSchema)
 }
 
 func (m *modelCall) complete(ctx context.Context, messages []ChatMessage, defs []ToolDefinition, jsonOutput bool, chain *[]ChatMessage) (ChatMessage, error) {
 	beginCall(ctx)
+	return m.completeWithinBudget(ctx, messages, defs, jsonOutput, chain, m.TokenCounting == "local")
+}
+
+func (m *modelCall) completeWithinBudget(ctx context.Context, messages []ChatMessage, defs []ToolDefinition, jsonOutput bool, chain *[]ChatMessage, allowSmallerRetry bool) (ChatMessage, error) {
 	// 在模型边界统一检查完整请求，参与判断与行动共用此处。
 	// 不先截短工具正文；保守估算超出时使用实际计数与原生压缩。
 	encoded, inputEstimate, e := boundedRequest(messages, m.ContextTokenBudget, m.maxOutputTokens, m.backend.Estimate, func(input []ChatMessage) ([]byte, error) {
@@ -242,6 +250,13 @@ func (m *modelCall) complete(ctx context.Context, messages []ChatMessage, defs [
 	}
 	if e != nil {
 		return ChatMessage{}, e
+	}
+	if m.TokenCounting == "local" {
+		note(ctx, observe.Step{
+			ID: observe.NewID("step"), Kind: "request", Name: "input_tokens_local", Status: "succeeded",
+			Summary: fmt.Sprintf("本地估算输入 %d token", inputEstimate),
+			Output:  asJSON(map[string]int{"estimated_input_tokens": inputEstimate}),
+		})
 	}
 	// 容量检查结束后才观察实际会发送的请求。若压缩过，比较的是整理后的内容。
 	cache, _ := ctx.Value(memberCacheKey{}).(memberCacheScope)
@@ -290,11 +305,11 @@ func (m *modelCall) complete(ctx context.Context, messages []ChatMessage, defs [
 				}
 				return err
 			}
+			if response.CostError != nil {
+				return response.CostError
+			}
 			if response.Usage.InputTokens+response.Usage.OutputTokens > 0 {
-				actual, err = response.CostMicros, response.CostError
-				if err != nil {
-					return err
-				}
+				actual = response.CostMicros
 				if err = m.Store.settleCall(call, actual, response.Usage, usageOutcome(ctx, response)); err != nil {
 					return &modelAccountingError{err}
 				}
@@ -304,6 +319,14 @@ func (m *modelCall) complete(ctx context.Context, messages []ChatMessage, defs [
 		})
 	}
 	if e != nil {
+		if allowSmallerRetry && inputEstimate > 1 && errors.Is(e, model.ErrInputTooLarge) {
+			// 把这次被拒的输入排除在重试预算外，走原有的回读整理。
+			// 只重发一次更小的生成请求，工具执行仍由外层继续。
+			smaller := *m
+			smaller.ContextTokenBudget = min(capacity, m.maxOutputTokens+inputEstimate-1)
+			smaller.inputRejected = true
+			return smaller.completeWithinBudget(ctx, messages, defs, jsonOutput, chain, false)
+		}
 		return ChatMessage{}, e
 	}
 	if response.Incomplete {
@@ -355,10 +378,26 @@ func parseJSON(raw string, out any) error {
 	return nil
 }
 
+type outputSchemaKey struct{}
+
+// 问答只生成这次要展示的一个问题。选项可以为空，真人可以自由回答或跳过。
+// 结构校验交给供应商，文本长度、空白等业务校验继续由应用负责。
+var memberQuestionsSchema = model.OutputSchema{
+	Name: "member_questions",
+	Schema: json.RawMessage(`{
+		"type":"object","additionalProperties":false,"required":["questions"],
+		"properties":{"questions":{"type":"array","minItems":1,"maxItems":1,"items":{
+			"type":"object","additionalProperties":false,"required":["text","options"],
+			"properties":{"text":{"type":"string"},"options":{"type":"array","maxItems":6,"items":{"type":"string"}}}
+		}}}
+	}`),
+}
+
 func CreateQuestions(ctx context.Context, m Model, direction string) ([]Question, error) {
 	call, _ := ctx.Value(usageCallKey{}).(usageCall)
 	call.purpose = "preferences"
 	ctx = withUsageCall(ctx, call)
+	ctx = context.WithValue(ctx, outputSchemaKey{}, &memberQuestionsSchema)
 	var out struct {
 		Questions []Question `json:"questions"`
 	}

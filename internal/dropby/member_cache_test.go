@@ -140,6 +140,45 @@ func TestPersonalCacheDropsLongMarkWhenEarlierInputChanges(t *testing.T) {
 	}
 }
 
+func TestOpenAICacheModeKeepsStableBoundary(t *testing.T) {
+	// 两种模式发送相同的历史、工具回执和新指令。显式模式只在工具回执
+	// 末尾写入，后面的现场说明仍交给模型，但不会触发额外的自动断点。
+	for _, mode := range []string{"implicit", "explicit"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Models.Scenes[sceneChat].Options["prompt_cache_options"] = map[string]any{"mode": mode}
+			m := &HTTPModel{Config: cfg, Client: &http.Client{}}
+			call, err := m.newModelCall(cfg.Models.route(sceneChat))
+			if err != nil {
+				t.Fatal(err)
+			}
+			messages := []ChatMessage{
+				{Role: "system", Content: "成员资料"},
+				{Role: "user", Content: strings.Repeat("重复使用的稳定历史。", 1500)},
+				{Role: "tool", ToolCallID: "call_cached", Content: "已查到资料"},
+				{Role: "user", Content: `{"self":{},"trigger":{},"time":"现场说明"}`},
+			}
+			raw, err := call.responseBody(messages, nil, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body struct {
+				Input   []map[string]json.RawMessage
+				Options map[string]string `json:"prompt_cache_options"`
+			}
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Options["mode"] != mode || !reflect.DeepEqual(requestCacheMarks(t, body.Input), map[int]string{2: ""}) {
+				t.Fatal("缓存模式或稳定断点未按配置发送")
+			}
+			if string(body.Input[2]["call_id"]) != `"call_cached"` || !strings.Contains(string(body.Input[3]["content"]), "现场说明") {
+				t.Fatal("缓存设置改变了工具配对或本轮说明")
+			}
+		})
+	}
+}
+
 // 去掉标记后逐项比对模型看到的文字，同时核对缓存线实际写入的位置和时长。
 func requestCacheMarks(t *testing.T, input []map[string]json.RawMessage) map[int]string {
 	t.Helper()

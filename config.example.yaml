@@ -24,6 +24,13 @@ models:
       mid_turn_steering: true
       cache_breakpoints: true
 
+    # 可选接入点。同一协议可用 Google 直连或支持 Gemini 原生 API 的中转站。
+    # Gemini:
+    #   protocol: gemini_generate_content
+    #   base_url: https://generativelanguage.googleapis.com
+    #   token_counting: remote  # 默认。接入点不支持 countTokens 时改为 local。
+    #   api_key: "在本机 config.yaml 中填写"
+
   # provider 引用上面的名字；model 和 options 直接发送给该接入点。
   # context_token_budget 是 Drop By 为完整请求和输出留出的本地容量。
   scenes:
@@ -35,6 +42,22 @@ models:
         reasoning:
           effort: "none"
         max_output_tokens: 8000
+
+    # 试用 Gemini 时，用下面一整段替换上面的 chat。其他场景也可独立选择。
+    # 可选 model：gemini-4-hydrogen、gemini-4-argon、gemini-4-carbon、
+    # gemini-3.8-flash、gemini-3.5-flash-lite。档位见 docs/model-pricing.md。
+    # chat:
+    #   provider: Gemini
+    #   model: gemini-4-hydrogen
+    #   context_token_budget: 100000
+    #   options:
+    #     generationConfig:
+    #       thinkingConfig:
+    #         thinkingLevel: low  # 五个型号都可用 low、medium、high。
+    #       maxOutputTokens: 32768  # 含推理与正文。省略时 Argon/Carbon 预留 32768，其余预留 65536。
+    #     toolConfig:
+    #       functionCallingConfig:
+    #         mode: VALIDATED  # 约束工具参数，同时保留直接回复的选择。
 
     research:
       provider: OpenAI
@@ -53,6 +76,8 @@ models:
         reasoning:
           effort: high
         max_output_tokens: 25000
+        # 缓存对照可设 prompt_cache_options: {mode: explicit}，只写应用标出的历史前缀。
+        # 与默认 implicit 比较时，两组均从冷缓存开始，分别记录缓存读、写和总费用。
 
     member_settings:
       provider: OpenAI

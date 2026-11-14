@@ -53,6 +53,7 @@ type modelProvider struct {
 	BaseURL          string  `yaml:"base_url"`
 	APIKey           *string `yaml:"api_key"`
 	APIKeyEnv        string  `yaml:"api_key_env"`
+	TokenCounting    string  `yaml:"token_counting"`
 	MidTurnSteering  *bool   `yaml:"mid_turn_steering"`
 	CacheBreakpoints *bool   `yaml:"cache_breakpoints"`
 	apiKey           string
@@ -111,7 +112,19 @@ func (cfg *modelConfig) resolve(getenv func(string) string) error {
 		if err := validateProviderProtocol(provider.Protocol); err != nil {
 			return fmt.Errorf("models.providers.%s.protocol：%w", name, err)
 		}
-		if name == defaultModelProvider && provider.BaseURL == "" {
+		switch provider.TokenCounting {
+		case "", "remote":
+		case "local":
+			if provider.Protocol == responsesProtocol {
+				return fmt.Errorf("models.providers.%s.token_counting：Responses 的长上下文处理需要远程计数", name)
+			}
+		default:
+			return fmt.Errorf("models.providers.%s.token_counting 只能设为 local 或 remote", name)
+		}
+		// 旧环境变量只补默认 Responses 接入点。名称相同的其他协议
+		// 也不能错用旧地址、密钥或 OpenAI 专用能力。
+		legacy := name == defaultModelProvider && provider.Protocol == responsesProtocol
+		if legacy && provider.BaseURL == "" {
 			provider.BaseURL = firstValue(getenv("DROPBY_BASE_URL"), "https://api.openai.com/v1")
 		}
 		url, err := normalizeServiceURL(provider.BaseURL)
@@ -126,16 +139,19 @@ func (cfg *modelConfig) resolve(getenv func(string) string) error {
 			provider.apiKey = *provider.APIKey
 		case provider.APIKeyEnv != "":
 			provider.apiKey = getenv(provider.APIKeyEnv)
-		case name == defaultModelProvider:
+		case legacy:
 			provider.apiKey = firstValue(getenv("DROPBY_API_KEY"), getenv("OPENAI_API_KEY"))
 		}
 		provider.APIKey = nil // 调用只保留实际使用的密钥，不把文件中的原始值再传给业务。
-		if name == defaultModelProvider && provider.MidTurnSteering == nil {
+		if legacy && provider.MidTurnSteering == nil {
 			enabled, err := strconv.ParseBool(firstValue(getenv("DROPBY_MID_TURN_STEERING"), "true"))
 			if err != nil {
 				return fmt.Errorf("DROPBY_MID_TURN_STEERING 必须为 true 或 false")
 			}
 			provider.MidTurnSteering = &enabled
+		}
+		if provider.Protocol != responsesProtocol && (provider.steeringEnabled() || provider.cacheEnabled()) {
+			return fmt.Errorf("models.providers.%s：mid_turn_steering 和 cache_breakpoints 属于 %s", name, responsesProtocol)
 		}
 		provider.BaseURL = url
 		cfg.Providers[name] = provider

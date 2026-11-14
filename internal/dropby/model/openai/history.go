@@ -44,27 +44,8 @@ func (m *Client) responsesHistory(history []model.ChatMessage, cacheEnd *int) []
 			}
 			// 压缩结果可能附有可直接复用的用户原文，逐条保留。
 			if msg.Role == "user" {
-				for _, raw := range msg.ResponseItems {
-					var item struct {
-						Type, Role string
-						Content    json.RawMessage
-					}
-					if json.Unmarshal(raw, &item) == nil && item.Type == "message" && item.Role == "user" {
-						var text string
-						if json.Unmarshal(item.Content, &text) != nil {
-							var parts []struct{ Type, Text string }
-							if json.Unmarshal(item.Content, &parts) == nil {
-								for _, part := range parts {
-									if part.Type == "input_text" {
-										text += part.Text
-									}
-								}
-							}
-						}
-						if text != "" {
-							result = append(result, model.ChatMessage{Role: "user", Content: text, PendingDelivery: msg.PendingDelivery})
-						}
-					}
+				for _, text := range model.LegacyUserText(msg.ResponseItems) {
+					result = append(result, model.ChatMessage{Role: "user", Content: text, PendingDelivery: msg.PendingDelivery})
 				}
 			}
 			continue

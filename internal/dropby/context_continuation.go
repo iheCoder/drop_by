@@ -51,6 +51,12 @@ func (m *modelCall) prepareLargeResponse(ctx context.Context, messages []ChatMes
 		if err != nil {
 			return nil, 0, err
 		}
+		// 没有远程计数的接入点用同一套本地规则检查缩小后的窗口，
+		// 仍按原流程保留未交付内容和工具回执。
+		if m.TokenCounting == "local" {
+			count, err := m.backend.Estimate(window, func([]ChatMessage) ([]byte, error) { return raw, nil })
+			return raw, count, err
+		}
 		count, err := m.countResponseInput(ctx, raw)
 		return raw, count, err
 	}
@@ -74,6 +80,9 @@ func (m *modelCall) prepareLargeResponse(ctx context.Context, messages []ChatMes
 		canReadHistory = canReadHistory || def.Function.Name == "read_history"
 	}
 	tooLarge := func(count int) error {
+		if m.TokenCounting == "local" {
+			return fmt.Errorf("%w：本地估算续接需要 %d 个输入 token，可用 %d，原始记录已保留", ErrContextCapacity, count, limit)
+		}
 		return fmt.Errorf("%w：续接仍需 %d 个输入 token，可用 %d，原始记录已保留", ErrContextCapacity, count, limit)
 	}
 	save := func(window []ChatMessage) error {
@@ -88,7 +97,9 @@ func (m *modelCall) prepareLargeResponse(ctx context.Context, messages []ChatMes
 	required := slices.Concat(core, next)
 	deferred := false
 	_, _, estimateErr := boundedRequest(required, capacity, m.maxOutputTokens, m.backend.Estimate, encode)
-	if len(history) == 0 || estimateErr != nil {
+	// 已被供应商拒绝时，即使只保留当前资料也要实际缩短一次，
+	// 否则会把刚刚被拒绝的正文再发一遍。
+	if len(history) == 0 || estimateErr != nil || m.inputRejected {
 		requiredRaw, requiredCount := raw, count
 		if len(history) > 0 {
 			requiredRaw, requiredCount, err = recount(required)
@@ -96,9 +107,12 @@ func (m *modelCall) prepareLargeResponse(ctx context.Context, messages []ChatMes
 				return nil, 0, nil, fmt.Errorf("无法核对当前资料容量：%w", err)
 			}
 		}
-		for requiredCount > limit {
+		for requiredCount > limit || (m.inputRejected && !deferred && canReadResults) {
 			if !canReadResults || !deferLargestResult(required) {
-				return nil, 0, nil, tooLarge(requiredCount)
+				if requiredCount > limit {
+					return nil, 0, nil, tooLarge(requiredCount)
+				}
+				break
 			}
 			deferred = true
 			requiredRaw, requiredCount, err = recount(required)
@@ -120,6 +134,22 @@ func (m *modelCall) prepareLargeResponse(ctx context.Context, messages []ChatMes
 		if count <= limit {
 			return raw, count, window, save(window)
 		}
+	}
+	if _, ok := m.backend.(model.CompactionSession); !ok {
+		// 接入点没有原生压缩时，只替换已读且可按来源回查的正文。
+		// 当前目标、未交付内容以及函数调用与回执的配对均保留。
+		shorter, changed := referenceOldContext(history, canReadHistory, canReadResults)
+		if changed {
+			window := slices.Concat(core, shorter, next)
+			raw, count, err = recount(window)
+			if err != nil {
+				return nil, 0, nil, err
+			}
+			if count <= limit {
+				return raw, count, window, save(window)
+			}
+		}
+		return nil, 0, nil, tooLarge(count)
 	}
 
 	compact := func(history []ChatMessage, count int) ([]byte, int, []ChatMessage, error) {

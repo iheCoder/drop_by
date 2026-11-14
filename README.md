@@ -51,10 +51,12 @@ go run ./cmd/observe
 
 [config.example.yaml](config.example.yaml) 包含服务、搜索、预算和模型配置。启动默认读取工作目录的 `config.yaml`，也可通过 `DROPBY_CONFIG` 指定本机文件。仓库忽略本机配置，修改在重启后生效。
 
-- `models.providers` 配置接入点的协议、API 根地址和 `api_key`。当前支持 `openai_responses`。连接具备对应能力时可启用 WebSocket 插话和显式缓存断点。
+- `models.providers` 配置接入点的协议、API 根地址和 `api_key`。当前支持 `openai_responses` 和 `gemini_generate_content`。WebSocket 插话和显式缓存断点可按 Responses 接入点的能力启用。
 - `models.scenes` 直接选择供应商、模型和原生参数。示例沿用 Terra 日常聊天、Sol 研究、Sol 个人探索、Sol 人物设定。研究和探索分别配置。请求中的上下文、工具、JSON 格式及续接状态由接入代码组装。
 - 同一字段先读文件，其次才用环境变量和默认值。OpenAI 条目省略 `api_key` 时，依次查 `api_key_env` 指定的变量，或者默认的 `DROPBY_API_KEY`、`OPENAI_API_KEY`。自定义接入点只用自己的 `api_key` 或 `api_key_env`。搜索密钥可写在 `search.api_key`，省略时依次查 `DROPBY_SEARCH_KEY`、`DEEPSEEK_API_KEY`。
 - 从旧配置迁移时，把接入地址填到 `models.providers`，把模型、推理和输出长度填到对应场景。之前的模型环境变量仍可给默认 OpenAI 接入点补充缺省值。其余变量见 [.env.example](.env.example)。执行显式开启的真实模型测试时，用绝对路径指定 `DROPBY_CONFIG`。
+
+试用 Gemini 4 Hydrogen 时，可把示例里的 `Gemini` 接入点与可选 `chat` 段复制到本机配置并填写 Key。`base_url` 可以是 `https://generativelanguage.googleapis.com`，也可以是支持 Gemini 原生接口的中转地址。`generationConfig.thinkingConfig.thinkingLevel` 控制推理深度，`maxOutputTokens` 给推理与正文合计留出上限。生成会复用稳定的请求前缀，按返回的 `cachedContentTokenCount` 记录隐式缓存命中。默认在本地预估超限时调用 `countTokens` 复核。接入点不支持该接口时，可把该接入点的 `token_counting` 设为 `local`，改用本地估算判断容量。费用继续按生成接口返回的实际用量估算。
 
 成员上下文的续接、主动整理、容量兜底与 GPT-6 Steering 见[上下文管理说明](docs/context-management.md)。
 
@@ -66,11 +68,11 @@ go run ./cmd/observe
 | `DROPBY_WEEKLY_BUDGET_USD` | `20` | 每周估算费用总上限 |
 | `DROPBY_EXPLORE_INTERVAL` | `30m` | 旧工作间隔与网络故障恢复间隔；自主唤醒按成员自己的节律 |
 
-费用按实际调用的模型及其官方 Standard 费率估算：Luna 输入/输出每百万 tokens 为 $0.10/$0.50，Terra 为 $1/$5，Sol 为 $2/$10；缓存读取和写入分别结算，不重复计入普通输入。原生压缩也使用当前模型的费率。账本记录请求实际使用的供应商，直连和中转按同一个底层模型的官方费率估算。费率来源与计算边界见 [模型费用估算](docs/model-pricing.md)。每周 20 美元按用户要求设置，应用不读取账户账单、余额或赠送额度到期日；不再额外限制调用次数。选型证据、接口修复和验证边界见 [模型选择记录](docs/model-selection.md)。
+费用按实际调用的模型及其官方 Standard 费率估算。账本记录请求使用的接入点，直连和中转按同一个模型的官方费率估算。费率与缓存计算见 [模型费用估算](docs/model-pricing.md)。默认每周额度为 20 美元，在本机配置中管理。选型与验证记录见 [模型选择记录](docs/model-selection.md)。
 
 费用在调用前事务性预留，成功返回 token 用量后按该模型费率与缓存明细结算；未知结果保留保守预留。账本保留每日明细，按服务进程本地时区的**周一 00:00 到下周一 00:00**累计；本机显式设置 `TZ=Asia/Shanghai`。升级前本周费用一并计入，重启不会清空。金额用完与余额不足以预留下一次请求分别说明。新版额外显示尚未结算的在途/未知预留，旧账不凭空重算。额度只在个人中心显示；聊天仅在当前额度不足时提示，预留结算释放余额或新周恢复后自动撤下提示并重新检查待执行工作。历史额度系统消息保留在数据库，但不再出现在聊天或列表。重启后也会重新核对当前配置，实际预留仍不可绕过。旧 `DROPBY_DAILY_*` 变量需迁移到新的周变量，避免把旧 3 美元误认为每周 3 美元。实际服务商账单可能包含缓存折扣和价格变更，界面资源限制不等于精确账单。
 
-联网工具目前采用 [DeepSeek Search & Fetch 官方接口](https://api-docs.deepseek.com/guides/search/)，搜索与读取按每次 0.00075 美元保守预留。深入推理与工具调用使用 OpenAI [Responses 推理接口](https://developers.openai.com/api/docs/guides/reasoning)，保留工具往返所需的加密推理项目，且设置 `store=false`；快速回应同样使用 Responses，没有其他生成接口或自动降级路径。请求都设置超时，失败不会伪造结果，也不会无限重试。
+联网工具采用 DeepSeek Search & Fetch，搜索与读取按每次 0.00075 美元保守预留。模型请求使用场景选定的协议，工具往返用的加密推理项目或签名随本地行动记录保存。OpenAI Responses 请求设置 `store=false`。请求失败由现有逻辑重试或恢复，仍使用场景指定的接入点。 [DeepSeek Search & Fetch 接口](https://api-docs.deepseek.com/guides/search/) · [OpenAI Responses 推理接口](https://developers.openai.com/api/docs/guides/reasoning) · [Gemini GenerateContent 接口](https://aistudio.google.com/api-reference/generate-content)
 
 本轮参与机制删减了对所有成员统一施加的简短、不催促等社交要求。成员依据自己的特质、状态和目标决定参与；已有后续预约用于观察交流进展。成员自行决定继续或结束，不按消息数和工具轮数收尾。个人主动性与最新验证见 [个人活动和独立交流](docs/personal-activity.md)。真实辩论与 UI 验收、失败记录和适用边界见 [参与机制减法与辩论验收](docs/participation-simplification.md)。
 
@@ -114,6 +116,7 @@ go run ./cmd/observe
 | `internal/dropby/preferences.go` | 对话偏好、资料与头像编辑、可选问题 |
 | `internal/dropby/model_provider.go` | 按场景配置接上对应的模型协议 |
 | `internal/dropby/model/openai/` | OpenAI Responses 请求、解析、计数、压缩、缓存和 WebSocket |
+| `internal/dropby/model/gemini/` | Gemini GenerateContent 请求、工具续接、计数和官方费率 |
 | `internal/dropby/model.go` | 调用顺序、预算预留和成员设定 |
 | `internal/dropby/tools.go` | 真实搜索、阅读、成果版本、记忆和主动私聊 |
 | `internal/dropby/http.go` | 本机 API、SSE、请求验证与浏览器访问边界 |
