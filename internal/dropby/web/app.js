@@ -13,6 +13,7 @@ const messageRetryDelay = 2_000;
 let currentArtifactIndex = 0, artifactMode = 'preview', panelRequest = 0;
 let panelView = '', avatarData = '', avatarIcon = 'cat', avatarColor = 'jade';
 let sideTab = 'chats', sending = false, renderedMessages = '', profileBaseline = null;
+let chatDay = new Date().toDateString();
 let domainEditorIndex = null, domainEditorFresh = false;
 let avatarRequest = 0, avatarLoading = false;
 const drafts = new Map();
@@ -58,6 +59,18 @@ function groupAvatar(c) {
 }
 function timeLabel(date) { return new Date(date).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }); }
 function dateLabel(date) { return new Date(date).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' }); }
+
+function chatDateLabel(date, today) {
+  return date.getFullYear() === today.getFullYear() ? dateLabel(date) : `${date.getFullYear()}年${dateLabel(date)}`;
+}
+
+// 和时分使用同一个浏览器本地时区，按日历日期判断今天。
+function chatTimestamp(value, today, includePastTime = false) {
+  const date = new Date(value);
+  if (date.toDateString() === today.toDateString()) return timeLabel(date);
+  const day = chatDateLabel(date, today);
+  return includePastTime ? `${day} ${timeLabel(date)}` : day;
+}
 
 // 周边界由服务端统一计算；界面只呈现它返回的重置时刻，不按浏览器时区另算一周。
 function budgetResetLabel() {
@@ -146,6 +159,15 @@ async function syncMessages(checkOnly = false) {
     return;
   }
   if (checkOnly && (document.hidden || $('workspace-page').open || refreshTimer)) return;
+  // 借用已有的消息检查，让页面开过午夜时也能更新标签，无需重新请求历史。
+  if (checkOnly) {
+    const day = new Date().toDateString();
+    if (day !== chatDay) {
+      chatDay = day;
+      renderSidebar();
+      if (roomData) renderMessages(false);
+    }
+  }
   if (checkOnly && !selected && !waitingForMessageCheck) return;
 
   syncingMessages = true;
@@ -183,6 +205,7 @@ async function syncMessages(checkOnly = false) {
 }
 
 function renderSidebar() {
+  const today = new Date();
   const query = $('chat-search').value.trim().toLocaleLowerCase();
   const conversations = state.conversations.filter(c => `${c.name} ${c.last_message}`.toLocaleLowerCase().includes(query));
   const people = state.members.filter(m => `${m.name} ${m.profile}`.toLocaleLowerCase().includes(query));
@@ -192,7 +215,7 @@ function renderSidebar() {
     // 升级前的日预算提示仍是原始聊天记录，不能在列表里冒充今天的额度状态。
     const previewNode=document.createElement('div'); previewNode.innerHTML=richText(c.last_message);
     const preview=previewNode.textContent.replace(/\s+/g,' ').trim();
-    return `<button class="room-button ${c.id === selected ? 'selected' : ''}" data-action="open-room" data-id="${c.id}" ${c.id === selected ? 'aria-current="page"' : ''}>${m ? avatar(m) : groupAvatar(c)}<span class="room-copy"><span class="room-heading"><span class="room-name">${escapeHTML(c.name)}</span><time class="room-time">${c.updated_at ? timeLabel(c.updated_at) : ''}</time></span><span class="room-preview">${escapeHTML(preview || '从一句随口的话开始')}</span></span>${unread ? '<span class="unread" aria-label="有新消息"></span>' : ''}</button>`;
+    return `<button class="room-button ${c.id === selected ? 'selected' : ''}" data-action="open-room" data-id="${c.id}" ${c.id === selected ? 'aria-current="page"' : ''}>${m ? avatar(m) : groupAvatar(c)}<span class="room-copy"><span class="room-heading"><span class="room-name">${escapeHTML(c.name)}</span><time class="room-time">${c.updated_at ? chatTimestamp(c.updated_at, today) : ''}</time></span><span class="room-preview">${escapeHTML(preview || '从一句随口的话开始')}</span></span>${unread ? '<span class="unread" aria-label="有新消息"></span>' : ''}</button>`;
   }).join('') : `<p class="side-empty">${query ? '没有找到，换个词试试。' : '还没有聊天。<br>先认识一位新朋友吧。'}</p>`;
   $('member-list').innerHTML = people.length ? people.map(m => `<button class="person-button" data-action="profile" data-id="${m.id}">${avatar(m)}<span class="person-copy"><span class="person-name">${escapeHTML(m.name)}</span><span class="person-note">${escapeHTML(memberIntroduction(m))}</span></span>${icon('chevron-right')}</button>`).join('') : `<p class="side-empty">${query ? '没有找到这位朋友。' : '一个名字，一个头像。<br>其余的，边聊边认识。'}</p>`;
   $('conversation-list').hidden = sideTab !== 'chats';
@@ -290,7 +313,8 @@ async function loadConversation(id, preserve, signal) {
 function renderMessages(scrollToBottom) {
   const body = $('chat-body'), previousTop = body.scrollTop;
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 110;
-  const signature = JSON.stringify([messages.map(({reactions, ...message}) => message), state.profile, state.members.map(m => [m.id,m.name,m.avatar,m.avatar_icon,m.color]), roomData.reply_notice, readReplyNotices.has(roomData.reply_notice?.work_id)]);
+  const today = new Date();
+  const signature = JSON.stringify([today.toDateString(), messages.map(({reactions, ...message}) => message), state.profile, state.members.map(m => [m.id,m.name,m.avatar,m.avatar_icon,m.color]), roomData.reply_notice, readReplyNotices.has(roomData.reply_notice?.work_id)]);
   // SSE 也会报告后台活动。聊天内容没变时保留 DOM 和键盘焦点，避免打断正在点选的问题。
   if (signature === renderedMessages && !scrollToBottom) { syncLoadedReactions(); return; }
   renderedMessages = signature;
@@ -300,10 +324,13 @@ function renderMessages(scrollToBottom) {
   // 不因数据库多了一份草稿，就替角色自动在群里发布内容。
   closeMessageMenu();
   $('messages').innerHTML = messages.length ? messages.map(m => {
-    const date = dateLabel(m.created_at), divider = date !== lastDate ? `<div class="date-divider">${date}</div>` : ''; lastDate = date;
+    // 隐藏的旧预算记录不占用当天的分隔线。
+    if (m.author_id === 'system' && m.id.startsWith('budget_')) return '';
+    const date = chatDateLabel(new Date(m.created_at), today);
+    const divider = date !== lastDate ? `<div class="date-divider">${date}</div>` : '';
+    lastDate = date;
     if (m.author_id === 'system') {
-      if (m.id.startsWith('budget_')) return '';
-      if (m.body.startsWith('这次运行暂未完成')) return `${divider}<details class="system-message"><summary>${timeLabel(m.created_at)} 的一次行动中断了 · 查看当时记录</summary><p>${escapeHTML(m.body)}</p><button class="quiet" data-action="activity">查看动态</button></details>`;
+      if (m.body.startsWith('这次运行暂未完成')) return `${divider}<details class="system-message"><summary>${chatTimestamp(m.created_at, today, true)} 的一次行动中断了 · 查看当时记录</summary><p>${escapeHTML(m.body)}</p><button class="quiet" data-action="activity">查看动态</button></details>`;
       return `${divider}<div class="system-message" role="status">${escapeHTML(m.body)}</div>`;
     }
     const isUser = m.author_id === 'user', person = isUser ? state.profile : member(m.author_id);
@@ -311,7 +338,7 @@ function renderMessages(scrollToBottom) {
     const quote = m.reply_to ? `<button class="quote" data-action="jump-message" data-id="${m.reply_to}" aria-label="查看引用的消息"><strong>${escapeHTML(quoted ? authorName(quoted.author_id) : '较早的消息')}</strong><span>${escapeHTML(quoted ? quoted.body.slice(0,100) : '点击查看这段交流')}</span></button>` : '';
     const q = m.question, open = q && m.question_status === 'open' && m.seq > lastHumanSeq;
     const question = q ? `${m.body !== q.text ? `<span class="question-text">${m.body ? '\n\n' : ''}${escapeHTML(q.text)}</span>` : ''}${open ? `<div class="question-options">${q.options.map((option,i) => `<button class="question-option" data-action="answer-question" data-id="${m.id}" data-option="${i}">${escapeHTML(option)}${icon('chevron-right')}</button>`).join('')}</div><span class="question-hint">选一个，或直接在下面说说你的想法。聊点别的也可以。</span>` : m.question_status === 'answered' ? '<span class="question-closed">已回答</span>' : ''}` : '';
-    return `${divider}<article class="message ${isUser ? 'user-message' : ''}" id="message-${m.id}" data-message-id="${m.id}">${isUser ? avatar(person) : `<button class="avatar-button" data-action="profile" data-id="${m.author_id}" aria-label="了解 ${escapeHTML(authorName(m.author_id))}">${avatar(person)}</button>`}<div class="message-content"><div class="message-meta"><strong>${escapeHTML(authorName(m.author_id))}</strong><time datetime="${m.created_at}">${timeLabel(m.created_at)}</time><button type="button" class="message-menu-trigger" popovertarget="message-menu" data-id="${m.id}" aria-label="消息操作" aria-haspopup="dialog" aria-controls="message-menu" aria-expanded="false">${icon('ellipsis')}</button></div><div class="message-bubble">${quote}${richText(m.body)}${question}</div>${replyNoticeFor(m)}${m.artifacts?.length ? `<div class="message-artifacts">${m.artifacts.map(artifactCard).join('')}</div>` : ''}<div class="message-reactions" hidden></div></div></article>`;
+    return `${divider}<article class="message ${isUser ? 'user-message' : ''}" id="message-${m.id}" data-message-id="${m.id}">${isUser ? avatar(person) : `<button class="avatar-button" data-action="profile" data-id="${m.author_id}" aria-label="了解 ${escapeHTML(authorName(m.author_id))}">${avatar(person)}</button>`}<div class="message-content"><div class="message-meta"><strong>${escapeHTML(authorName(m.author_id))}</strong><time datetime="${m.created_at}">${chatTimestamp(m.created_at, today, true)}</time><button type="button" class="message-menu-trigger" popovertarget="message-menu" data-id="${m.id}" aria-label="消息操作" aria-haspopup="dialog" aria-controls="message-menu" aria-expanded="false">${icon('ellipsis')}</button></div><div class="message-bubble">${quote}${richText(m.body)}${question}</div>${replyNoticeFor(m)}${m.artifacts?.length ? `<div class="message-artifacts">${m.artifacts.map(artifactCard).join('')}</div>` : ''}<div class="message-reactions" hidden></div></div></article>`;
   }).join('') : `<div class="empty-chat"><div class="empty-avatars">${roomData.conversation.member_ids.map(id => avatar(member(id))).join('')}</div><strong>${roomData.conversation.kind === 'direct' ? `和 ${escapeHTML(authorName(roomData.conversation.member_ids[0]))} 打个招呼` : '人到齐了，随便聊聊'}</strong><p>一个念头、一件小事、一个好奇的问题。<br>从哪里开始，都可以。</p></div>`;
   syncLoadedReactions();
   if (scrollToBottom || nearBottom) body.scrollTop = body.scrollHeight; else body.scrollTop = previousTop;
