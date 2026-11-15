@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,8 +16,8 @@ import (
 
 const activityPageSize = 12
 
-// Personal work belongs in a friend's private view. A group only sees its own
-// work, and even a group's action detail only quotes messages from that group.
+// Full work context is visible in its originating room or the owner's private
+// view. Other rooms see only the messages they actually received.
 const activityScope = `(w.conversation_id=? OR (w.conversation_id IS NULL AND w.member_id=?))`
 
 func activityScopeMember(c Conversation) string {
@@ -31,12 +30,14 @@ func activityScopeMember(c Conversation) string {
 const listedActivityTools = `'search','read_page','save_artifact','send_message','send_private','ask_question','schedule_exploration','schedule_followup','cancel_work','delegate_work','close_responsibility','apply_instruction','set_wakeup_rhythm'`
 
 type activityKey struct {
-	Row    int64
-	WorkID string
-	Member string
+	At         string
+	WorkID     string
+	Member     string
+	LocalWork  bool
+	MessageIDs string
 }
 
-func (k activityKey) cursor() string { return strconv.FormatInt(k.Row, 10) + ":" + k.Member }
+func (k activityKey) cursor() string { return k.At + "|" + k.WorkID + "|" + k.Member }
 
 type activityFact struct {
 	Label          string `json:"label"`
@@ -51,7 +52,7 @@ type activityEntry struct {
 	MemberID string         `json:"member_id"`
 	At       string         `json:"at"`
 	Title    string         `json:"title"`
-	Trigger  string         `json:"trigger"`
+	Trigger  string         `json:"trigger,omitempty"`
 	Facts    []activityFact `json:"facts"`
 	Failed   bool           `json:"failed,omitempty"`
 	Status   string         `json:"status,omitempty"`
@@ -64,16 +65,18 @@ type activityMessage struct {
 	Body     string    `json:"body"`
 	At       string    `json:"at"`
 	Question *Question `json:"question,omitempty"`
+	ReplyTo  string    `json:"-"`
 }
 
 type activityDetail struct {
 	FailureReason string `json:"failure_reason,omitempty"`
 	activityEntry
-	Source   *activityMessage        `json:"source,omitempty"`
-	Messages []activityMessage       `json:"messages,omitempty"`
-	Tools    []ToolRun               `json:"tools,omitempty"`
-	Errors   []observe.ActivityEvent `json:"errors,omitempty"`
-	Work     Work                    `json:"work"`
+	Source         *activityMessage        `json:"source,omitempty"`
+	Messages       []activityMessage       `json:"messages,omitempty"`
+	Tools          []ToolRun               `json:"tools,omitempty"`
+	Errors         []observe.ActivityEvent `json:"errors,omitempty"`
+	Work           *Work                   `json:"work,omitempty"`
+	ReplyReference bool                    `json:"reply_reference,omitempty"`
 }
 
 func (s *Store) activityPlans(c Conversation) ([]Work, error) {
@@ -108,31 +111,60 @@ func (s *Store) activityPlans(c Conversation) ([]Work, error) {
 	return plans, nil
 }
 
-// A work can involve several members. Keep each member's actions together without
-// merging their records, and paginate by the original work's immutable order.
-func (s *Store) activityKeys(c Conversation, before activityKey, only string, limit int) ([]activityKey, error) {
+// Start from real deliveries in this room and give each message exactly one
+// owner card. A stored work ID wins over a legacy receipt or observation.
+// Messages without a verified link are still actions in their own right.
+func (s *Store) activityKeys(c Conversation, before activityKey, only string, limit int, deliveriesJSON string) ([]activityKey, error) {
 	rows, err := s.db.Query(`
 WITH scope AS MATERIALIZED (
- SELECT w.id, w.rowid AS position, w.member_id,w.status
- FROM work w WHERE `+activityScope+` AND (?='' OR w.id=?) AND (?=0 OR w.rowid<=?)
+ SELECT w.id,w.created_at,w.member_id,w.status
+ FROM work w WHERE (w.conversation_id=:room OR (w.conversation_id IS NULL AND w.member_id=:personal))
+ AND (:only='' OR w.id=:only)
+), room_messages AS MATERIALIZED (
+ SELECT id,author_id,created_at,work_id
+ FROM messages WHERE conversation_id=:room AND author_id NOT IN ('user','system')
+), receipts AS (
+ SELECT m.id,min(t.work_id) AS work_id FROM tool_runs t
+ JOIN room_messages m ON m.author_id=t.member_id AND m.work_id=''
+ AND m.id=CASE WHEN json_valid(t.result) THEN json_extract(t.result,
+  CASE t.name WHEN 'ask_question' THEN '$.id' ELSE '$.message_id' END) END
+ JOIN work w ON w.id=t.work_id
+ WHERE t.status='succeeded' AND t.name IN ('send_message','send_private','ask_question')
+ GROUP BY m.id HAVING count(DISTINCT t.work_id)=1
+), observed AS (
+ SELECT m.id,min(w.id) AS work_id FROM json_each(:deliveries) e
+ JOIN room_messages m ON m.id=json_extract(e.value,'$.message_id') AND m.author_id=json_extract(e.value,'$.member_id') AND m.work_id=''
+ JOIN work w ON w.id=json_extract(e.value,'$.work_id')
+ GROUP BY m.id HAVING count(DISTINCT w.id)=1
+), linked AS (
+ SELECT m.*,coalesce(w.id,r.work_id,o.work_id,m.id) AS card_id
+ FROM room_messages m LEFT JOIN work w ON w.id=m.work_id AND m.work_id<>''
+ LEFT JOIN receipts r ON r.id=m.id LEFT JOIN observed o ON o.id=m.id
+), received AS (
+ SELECT card_id,author_id,min(julianday(created_at)) AS position,json_group_array(id) AS messages
+ FROM linked WHERE :only='' OR card_id=:only GROUP BY card_id,author_id
 ), owners AS (
- SELECT w.id AS work_id,t.member_id FROM scope w JOIN tool_runs t ON t.work_id=w.id
- WHERE (t.conversation_id=? OR t.conversation_id='') AND t.name IN (`+listedActivityTools+`,'remember')
- UNION SELECT w.id,m.author_id FROM scope w JOIN messages m ON m.work_id=w.id AND m.work_id<>''
- WHERE m.conversation_id=? AND m.author_id NOT IN ('user','system')
+ SELECT w.id,t.member_id FROM scope w JOIN tool_runs t ON t.work_id=w.id
+ WHERE (t.conversation_id=:room OR t.conversation_id='') AND t.name IN (`+listedActivityTools+`,'remember')
  UNION SELECT w.id,p.member_id FROM scope w JOIN participation p ON p.work_id=w.id
  WHERE p.action IN ('speak','act','error')
  UNION SELECT w.id,w.member_id FROM scope w WHERE w.status='failed' AND w.member_id<>''
+ UNION SELECT card_id,author_id FROM received
 ), keys AS (
- SELECT w.position,w.id,o.member_id FROM scope w JOIN owners o ON o.work_id=w.id
- UNION ALL SELECT w.position,w.id,'' FROM scope w WHERE w.status='failed'
- AND NOT EXISTS(SELECT 1 FROM owners o WHERE o.work_id=w.id)
+ SELECT id,member_id FROM owners
+ UNION ALL SELECT w.id,'' FROM scope w WHERE w.status='failed'
+ AND NOT EXISTS(SELECT 1 FROM owners o WHERE o.id=w.id)
+), ordered AS (
+ SELECT strftime('%Y-%m-%dT%H:%M:%fZ',coalesce(r.position,julianday(w.created_at))) AS position,
+        k.id,k.member_id,w.id IS NOT NULL AS local_work,coalesce(r.messages,'[]') AS messages
+ FROM keys k LEFT JOIN scope w ON w.id=k.id LEFT JOIN received r ON r.card_id=k.id AND r.author_id=k.member_id
 )
-SELECT position,id,member_id FROM keys
-WHERE ?=0 OR position<? OR (position=? AND member_id>?)
-ORDER BY position DESC,member_id LIMIT ?`,
-		c.ID, activityScopeMember(c), only, only, before.Row, before.Row, c.ID, c.ID,
-		before.Row, before.Row, before.Row, before.Member, limit)
+SELECT position,id,member_id,local_work,messages FROM ordered
+WHERE :at='' OR position<:at OR (position=:at AND (id>:id OR (id=:id AND member_id>:member)))
+ORDER BY position DESC,id,member_id LIMIT :limit`,
+		sql.Named("room", c.ID), sql.Named("personal", activityScopeMember(c)), sql.Named("only", only),
+		sql.Named("deliveries", deliveriesJSON), sql.Named("at", before.At), sql.Named("id", before.WorkID),
+		sql.Named("member", before.Member), sql.Named("limit", limit))
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +172,7 @@ ORDER BY position DESC,member_id LIMIT ?`,
 	var keys []activityKey
 	for rows.Next() {
 		var k activityKey
-		if err := rows.Scan(&k.Row, &k.WorkID, &k.Member); err != nil {
+		if err := rows.Scan(&k.At, &k.WorkID, &k.Member, &k.LocalWork, &k.MessageIDs); err != nil {
 			return nil, err
 		}
 		keys = append(keys, k)
@@ -155,6 +187,7 @@ type activityArgs struct {
 	Title       string   `json:"title"`
 	Instruction string   `json:"instruction"`
 	Text        string   `json:"text"`
+	RoomID      string   `json:"conversation_id"`
 	Options     []string `json:"options"`
 	Member      string   `json:"member_id"`
 }
@@ -187,6 +220,7 @@ SELECT id,work_id,conversation_id,member_id,name,
   'id',json_extract(arguments,'$.id'),'query',json_extract(arguments,'$.query'),
   'url',json_extract(arguments,'$.url'),'title',json_extract(arguments,'$.title'),
   'instruction',json_extract(arguments,'$.instruction'),'text',json_extract(arguments,'$.text'),
+  'conversation_id',json_extract(arguments,'$.conversation_id'),
   'options',json_extract(arguments,'$.options'),'member_id',json_extract(arguments,'$.member_id')) ELSE '{}' END,
  CASE WHEN json_valid(result) THEN json_object(
   'id',json_extract(result,'$.id'),'message_id',json_extract(result,'$.message_id'),
@@ -211,6 +245,14 @@ ORDER BY rowid`
 		if err = rows.Scan(&r.ID, &r.WorkID, &r.ConversationID, &r.MemberID, &r.Name, &args, &r.Result, &r.Status, &r.CreatedAt); err != nil {
 			return nil, err
 		}
+		// Explicitly targeted operations may have another room's arguments.
+		var target struct {
+			Room string `json:"conversation_id"`
+		}
+		json.Unmarshal([]byte(args), &target)
+		if (target.Room != "" && target.Room != c.ID) || (r.Name == "send_private" && r.Status != "succeeded" && c.Kind != "direct") {
+			continue
+		}
 		if detail && !json.Valid([]byte(args)) {
 			args = asJSON(args)
 		}
@@ -222,13 +264,13 @@ ORDER BY rowid`
 
 // A delivery receipt alone is insufficient: verify that the message exists in
 // this room, and prefer its actual text over the requested text.
-func (s *Store) activityMessages(room, workID, member string, ids []string) ([]activityMessage, error) {
+func (s *Store) activityMessages(room, member, idsJSON string) ([]activityMessage, error) {
 	rows, err := s.db.Query(`
-SELECT m.id,m.author_id,m.body,m.created_at,coalesce(q.question,'')
+SELECT m.id,m.author_id,m.body,m.created_at,m.reply_to,coalesce(q.question,'')
 FROM messages m LEFT JOIN message_questions q ON q.message_id=m.id
 WHERE m.conversation_id=? AND (?='' OR m.author_id=?)
- AND ((?<>'' AND m.work_id=?) OR m.id IN (SELECT value FROM json_each(?)))
-ORDER BY m.seq`, room, member, member, workID, workID, asJSON(ids))
+ AND m.id IN (SELECT value FROM json_each(?))
+ORDER BY m.seq`, room, member, member, idsJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +279,7 @@ ORDER BY m.seq`, room, member, member, workID, workID, asJSON(ids))
 	for rows.Next() {
 		var m activityMessage
 		var question string
-		if err := rows.Scan(&m.ID, &m.AuthorID, &m.Body, &m.At, &question); err != nil {
+		if err := rows.Scan(&m.ID, &m.AuthorID, &m.Body, &m.At, &m.ReplyTo, &question); err != nil {
 			return nil, err
 		}
 		if question != "" {
@@ -250,68 +292,90 @@ ORDER BY m.seq`, room, member, member, workID, workID, asJSON(ids))
 
 func (a *API) loadActivity(c Conversation, k activityKey, events []observe.ActivityEvent, detail bool) (activityDetail, error) {
 	s := a.engine.Store
-	w, err := scanWork(s.db.QueryRow(`SELECT `+workColumns+` FROM work w WHERE w.id=? AND `+activityScope, k.WorkID, c.ID, activityScopeMember(c)))
-	d := activityDetail{activityEntry: activityEntry{WorkID: k.WorkID, MemberID: k.Member, At: w.CreatedAt, SourceID: w.SourceID}, Work: w}
+	d := activityDetail{activityEntry: activityEntry{WorkID: k.WorkID, MemberID: k.Member, At: k.At}}
+	var err error
+	d.Messages, err = s.activityMessages(c.ID, k.Member, k.MessageIDs)
 	if err != nil {
 		return d, err
-	}
-	d.Trigger = "自主触发"
-	switch {
-	case w.AssignedBy != "":
-		d.Trigger = "协作安排"
-	case w.Kind == "research" || w.Kind == "revisit":
-		d.Trigger = "后续安排"
-	case w.SourceID != "":
-		d.Trigger = "消息触发"
 	}
 
-	tools, err := s.actionTools(c, k, detail)
-	if err != nil {
-		return d, err
+	// An incoming delivery from a different room exposes only the received
+	// messages. An unlinked historical message follows the same path.
+	if len(d.Messages) != 0 {
+		d.At = d.Messages[0].At
 	}
-	var messageIDs []string
-	for _, event := range events {
-		// Older observations may have no member. Only use those on a work
-		// that names its one owner, or on the unattributed group failure row.
-		if event.MemberID != k.Member && !(event.MemberID == "" && k.Member == w.MemberID) {
-			continue
-		}
-		if event.Step == "input_tokens" {
-			d.Errors = append(d.Errors, event)
-		}
-		if event.RoomID == c.ID && event.MessageID != "" {
-			messageIDs = append(messageIDs, event.MessageID)
-		}
-	}
-	for _, tool := range tools {
-		if tool.Status != "succeeded" {
-			continue
-		}
-		var r activityReceipt
-		decode(tool.Result, &r)
-		switch tool.Name {
-		case "send_message", "send_private":
-			messageIDs = append(messageIDs, r.MessageID)
-		case "ask_question":
-			messageIDs = append(messageIDs, r.ID)
-		}
-	}
-	d.Messages, err = s.activityMessages(c.ID, w.ID, k.Member, messageIDs)
-	if err != nil {
-		return d, err
-	}
-	if detail && w.SourceID != "" {
-		source, err := s.activityMessages(c.ID, "", "", []string{w.SourceID})
+	if k.LocalWork {
+		w, err := scanWork(s.db.QueryRow(`SELECT `+workColumns+` FROM work w WHERE w.id=? AND `+activityScope, k.WorkID, c.ID, activityScopeMember(c)))
 		if err != nil {
 			return d, err
 		}
-		if len(source) != 0 {
-			d.Source = &source[0]
+		d.Work = &w
+		if len(d.Messages) == 0 {
+			d.At = w.CreatedAt
+		}
+		switch {
+		case w.AssignedBy != "":
+			d.Trigger = "协作安排"
+		case w.Kind == "research" || w.Kind == "revisit":
+			d.Trigger = "后续安排"
+		case w.SourceID != "":
+			d.Trigger = "消息触发"
+		default:
+			d.Trigger = "自主触发"
+		}
+	}
+
+	// A work source describes what prompted the work. An explicit reply can
+	// still provide a quote when the original work or its source is unknown.
+	sourceIDs := []string{}
+	if d.Work != nil && d.Work.SourceID != "" {
+		sourceIDs = append(sourceIDs, d.Work.SourceID)
+	}
+	for _, message := range d.Messages {
+		if message.ReplyTo != "" && !slices.Contains(sourceIDs, message.ReplyTo) {
+			sourceIDs = append(sourceIDs, message.ReplyTo)
+		}
+	}
+	if len(sourceIDs) > 0 {
+		sources, err := s.activityMessages(c.ID, "", asJSON(sourceIDs))
+		if err != nil {
+			return d, err
+		}
+		for _, id := range sourceIDs {
+			if i := slices.IndexFunc(sources, func(m activityMessage) bool { return m.ID == id }); i >= 0 {
+				d.SourceID = id
+				if detail {
+					d.Source = &sources[i]
+					d.ReplyReference = d.Work == nil || id != d.Work.SourceID
+				}
+				break
+			}
+		}
+	}
+	if !k.LocalWork {
+		err = s.activityCopy(c, &d, nil)
+		return d, err
+	}
+
+	tools, err := s.actionTools(c, k, false)
+	if err != nil {
+		return d, err
+	}
+	w := d.Work
+	for _, event := range events {
+		// Older observations may have no member. Only use those on a work
+		// that names its one owner, or on the unattributed group failure row.
+		if event.MemberID == k.Member || (event.MemberID == "" && k.Member == w.MemberID) {
+			d.Errors = append(d.Errors, event)
 		}
 	}
 	if detail {
-		d.Tools = make([]ToolRun, 0, len(tools))
-		for _, tool := range tools {
+		// Compose the same facts as the list before adding complete receipts.
+		rawTools, err := s.actionTools(c, k, true)
+		if err != nil {
+			return d, err
+		}
+		for _, tool := range rawTools {
 			// Do not bring another conversation's private message into this panel.
 			switch tool.Name {
 			case "send_private", "send_message", "ask_question":
@@ -361,14 +425,21 @@ func activityExcerptLine(body string) string {
 
 func (s *Store) activityCopy(c Conversation, d *activityDetail, tools []ToolRun) error {
 	var queries, pages, saves []string
-	var plan, operation, preview, note string
-	var typeTitle string
+	var operation, preview, note string
+	var operations []activityFact
+	var question *Question
 	var haveNote, freshSearch, freshPage bool
 	artifactIDs := map[string]bool{}
+	var failedSteps []string
 	for _, tool := range tools {
+		label := actionTitles[tool.Name]
+		if tool.Status == "failed" && label != "" && !slices.Contains(failedSteps, label) {
+			failedSteps = append(failedSteps, label)
+		}
 		if tool.Status != "succeeded" {
 			continue
 		}
+		failedSteps = slices.DeleteFunc(failedSteps, func(failed string) bool { return failed == label })
 		var args activityArgs
 		var receipt activityReceipt
 		json.Unmarshal(tool.Arguments, &args)
@@ -391,9 +462,13 @@ func (s *Store) activityCopy(c Conversation, d *activityDetail, tools []ToolRun)
 			if title == "" {
 				title = args.Title
 			}
-			if title != "" && !artifactIDs[receipt.ArtifactID] {
+			id := receipt.ArtifactID
+			if id == "" {
+				id = title
+			}
+			if title != "" && !artifactIDs[id] {
 				saves = append(saves, title)
-				artifactIDs[receipt.ArtifactID] = true
+				artifactIDs[id] = true
 			}
 		case "remember":
 			if receipt.Memory != nil {
@@ -407,11 +482,11 @@ func (s *Store) activityCopy(c Conversation, d *activityDetail, tools []ToolRun)
 				"schedule_exploration": "安排后续", "schedule_followup": "安排后续", "cancel_work": "取消后续",
 				"delegate_work": "安排协作", "close_responsibility": "结束分工", "apply_instruction": "更新约定", "set_wakeup_rhythm": "调整自主活动",
 			}
-			if operation != "" && tool.Name != "cancel_work" {
-				continue
+			label := labels[tool.Name]
+			if operation == "" || tool.Name == "cancel_work" {
+				operation = label
 			}
-			operation = labels[tool.Name]
-			plan = args.Instruction
+			plan, status := args.Instruction, ""
 			target := receipt.WorkID
 			if target == "" {
 				target = receipt.Work.ID
@@ -424,15 +499,19 @@ func (s *Store) activityCopy(c Conversation, d *activityDetail, tools []ToolRun)
 				if err == nil {
 					plan = job.Instruction
 					if job.Status == "done" {
-						d.Status = "现已结束"
+						status = "现已结束"
 					} else if job.Status == "stopped" {
-						d.Status = "已取消"
+						status = "已取消"
 					} else if tool.Name == "cancel_work" {
-						d.Status = workStatusText(job)
+						status = workStatusText(job)
 					}
 				} else if !errors.Is(err, sql.ErrNoRows) {
 					return err
 				}
+			}
+			fact := activityFact{Label: label, Text: activityExcerptLine(displayActivityText(plan)), More: status}
+			if !slices.Contains(operations, fact) {
+				operations = append(operations, fact)
 			}
 		default:
 			// Delivery is checked against the actual messages below.
@@ -480,34 +559,29 @@ func (s *Store) activityCopy(c Conversation, d *activityDetail, tools []ToolRun)
 	if len(saves) > 0 {
 		add("保存", saves[0], total(len(saves), "件"))
 	}
-	if operation != "" {
-		if plan != "" {
-			add(operation, displayActivityText(plan), "")
+	for _, fact := range operations {
+		// The title already covers this result when it has no further text.
+		if fact.Text != "" || fact.More != "" || len(operations) > 1 || len(d.Messages) > 0 {
+			d.Facts = append(d.Facts, fact)
 		}
-		typeTitle = operation
 	}
 	for _, message := range d.Messages {
 		if message.Question != nil {
-			question := message.Question.Text
-			if i := strings.IndexAny(question, "？?"); i >= 0 {
-				prefix := []rune(question[:i])
-				for j := len(prefix) - 1; j >= 0; j-- {
-					if strings.ContainsRune("。！!\n", prefix[j]) {
-						prefix = prefix[j+1:]
-						break
-					}
-				}
-				question = strings.TrimSpace(string(prefix)) + string([]rune(question[i:])[0])
+			if question == nil {
+				question = message.Question
 			}
-			add("提问", question, fmt.Sprintf("%d 个选项", len(message.Question.Options)))
-			typeTitle = "提问"
-			break
-		}
-		if preview == "" {
+		} else if preview == "" {
 			preview = strings.SplitN(message.Body, "\n\n", 2)[0]
 		}
 	}
-	replied := len(d.Messages) != 0 && d.Work.SourceID != ""
+	if question != nil {
+		more := fmt.Sprintf("%d 个选项", len(question.Options))
+		if preview == "" && len(d.Messages) > 1 {
+			more += " · " + total(len(d.Messages), "条消息")
+		}
+		add("提问", question.Text, more)
+	}
+	replied := len(d.Messages) != 0 && d.SourceID != ""
 	switch {
 	case d.Failed:
 		d.Title = "行动失败"
@@ -518,16 +592,20 @@ func (s *Store) activityCopy(c Conversation, d *activityDetail, tools []ToolRun)
 			if at, err := time.Parse(time.RFC3339Nano, last.At); err == nil {
 				d.Facts[0].At = at.Format(time.RFC3339Nano)
 			}
-		} else if d.FailureReason != "" || d.Work.Result != "" {
+		} else {
 			reason := d.FailureReason
-			if reason == "" {
+			if reason == "" && d.Work != nil {
 				reason = d.Work.Result
 			}
 			add("失败", reason, "")
 		}
-	case typeTitle != "":
-		d.Title = typeTitle
-	case len(saves) > 0 && len(d.Messages) != 0 && !replied:
+	case question != nil:
+		d.Title = "提问"
+	case operation != "" && !(replied && (len(queries) > 0 || len(pages) > 0)):
+		d.Title = operation
+	case len(saves) > 0 && replied:
+		d.Title = "保存作品并回复"
+	case len(saves) > 0 && len(d.Messages) != 0:
 		d.Title = "保存作品并发消息"
 	case len(saves) > 0:
 		d.Title = "保存作品"
@@ -535,6 +613,10 @@ func (s *Store) activityCopy(c Conversation, d *activityDetail, tools []ToolRun)
 		d.Title = "搜索并回复"
 	case len(pages) > 0 && replied:
 		d.Title = "阅读并回复"
+	case len(queries) > 0 && len(d.Messages) != 0:
+		d.Title = "搜索并发消息"
+	case len(pages) > 0 && len(d.Messages) != 0:
+		d.Title = "阅读并发消息"
 	case len(queries) > 0 && len(pages) > 0:
 		d.Title = "搜索与阅读"
 	case len(pages) > 0:
@@ -549,12 +631,17 @@ func (s *Store) activityCopy(c Conversation, d *activityDetail, tools []ToolRun)
 		d.Title = "保存笔记"
 		add("笔记", displayActivityText(note), "")
 	}
-	if preview != "" && len(d.Facts) == 0 {
+	// A delivered message stays visible even when this action also has search,
+	// reading, or other outcomes on the same card.
+	if preview != "" {
 		label := "消息"
 		if replied {
 			label = "回复"
 		}
 		d.Facts = append(d.Facts, activityFact{Label: label, Text: activityExcerptLine(preview), More: total(len(d.Messages), "条"), MessageExcerpt: true})
+	}
+	if len(d.Messages) > 0 && len(failedSteps) > 0 {
+		add("未完成", strings.Join(failedSteps, "、"), "")
 	}
 	if len(d.Errors) > 0 && !d.Failed && replied {
 		d.Status = "曾中断 · 已回复"
@@ -602,7 +689,9 @@ func (s *Store) activityCopy(c Conversation, d *activityDetail, tools []ToolRun)
 func (a *API) activityEvents(keys []activityKey, detail bool) map[string][]observe.ActivityEvent {
 	ids := make([]string, 0, len(keys))
 	for _, k := range keys {
-		ids = append(ids, k.WorkID)
+		if k.LocalWork {
+			ids = append(ids, k.WorkID)
+		}
 	}
 	events, err := a.engine.Observe.ActivityEvents(ids, detail)
 	if err != nil {
@@ -617,6 +706,13 @@ func (a *API) activityEvents(keys []activityKey, detail bool) map[string][]obser
 	return grouped
 }
 
+func (a *API) activityDeliveryJSON(c Conversation) string {
+	// When observation is unavailable, actual messages still get a card and
+	// persisted work IDs and delivery receipts continue to group them.
+	deliveries, _ := a.engine.Observe.ActivityDeliveries(c.ID)
+	return asJSON(deliveries)
+}
+
 func (a *API) activityPage(w http.ResponseWriter, r *http.Request) {
 	s := a.engine.Store
 	c, err := s.Conversation(r.PathValue("id"))
@@ -626,19 +722,23 @@ func (a *API) activityPage(w http.ResponseWriter, r *http.Request) {
 	}
 	var before activityKey
 	if raw := r.URL.Query().Get("before"); raw != "" {
-		pos, member, ok := strings.Cut(raw, ":")
-		before.Row, err = strconv.ParseInt(pos, 10, 64)
-		if !ok || err != nil || before.Row <= 0 {
+		parts := strings.Split(raw, "|")
+		if len(parts) != 3 || parts[1] == "" {
 			respond(w, 400, map[string]string{"error": "行动分页位置无效"})
 			return
 		}
-		before.Member = member
+		if _, err := time.Parse(time.RFC3339Nano, parts[0]); err != nil {
+			respond(w, 400, map[string]string{"error": "行动分页位置无效"})
+			return
+		}
+		before = activityKey{At: parts[0], WorkID: parts[1], Member: parts[2]}
 	}
 
+	deliveries := a.activityDeliveryJSON(c)
 	entries := []activityEntry{}
 	next := ""
 	for len(entries) <= activityPageSize {
-		keys, err := s.activityKeys(c, before, "", activityPageSize+1)
+		keys, err := s.activityKeys(c, before, "", activityPageSize+1, deliveries)
 		if err != nil {
 			a.fail(w, err)
 			return
@@ -677,7 +777,7 @@ func (a *API) activityRecord(w http.ResponseWriter, r *http.Request) {
 		respond(w, 404, map[string]string{"error": "聊天不存在"})
 		return
 	}
-	keys, err := a.engine.Store.activityKeys(c, activityKey{}, r.PathValue("work"), -1)
+	keys, err := a.engine.Store.activityKeys(c, activityKey{}, r.PathValue("work"), -1, a.activityDeliveryJSON(c))
 	if err != nil {
 		a.fail(w, err)
 		return
@@ -718,7 +818,7 @@ func (a *API) replyFailureNotice(c Conversation, messages []Message, works []Wor
 		if work.SourceID != latest.ID || work.Status != "failed" || (work.Kind != "chat" && work.Kind != "followup") {
 			continue
 		}
-		keys, err := a.engine.Store.activityKeys(c, activityKey{}, work.ID, -1)
+		keys, err := a.engine.Store.activityKeys(c, activityKey{}, work.ID, -1, a.activityDeliveryJSON(c))
 		if err != nil {
 			return nil, err
 		}

@@ -240,10 +240,10 @@ async function openActivityRecord(work, actor, invoker) {
       return `<details class="technical-record"><summary>${escapeHTML(activityTime(t.created_at))} · ${escapeHTML(title)}</summary><pre tabindex="0">${escapeHTML(JSON.stringify({status:t.status,arguments:t.arguments},null,2))}</pre><pre tabindex="0">${escapeHTML(t.result)}</pre></details>`;
     }).join('');
     detail.innerHTML = `${activityMember(d.member_id)}<p class="detail-meta">${activityMeta(d)}</p><h3 class="detail-title${d.failed ? ' activity-failure' : ''}">${escapeHTML(d.title)}</h3>${activityFacts(d)}
-      ${d.source ? `<section class="detail-part"><h4>从这条消息开始</h4>${activityQuote(d.source)}${sourceLink(d.source.id)}</section>` : ''}
+      ${d.source ? `<section class="detail-part"><h4>${d.reply_reference ? '回复的消息' : '从这条消息开始'}</h4>${activityQuote(d.source)}${sourceLink(d.source.id)}</section>` : ''}
       ${d.messages?.length ? `<section class="detail-part"><h4>发出的消息</h4>${d.messages.map(activityQuote).join('')}</section>` : ''}
       ${activitySources(d.tools)}
-      <details class="technical-record activity-technical"><summary>技术细节</summary>${trace}${tools}${technicalRecord({work:d.work,failure_reason:d.failure_reason})}</details>`;
+      ${d.work || trace || tools ? `<details class="technical-record activity-technical"><summary>技术细节</summary>${trace}${tools}${d.work ? technicalRecord({work:d.work,failure_reason:d.failure_reason}) : ''}</details>` : ''}`;
   } catch (error) {
     if (activityFeed === feed && detail.isConnected) detail.textContent = error.message || '无法读取行动详情。';
   }

@@ -17,8 +17,40 @@ type ActivityEvent struct {
 	Output    string `json:"output,omitempty"`
 }
 
-// ActivityEvents links older deliveries by their real message IDs and supplies
-// input-count failures that occurred before any tool call could be recorded.
+// ActivityDelivery links a legacy message to its work by the recorded delivery
+// ID. The chat store still verifies its destination and author.
+type ActivityDelivery struct {
+	WorkID    string `json:"work_id"`
+	MemberID  string `json:"member_id"`
+	MessageID string `json:"message_id"`
+}
+
+func (l *Log) ActivityDeliveries(room string) ([]ActivityDelivery, error) {
+	if l == nil {
+		return nil, nil
+	}
+	rows, err := l.db.Query(`
+SELECT DISTINCT r.work_id,coalesce(nullif(s.member_id,''),r.member_id),s.business_id
+FROM steps s JOIN runs r ON r.id=s.run_id
+WHERE s.target_conversation_id=? AND s.business_id<>''
+ AND s.kind='message' AND s.name='send_message' AND s.status IN ('sent','reused')`, room)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var deliveries []ActivityDelivery
+	for rows.Next() {
+		var d ActivityDelivery
+		if err := rows.Scan(&d.WorkID, &d.MemberID, &d.MessageID); err != nil {
+			return nil, err
+		}
+		deliveries = append(deliveries, d)
+	}
+	return deliveries, rows.Err()
+}
+
+// ActivityEvents supplies input-count failures that occurred before any tool
+// call could be recorded.
 func (l *Log) ActivityEvents(workIDs []string, detail bool) ([]ActivityEvent, error) {
 	if l == nil || len(workIDs) == 0 {
 		return nil, nil
@@ -32,7 +64,7 @@ SELECT r.work_id,coalesce(nullif(s.member_id,''),r.member_id),s.kind,s.name,s.bu
        CASE WHEN ? AND s.name='input_tokens' THEN coalesce(p.output,'') ELSE '' END
 FROM runs r JOIN steps s ON s.run_id=r.id LEFT JOIN snapshots p ON ? AND p.step_id=s.id
 WHERE r.work_id IN (SELECT value FROM json_each(?))
-  AND ((s.kind='message' AND s.name='send_message' AND s.status IN ('sent','reused')) OR (s.name='input_tokens' AND s.status='failed'))
+  AND s.name='input_tokens' AND s.status='failed'
 ORDER BY s.seq`, detail, detail, string(keys))
 	if err != nil {
 		return nil, err
