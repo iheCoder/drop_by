@@ -167,11 +167,62 @@ function feedHits() {
   if (!q) return [];
   return feed().filter(item => itemSearch(item).toLowerCase().includes(q));
 }
+function ancestorModel(steps, step) {
+  const byId = new Map(steps.map(one => [one.id, one]));
+  let cursor = step;
+  const seen = new Set();
+  while (cursor && !seen.has(cursor.id)) {
+    if (cursor.kind === "model") return cursor;
+    seen.add(cursor.id);
+    cursor = byId.get(cursor.parent);
+  }
+  return null;
+}
+function roundSteps(steps, step) {
+  if (!step || !steps?.length) return steps || [];
+  if (!steps.some(one => one.parent || one.call)) return steps;
+  const model = step.kind === "model" ? step : ancestorModel(steps, step);
+  if (!model) return steps.filter(one => one.id === step.id);
+  const ids = new Set([model.id]);
+  if (model.call) {
+    for (const one of steps) if (one.call && one.call === model.call) ids.add(one.id);
+  }
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const one of steps) {
+      if (ids.has(one.id) || !one.parent || !ids.has(one.parent)) continue;
+      ids.add(one.id);
+      grew = true;
+    }
+  }
+  const index = steps.findIndex(one => one.id === model.id);
+  for (let i = index - 1; i >= 0; i--) {
+    const one = steps[i];
+    if (one.kind === "model" || (one.call && one.call !== model.call)) break;
+    if (one.name === "input_tokens" || one.name === "input_tokens_local") ids.add(one.id);
+    else break;
+  }
+  const round = steps.filter(one => ids.has(one.id));
+  return round.length ? round : [step];
+}
+function focusedWork(work, step) {
+  if (!work) return { work, step };
+  const steps = roundSteps(work.steps, step);
+  if (steps.length === (work.steps || []).length) return { work, step };
+  return {
+    work: {
+      ...work, steps, title: "这一轮调用", status: "",
+      scope: `同一次${work.kind || "执行"}里还有 ${work.steps.length - steps.length} 步，不属于这一轮。`
+    },
+    step
+  };
+}
 function viewOf(item) {
   const step = stepOf(item);
   if (step && item.stepRef) {
     const work = source.workById(item.stepRef.work);
-    return { work, step };
+    return focusedWork(work, step);
   }
   if (step) {
     return {
@@ -222,10 +273,21 @@ function sumFeed(items) {
   return { settled, reserve };
 }
 
+function prettyText(text) {
+  const raw = String(text ?? "");
+  const trimmed = raw.trim();
+  if (!trimmed || (trimmed[0] !== "{" && trimmed[0] !== "[")) return { text: raw, json: false };
+  try {
+    return { text: JSON.stringify(JSON.parse(trimmed), null, 2), json: true };
+  } catch {
+    return { text: raw, json: false };
+  }
+}
 function fold(id, text) {
-  const long = String(text || "").length > 72;
+  const shown = prettyText(text);
+  const long = shown.text.length > 72;
   const open = !!ui.folds[id];
-  const body = `<p class="${long && !open ? "clamp" : ""}">${M.esc(text)}</p>`;
+  const body = `<p class="${shown.json ? "json " : ""}${long && !open ? "clamp" : ""}">${M.esc(shown.text)}</p>`;
   const button = long ? `<button type="button" class="fold" data-fold="${M.esc(id)}">${open ? "收起" : "展开全文"}</button>` : "";
   return body + button;
 }
@@ -282,11 +344,64 @@ function costBlock(step) {
   return `<div class="cost-line"><b>${M.esc(costSummary(step))}</b>${button}</div>${detail}`;
 }
 
+function modelLead(output) {
+  let raw;
+  try { raw = JSON.parse(output); } catch { return ""; }
+  const texts = [];
+  const calls = [];
+  for (const cand of raw.candidates || []) {
+    for (const part of cand?.content?.parts || []) {
+      if (typeof part.text === "string" && part.text.trim()) texts.push(part.text);
+      if (part.functionCall?.name) calls.push(part.functionCall.name);
+    }
+  }
+  for (const item of raw.output || []) {
+    if (item.type === "function_call" && item.name) calls.push(item.name);
+    if (typeof item.content === "string" && item.content.trim()) texts.push(item.content);
+    for (const block of Array.isArray(item.content) ? item.content : []) {
+      if (typeof block?.text === "string" && block.text.trim()) texts.push(block.text);
+    }
+  }
+  if (!texts.length && !calls.length) return "";
+  const callNote = calls.length ? `<p class="aside">这一步还请求了 ${M.esc(calls.join("、"))}</p>` : "";
+  const body = texts.map(text => `<article class="block"><p>${M.esc(text)}</p></article>`).join("");
+  return `<h3>模型写出的内容</h3>${callNote}${body}`;
+}
+function inputSummary(input) {
+  let raw;
+  try { raw = JSON.parse(input); } catch { return ""; }
+  const contents = raw.contents || raw.input;
+  if (!Array.isArray(contents) || !contents.length) return "";
+  const roles = contents.map(item => item.role || item.type || "内容");
+  const shown = roles.slice(0, 8).join("、");
+  return `<p class="aside">输入有 ${contents.length} 段：${M.esc(shown)}${roles.length > 8 ? "…" : ""}</p>`;
+}
+function sendHTML(step, data) {
+  let args;
+  try { args = JSON.parse(data.input || ""); } catch { return ""; }
+  if (!args || typeof args !== "object" || Array.isArray(args) || typeof args.message !== "string") return "";
+  const fields = Object.entries(args).filter(([key]) => key !== "message").map(([key, value]) => {
+    const shown = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    return `<div class="kv"><b>${M.esc(key)}</b><span>${M.esc(shown)}</span></div>`;
+  }).join("");
+  return `<h3>正文</h3><article class="block tone-${toneKey(step)}"><p>${M.esc(args.message)}</p></article>${fields ? `<h3>其他参数</h3><div class="fields">${fields}</div>` : ""}<h3>结果</h3><article class="block tone-${toneKey(step)}">${fold(step.id + ":result", data.output || "")}</article><h3>原始参数</h3><article class="block tone-${toneKey(step)}">${fold(step.id + ":raw", data.input || "")}</article>`;
+}
 function snapshotHTML(step) {
   const { data, state } = step.snapshot;
   if (state === "missing") return `<div class="empty-well">这一步没有保存输入或输出。</div>`;
   if (state === "error") return `<div class="empty-well">暂时读不到快照。<button type="button" data-retry-snapshot>重试</button></div>`;
   if (!data) return `<div class="empty-well" role="status">正在读取原始快照…</div>`;
+  if (step.name === "send_message") {
+    const sent = sendHTML(step, data);
+    if (sent) return sent;
+  }
+  if (step.kind === "model" || step.kind === "compact") {
+    const lead = modelLead(data.output || "");
+    const summary = inputSummary(data.input || "");
+    const output = data.output ? `<h3>原始输出</h3><article class="block tone-${toneKey(step)}">${fold(step.id + ":output", data.output)}</article>` : "";
+    const input = data.input ? `<h3>原始输入</h3>${summary}<article class="block tone-${toneKey(step)}">${fold(step.id + ":input", data.input)}</article>` : "";
+    return `${lead}${output}${input}` || `<div class="empty-well">这一步没有保存输入或输出。</div>`;
+  }
 
   const entries = step.kind === "tool"
     ? [["结果", "output"], ["参数", "input"]]
@@ -306,8 +421,9 @@ function loadSnapshot(step) {
   }).catch(error => {
     snapshot.state = error.status === 404 ? "missing" : "error";
   }).finally(() => {
-    // If the user changes selection before the response arrives, keep their current panel.
-    if (ui.space === "focus" && current().step === step) render();
+    // A late snapshot only refreshes the open detail. Rebuilding the thread would
+    // capture the reset scroll position and leave the conversation on an older page.
+    if (ui.space === "focus" && current().step === step) paintDetail();
   });
 }
 
@@ -379,12 +495,61 @@ function failedStep(step) {
   if (step.reserve) return true;
   return step.kind === "tool" && /超时|失败/.test((step.title || "") + (step.result || ""));
 }
-function stepClock(step) {
+function partsOf(at, raw) {
+  const d = new Date(at);
+  if (!Number.isFinite(d.getTime())) return null;
+  const bag = {};
+  for (const part of new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+  }).formatToParts(d)) bag[part.type] = part.value;
+  if (bag.hour === "24") bag.hour = "00";
+  const matched = String(raw || "").match(/\.(\d+)/);
+  bag.frac = (matched ? matched[1] : String(d.getMilliseconds()).padStart(3, "0")).padEnd(3, "0");
+  return bag;
+}
+function sameClock(one, two, digits) {
+  if (!one || !two) return false;
+  const fields = ["year", "month", "day", "hour", "minute", "second"];
+  if (fields.some(field => one[field] !== two[field])) return false;
+  if (!digits) return true;
+  return one.frac.slice(0, digits) === two.frac.slice(0, digits);
+}
+function clockText(entry, peers) {
+  const p = partsOf(entry?.at, entry?.raw);
+  if (!p) return "";
+  const base = `${p.hour}:${p.minute}:${p.second}`;
+  const parsed = (peers || []).map(one => partsOf(one?.at, one?.raw)).filter(Boolean);
+  const sameSecond = parsed.filter(one => sameClock(one, p));
+  if (sameSecond.length < 2) return base;
+  const ms = p.frac.slice(0, 3);
+  const sameMs = sameSecond.filter(one => one.frac.slice(0, 3) === ms);
+  return sameMs.length < 2 ? `${base}.${ms}` : `${base}.${p.frac.slice(0, 6)}`;
+}
+function detailStamp(step) {
+  const p = partsOf(step?.at, step?.raw);
+  if (!p) return "";
+  const fraction = /[1-9]/.test(p.frac.slice(3)) ? p.frac.slice(0, 6) : p.frac.slice(0, 3);
+  return `${p.year}年${Number(p.month)}月${Number(p.day)}日 ${p.hour}:${p.minute}:${p.second}.${fraction}`;
+}
+function dayOf(item) {
+  if (item?.raw) {
+    const p = partsOf(item.at, item.raw);
+    if (p) return `${p.year}年${Number(p.month)}月${Number(p.day)}日`;
+  }
+  return String(item?.time || "").replace(/\s+\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/, "");
+}
+function rowClock(item, peers) {
+  if (item?.raw) return clockText(item, peers);
+  const matched = String(item?.time || "").match(/\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?/);
+  return matched ? matched[0] : "";
+}
+function stepClock(step, peers) {
+  if (step?.at && step?.raw) return clockText(step, peers);
   if (step?.clock) return step.clock;
   if (step && step.sec != null && source.clock) return source.clock(step.sec).slice(0, 5);
   const item = feed().find(entry => entry.id === ui.item);
-  const matched = item && String(item.time || "").match(/\d+:\d+/);
-  return matched ? matched[0] : "";
+  return rowClock(item, feed());
 }
 function stepsHTML(work) {
   const max = Math.max(...work.steps.map(step => step.ms || 0), 1);
@@ -393,7 +558,7 @@ function stepsHTML(work) {
     const bad = failedStep(step) ? " bad" : "";
     const width = Math.max(4, Math.round((step.ms || 0) / max * 100));
     const mark = failedStep(step) ? alertIcon() : "";
-    return `<li><button type="button" class="tone-${toneKey(step)}${on}${bad}" data-step="${M.esc(step.id)}"${on ? ` aria-current="step"` : ""}><i></i><time>${M.esc(stepClock(step))}</time><span>${mark}<b>${M.esc(step.title)}</b><span class="meter" aria-hidden="true"><i style="width:${width}%"></i></span></span><em>${step.ms ? M.dur(step.ms) : (step.reserve ? "未回执" : M.dur(step.ms))} · ${M.priceLabel(step)}</em></button></li>`;
+    return `<li><button type="button" class="tone-${toneKey(step)}${on}${bad}" data-step="${M.esc(step.id)}"${on ? ` aria-current="step"` : ""}><i></i><time>${M.esc(stepClock(step, work.steps))}</time><span>${mark}<b>${M.esc(step.title)}</b><span class="meter" aria-hidden="true"><i style="width:${width}%"></i></span></span><em>${step.ms ? M.dur(step.ms) : (step.reserve ? "未回执" : M.dur(step.ms))} · ${M.priceLabel(step)}</em></button></li>`;
   }).join("")}</ol>`;
 }
 function jumpButtons(work) {
@@ -410,7 +575,10 @@ function jumpButtons(work) {
 }
 function chainHead(work) {
   const jumps = jumpButtons(work);
-  return `<div class="chain-head"><h3>这次行动的调用</h3>${jumps.length ? `<div class="chain-jumps">${jumps.join("")}</div>` : ""}</div>`;
+  const when = (work.steps || []).find(step => step.raw);
+  const date = when ? dayOf(when) : "";
+  const note = work.scope ? `<p class="aside">${M.esc(work.scope)}</p>` : "";
+  return `<div class="chain-head"><h3>${work.scope ? "这一轮调用" : "这次行动的调用"}</h3>${date ? `<p class="aside">${M.esc(date)}</p>` : ""}${note}${jumps.length ? `<div class="chain-jumps">${jumps.join("")}</div>` : ""}</div>`;
 }
 function pinHTML(work, step, spoken, tone) {
   const spent = (work.steps || []).reduce((sum, item) => sum + (item.ms || 0), 0);
@@ -425,7 +593,8 @@ function pinHTML(work, step, spoken, tone) {
 }
 function stepHead(step) {
   if (!step || step.kind === "said") return "";
-  return `<header class="step-head"><h3>${M.esc(step.title)}</h3><p><b>${M.esc(costSummary(step))}</b> · ${M.esc(stepStatus(step))}</p></header>`;
+  const when = detailStamp(step);
+  return `<header class="step-head"><h3>${M.esc(step.title)}</h3><p>${when ? `<time>${M.esc(when)}</time> · ` : ""}<b>${M.esc(costSummary(step))}</b> · ${M.esc(stepStatus(step))}</p></header>`;
 }
 
 function inspectHTML() {
@@ -454,7 +623,7 @@ function sayHTML(item, grouped) {
   const hit = ui.q && itemSearch(item).toLowerCase().includes(ui.q.trim().toLowerCase());
   const chip = step ? `<span class="callchip tone-${toneKey(step)}">${M.esc(step.model && step.snapshot ? step.model : TONE_NAME[toneKey(step)])} · ${M.priceLabel(step)}</span>` : "";
   const steer = item.kind === "steer" ? `<em class="steer-note">只进队列，不插进正在进行的调用</em>` : "";
-  const clock = (item.time.match(/\d+:\d+/) || [""])[0];
+  const clock = rowClock(item, feed());
   const head = grouped ? "" : `<header><b>${M.esc(item.who)}</b><time>${M.esc(clock)}</time></header>`;
   const avatar = you || grouped ? "" : faceHTML(item.person);
   return `<article class="bubble ${you ? "you" : "them"}${grouped ? " grouped" : ""}${on ? " on" : ""}${hit ? " hit" : ""}${ui.focus === "hit" && on ? " focus" : ""}" id="item-${M.esc(item.id)}">${avatar}<div class="bubble-main">${head}<button type="button" class="bubble-hit" data-item="${M.esc(item.id)}"><span class="line">${markText(item.text || "")}</span>${steer}${chip}</button></div></article>`;
@@ -465,7 +634,7 @@ function eventHTML(item) {
   const hit = ui.q && itemSearch(item).toLowerCase().includes(ui.q.trim().toLowerCase());
   const tone = toneKey(step);
   const text = snippet(step);
-  const clock = (item.time.match(/\d+:\d+/) || [""])[0];
+  const clock = rowClock(item, feed());
   const label = ui.scope === "person"
     ? `<span class="where">${M.esc(item.where || "")}</span>`
     : `${M.esc(item.who)} · ${M.esc(kickerFor(step))}`;
@@ -478,7 +647,7 @@ function threadBody(items, more) {
   let day = "";
   let who = "";
   for (const item of items) {
-    const nextDay = item.time.replace(/\s+\d+:\d+$/, "");
+    const nextDay = dayOf(item);
     if (nextDay !== day) {
       html += `<div class="day"><span>${M.esc(nextDay)}</span></div>`;
       day = nextDay;
@@ -583,6 +752,25 @@ function restoreInspect() {
   const rail = document.querySelector(".step-rail");
   if (rail && !ui.revealStep) rail.scrollLeft = ui.railLeft || 0;
 }
+function paintDetail() {
+  const aside = document.querySelector("aside.inspect");
+  if (!aside) {
+    render();
+    return;
+  }
+  rememberInspect();
+  aside.innerHTML = inspectHTML();
+  restoreInspect();
+  ui.revealStep = false;
+  ui.keepBody = false;
+}
+function updateDetail() {
+  if (ui.space === "focus" && document.querySelector("aside.inspect")) paintDetail();
+  else {
+    if (ui.focus === "end") ui.focus = "stay";
+    render();
+  }
+}
 function revealRail() {
   const rail = document.querySelector(".step-rail");
   const current = rail && rail.querySelector('[aria-current="step"]');
@@ -629,10 +817,11 @@ function render() {
   document.body.classList.toggle("space-focus", ui.space === "focus");
   document.getElementById("app").innerHTML = `<a class="skip" href="#thread">跳到对话</a><header class="top"><a class="brand" href="/"><small>drop_by</small>测光</a><nav class="switch" aria-label="测光页面"><a href="/"${location.pathname === "/" ? ` aria-current="page"` : ""}>实际记录</a><a href="/demo.html"${location.pathname === "/demo.html" || location.pathname === "/spectrum.html" ? ` aria-current="page"` : ""}>样例</a><a href="/night.html"${document.body.dataset.skin === "night" ? ` aria-current="page"` : ""}>夜航</a><a href="/strata.html"${document.body.dataset.skin === "strata" ? ` aria-current="page"` : ""}>层叠</a></nav><button type="button" class="find" id="open-find"><span>查找</span><kbd>/</kbd></button></header><div class="body">${railHTML()}<main class="stage"><div class="stage-head">${face}<div class="stage-copy"><p class="kicker">${M.esc(place)}</p><h1>${M.esc(title)}</h1><p>${M.esc(blurb)}</p></div>${totals}</div>${source.notice ? `<p class="origin" role="status">${M.esc(source.notice)}</p>` : ""}${live}<div class="finder"><svg class="ico" aria-hidden="true"><use href="/icons.svg#search"/></svg><input id="thread-q" value="${M.esc(ui.q)}" placeholder="${person ? "在这个人的调用里找" : "在这段对话里找"}" aria-label="${person ? "在这个人的调用里找" : "在这段对话里找"}">${jumps}</div><p class="hint">${hint}</p><div id="thread">${threadBody(visible, more)}</div></main><aside class="inspect">${inspectHTML()}</aside></div>`;
   const box = document.getElementById("thread");
-  requestAnimationFrame(() => {
-    pinThread();
-    box.addEventListener("scroll", onThreadScroll);
-  });
+  pinThread();
+  // Ignore the scroll event caused by restoring the thread, so it does not load older rows.
+  ui.hold = true;
+  if (box) box.addEventListener("scroll", onThreadScroll);
+  requestAnimationFrame(() => { ui.hold = false; });
 }
 function pinThread() {
   const box = document.getElementById("thread");
@@ -710,21 +899,19 @@ document.body.addEventListener("click", event => {
   const step = event.target.closest("[data-step]");
   if (event.target.closest("[data-retry-snapshot]")) {
     current().step.snapshot.state = "";
-    render();
+    updateDetail();
     return;
   }
   if (foldBtn) {
     ui.folds[foldBtn.dataset.fold] = !ui.folds[foldBtn.dataset.fold];
     ui.keepBody = true;
-    if (ui.focus === "end") ui.focus = "stay";
-    render();
+    updateDetail();
     return;
   }
   if (hide) {
     ui.hideCache = !ui.hideCache;
     ui.keepBody = true;
-    if (ui.focus === "end") ui.focus = "stay";
-    render();
+    updateDetail();
     return;
   }
   if (jump) { jumpHit(Number(jump.dataset.jump)); return; }
@@ -741,7 +928,12 @@ document.body.addEventListener("click", event => {
     const item = feed().find(entry => entry.id === itemBtn.dataset.item);
     if (!item) return;
     const next = hasAction(item) ? "focus" : "browse";
-    if (ui.space !== next) captureThread();
+    if (ui.space !== next) {
+      const thread = document.getElementById("thread");
+      const row = itemBtn.closest("article");
+      if (thread && row) ui.threadAnchor = row.getBoundingClientRect().top - thread.getBoundingClientRect().top;
+      if (ui.focus === "end") ui.focus = "stay";
+    }
     ui.space = next;
     ui.folds = {};
     ui.hideCache = false;
@@ -770,15 +962,13 @@ document.body.addEventListener("click", event => {
   if (open) {
     ui.open = ui.open === open.dataset.open ? "" : open.dataset.open;
     ui.keepBody = true;
-    if (ui.focus === "end") ui.focus = "stay";
-    render();
+    updateDetail();
     return;
   }
   if (step && ui.local && ui.local.work && ui.local.work.steps) {
     const picked = ui.local.work.steps.find(entry => entry.id === step.dataset.step);
-    if (!picked) return;
-    const chain = document.querySelector(".workbench .chain-card");
-    if (chain) ui.chainTop = chain.scrollTop;
+    if (!picked || picked.id === ui.step) return;
+    const opened = ui.space === "focus";
     ui.space = "focus";
     ui.folds = {};
     ui.hideCache = false;
@@ -786,8 +976,12 @@ document.body.addEventListener("click", event => {
     ui.local = { work: ui.local.work, step: picked };
     ui.step = picked.id;
     ui.revealStep = true;
-    if (ui.focus === "end") ui.focus = "stay";
-    render();
+    if (opened) paintDetail();
+    else {
+      captureThread();
+      if (ui.focus === "end") ui.focus = "stay";
+      render();
+    }
     return;
   }
   const rail = event.target.closest(".rail");
@@ -957,7 +1151,7 @@ document.body.addEventListener("click", event => {
 const app = document.getElementById("app");
 try {
   source = location.pathname === "/"
-    ? await (await import("./studio-observe.js?v=1")).observeSource()
+    ? await (await import("./studio-observe.js?v=2")).observeSource()
     : (await import("./studio-demo.js?v=1")).demoSource();
   if (source.origin) document.title = "样例 · 测光";
   people = source.people;

@@ -1,5 +1,6 @@
 const timeFormat = new Intl.DateTimeFormat("zh-CN", {
-  month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "Asia/Shanghai"
+  year: "numeric", month: "long", day: "numeric",
+  hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23", timeZone: "Asia/Shanghai"
 });
 const stepNames = {
   input_tokens: "输入计数", input_tokens_local: "本地输入估算", websocket: "建立连接",
@@ -67,9 +68,12 @@ function toStep(record, run, actor) {
   const at = Date.parse(record.started_at || run.started_at);
   const end = Date.parse(record.ended_at);
   const model = record.kind === "model" ? record.name : "";
-  const title = record.kind === "participation" ? "参与判断" : stepNames[record.name] || record.name || record.kind;
+  const title = record.kind === "participation" ? "参与判断"
+    : record.kind === "message" ? "写入对话"
+    : stepNames[record.name] || record.name || record.kind;
   return {
-    id: record.id, kind: record.kind, model, title, at, clock: timeAt(at).slice(-5),
+    id: record.id, kind: record.kind, name: record.name, model, title, at,
+    raw: record.started_at || run.started_at, call: record.call_id,
     person: actor(record.member_id),
     sent: record.status === "sent",
     room: record.conversation_id || run.conversation_id,
@@ -156,7 +160,7 @@ export async function observeSource() {
       const room = roomFor(step.room);
       const owner = step.person || person;
       const item = {
-        id: "step-" + step.id, kind: "event", at: step.at, time: timeAt(step.at),
+        id: "step-" + step.id, kind: "event", at: step.at, raw: step.raw, time: timeAt(step.at),
         person: owner, who: people.get(owner)?.name || work.who,
         title: step.title, where: room.place + " · " + room.name, stepRef: { work: work.id, step: step.id }
       };
@@ -166,9 +170,8 @@ export async function observeSource() {
       if (step.message && step.target) {
         const key = step.target + "/" + step.message;
         if (!delivered.has(key) || step.sent) {
-          // A trace can lack the parent attempt, so the delivery itself remains inspectable.
-          const parent = steps.find(one => one.id === step.parent);
-          delivered.set(key, { work: work.id, step: parent?.id || step.id });
+          const tool = steps.find(one => one.kind === "tool" && one.name === "send_message" && one.parent === step.parent);
+          delivered.set(key, { work: work.id, step: tool?.id || step.id });
         }
       }
     }
@@ -176,13 +179,13 @@ export async function observeSource() {
       const at = Date.parse(run.started_at);
       const room = roomFor(run.conversation_id);
       const step = {
-        id: run.id, kind: "run", at, clock: timeAt(at).slice(-5), title: work.title,
+        id: run.id, kind: "run", at, raw: run.started_at, title: work.title,
         body: result.status === "rejected" ? "暂时读不到步骤，请刷新重试。" : (run.note || "这次执行还没有记录到步骤。"),
         statusLabel: statusNames[run.status] || run.status, kicker: "执行记录", note: run.note
       };
       work.steps.push(step);
       const item = {
-        id: "run-" + run.id, kind: "event", person, who: work.who, title: work.title, at, time: timeAt(at),
+        id: "run-" + run.id, kind: "event", person, who: work.who, title: work.title, at, raw: run.started_at, time: timeAt(at),
         where: room.place + " · " + room.name, stepRef: { work: work.id, step: step.id }
       };
       putItem(room, item);
@@ -198,7 +201,7 @@ export async function observeSource() {
       const at = Date.parse(message.created_at);
       const delivery = delivered.get(room.id + "/" + message.id);
       room.items.push({
-        id: "message-" + message.id, kind: "say", person, at, time: timeAt(at),
+        id: "message-" + message.id, kind: "say", person, at, raw: message.created_at, time: timeAt(at),
         who: person === "you" ? "你" : (people.get(person)?.name || (message.author_id === "system" ? "系统" : "成员")),
         text: message.body, where: room.place + " · " + room.name, stepRef: delivery
       });
