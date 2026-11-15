@@ -222,26 +222,6 @@ func (s *Store) personalToolRuns(member string) ([]ToolRun, error) {
 	return runs, rows.Err()
 }
 
-func (s *Store) relationshipMemories(member, room string, subjects []string) ([]Memory, error) {
-	rows, err := s.db.Query(memorySelect+` WHERE m.member_id=?
- AND EXISTS(SELECT 1 FROM json_each(d.subject_ids) WHERE value IN (SELECT value FROM json_each(?)))
- ORDER BY m.updated_at DESC,m.rowid DESC`, member, asJSON(subjects))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	result := []Memory{}
-	for rows.Next() {
-		m, err := scanMemory(rows)
-		if err != nil {
-			return nil, err
-		}
-
-		result = append(result, m)
-	}
-	return result, rows.Err()
-}
-
 func (s *Store) accessibleConversation(member, id string) (Conversation, error) {
 	c, err := s.Conversation(id)
 	if err != nil {

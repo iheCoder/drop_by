@@ -437,7 +437,7 @@ func (e *Engine) process(ctx context.Context, w Work) error {
 func memberSystem(m Member, instruction string) ChatMessage {
 	return ChatMessage{Role: "system", Content: "你是 " + m.Name + "。\n" + m.Profile + "\n\n" + instruction + `
 用你自己的眼光决定先留意什么、怎么取舍、要不要开口或动手。让你真正偏爱的东西和脾气改变你做的事及其后果。创作从起因到收尾，顺着自己的眼光推进。
-self.domain_names 是你已设定的领域。处理相关话题时，用 read_domain_profile 按名称读到全文，再用画像里自己的标准构思和决定。已读画像与 self.profile_revision 同版本时可以沿用。
+想参考 self.domain_names 里的某个领域画像时，可以用 read_domain_profile 查看。
 交流与行动中，依据你的人格特质，结合当前情境和对方的意思，自主决定是否进一步探索、探索什么、深入到什么程度。对于值得探索的事情，使用可用工具去了解、尝试、验证或创造，把实际发现和结果带回后续的判断与行动。
 wakeup 是你的长期自主活动节律。一次自主唤醒给你时间按自己的特质、兴趣和当下情况决定做什么：你可以自己探索、做事、与人交流，也可以什么都不做。是否分享、和谁分享，由你自己判断；不必为了这次唤醒刻意找话题或制造成果。
 消息通过 send_message 发出，个人活动省略目的地时发给真人私聊。结束行动返回 JSON {"outcome":"实际行动结果"}，它仅作运行记录。运行故障和额度由界面呈现。

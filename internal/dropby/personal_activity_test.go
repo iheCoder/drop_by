@@ -170,6 +170,75 @@ func TestPersonalExplorationSharingAndRecovery(t *testing.T) {
 }
 
 // 对人的认识属于形成这份认识的成员；个人活动可想起自己在聊天中形成的理解。
+func TestReadConversationDeliversChatAndLeavesMemoryAvailableAcrossRooms(t *testing.T) {
+	// 私聊的经历标注了真人，两次查看聊天时原本都会自动召回。用同批读取确认
+	// 两个房间的消息都进入下一次模型输入，再在群里主动找回这条私聊经历。
+	s, group, m := fixture(t)
+	direct, err := s.CreateConversation(m.Name, "direct", []string{m.ID}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directMessage := userMessage(direct, "番茄钟那个梗挺好笑，但别总用同一个结构。")
+	groupMessage := userMessage(group, "共享文档能撤销某个人的一次编辑吗？")
+	for _, message := range []Message{directMessage, groupMessage} {
+		if err := s.Publish(message, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const memoryBody = "真人认可番茄钟提示音的笑话，提醒我换角度。"
+	cfg := testConfig()
+	box := NewEngine(s, nil, cfg).Tools
+	saveTestExperience(t, box, direct, m, addWork(t, s, direct, m, "followup"), memoryWrite{
+		Body: memoryBody, SubjectIDs: &[]string{"user"}, SourceIDs: []string{directMessage.ID},
+	})
+	readDirect := toolCall("read_conversation", map[string]any{"conversation_id": direct.ID, "limit": 1})
+	readGroup := toolCall("read_conversation", map[string]any{"conversation_id": group.ID, "limit": 1})
+	lookup := toolCall("search_memory", map[string]string{"query": "提示音"})
+	calls := 0
+	e := NewEngine(s, modelFunc(func(_ context.Context, messages []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		calls++
+		switch calls {
+		case 1:
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{readDirect, readGroup}}, nil
+		case 2:
+			want := map[string]Message{readDirect.ID: directMessage, readGroup.ID: groupMessage}
+			for _, message := range messages {
+				expected, ok := want[message.ToolCallID]
+				if !ok {
+					continue
+				}
+				var receipt struct {
+					Result struct {
+						Conversation  Conversation    `json:"conversation"`
+						Messages      []Message       `json:"messages"`
+						Relationships json.RawMessage `json:"relationships"`
+					} `json:"result"`
+				}
+				if err := json.Unmarshal([]byte(message.Content), &receipt); err != nil ||
+					receipt.Result.Conversation.ID != expected.ConversationID ||
+					len(receipt.Result.Messages) != 1 || receipt.Result.Messages[0].ID != expected.ID ||
+					receipt.Result.Messages[0].Body != expected.Body || receipt.Result.Relationships != nil {
+					t.Fatal("聊天工具应同时交付正确房间和所选消息", message.Content, err)
+				}
+				delete(want, message.ToolCallID)
+			}
+			if len(want) != 0 || strings.Contains(asJSON(messages), memoryBody) {
+				t.Fatal("两份聊天没有同时交付，或仍自动附带关系记忆")
+			}
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{lookup}}, nil
+		default:
+			last := messages[len(messages)-1]
+			if last.ToolCallID != lookup.ID || !strings.Contains(last.Content, memoryBody) {
+				t.Fatal("群里的主动检索没有交付私聊经历", last.Content)
+			}
+			return jsonReply(Outcome{}), nil
+		}
+	}), cfg)
+	if _, err := e.act(context.Background(), group, m, addWork(t, s, group, m, "followup"), "查看聊天近况"); err != nil || calls != 3 {
+		t.Fatal("未完成查看聊天和按需回忆", calls, err)
+	}
+}
+
 // 更正修改原记录，下一次召回用新版本，不把旧印象从工具历史里重新带回来。
 func TestPersonalRelationshipRecallUsesCorrection(t *testing.T) {
 	s, room, people := groupWithMembers(t, 2)

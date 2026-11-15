@@ -102,7 +102,7 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 			}
 		}
 	}
-	defs = append(defs, definition("read_conversation", "查看自己所在聊天的当前现场。用于选择交流对象或接续关系；历史可继续用 read_history。", map[string]any{"conversation_id": textField("conversations 中的聊天 ID")}, "conversation_id"))
+	defs = append(defs, definition("read_conversation", "查看自己所在聊天的信息和最近消息。", map[string]any{"conversation_id": textField("conversations 中的聊天 ID")}, "conversation_id"))
 	for i := range defs {
 		props := defs[i].Function.Parameters.(map[string]any)["properties"].(map[string]any)
 		name := defs[i].Function.Name
@@ -358,8 +358,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		if err != nil {
 			return nil, err
 		}
-		memories, err := t.Store.relationshipMemories(m.ID, room.ID, append([]string{"user"}, room.MemberIDs...))
-		return map[string]any{"conversation": room, "messages": messages, "relationships": memories}, err
+		return map[string]any{"conversation": room, "messages": messages}, nil
 	case "schedule_followup":
 		due, err := followupTime(time.Now(), args.DelaySeconds, args.DueAt)
 		if err != nil {
