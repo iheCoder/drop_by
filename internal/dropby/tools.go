@@ -557,7 +557,7 @@ func (t *Toolbox) Schedule(ctx context.Context, c Conversation, m Member, source
 	if strings.TrimSpace(instruction) == "" {
 		return nil, fmt.Errorf("后台行动需要具体内容")
 	}
-	w := Work{ID: newID("work"), ParentID: source.ID, ConversationID: c.ID, MemberID: m.ID, RootID: rootOf(source), Autonomous: source.Autonomous, Kind: "research", Instruction: instruction, Reason: reason, SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
+	w := Work{ID: newID("work"), ParentID: source.ID, ConversationID: c.ID, MemberID: m.ID, RootID: rootOf(source), Autonomous: autonomousWork(source), Kind: "research", Instruction: instruction, Reason: reason, SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
 	err := t.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 		return insertWork(tx, w)
 	})

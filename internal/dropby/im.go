@@ -295,14 +295,48 @@ func (s *Store) budgetBlocked(cfg Config, usage Usage) (bool, error) {
 }
 
 func (s *Store) recheckBudgetWait(cfg Config) error {
-	u, err := s.Usage()
+	now := time.Now()
+	limit, _, err := budgetLimit(s.db, cfg, now)
 	if err != nil {
 		return err
 	}
-	limit, _, err := budgetLimit(s.db, cfg, time.Now())
+	siteRemaining, weekRemaining, windowRemaining, weeklyAllowance, windowAllowance, err := s.explorationBalances(s.db, cfg, now, limit)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE work SET status='pending',due_at=? WHERE status='waiting_budget' AND budget_required>0 AND budget_required<=?`, time.Now().UnixMilli(), max(int64(0), limit-u.CostMicros))
-	return err
+	// budget_required 不在通用工作列里。这里单独读取，避免把还放不下的探索提前唤醒。
+	rows, err := s.db.Query(`SELECT id, kind, source_id, autonomous, budget_required FROM work WHERE status='waiting_budget' AND budget_required>0`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var ready []string
+	for rows.Next() {
+		var w Work
+		var autonomous int
+		if err = rows.Scan(&w.ID, &w.Kind, &w.SourceID, &autonomous, &w.BudgetRequired); err != nil {
+			return err
+		}
+		w.Autonomous = autonomous == 1
+		// 真人发起的工作只看站点周额度。自主探索要同时放得进探索周额度和当前窗口。
+		if !autonomousWork(w) {
+			if w.BudgetRequired <= siteRemaining {
+				ready = append(ready, w.ID)
+			}
+			continue
+		}
+		if w.BudgetRequired <= siteRemaining && w.BudgetRequired <= weekRemaining && w.BudgetRequired <= windowRemaining && w.BudgetRequired <= weeklyAllowance && w.BudgetRequired <= windowAllowance {
+			ready = append(ready, w.ID)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	for _, id := range ready {
+		if _, err = s.db.Exec(`UPDATE work SET status='pending',due_at=? WHERE id=? AND status='waiting_budget'`, now.UnixMilli(), id); err != nil {
+			return err
+		}
+	}
+	return nil
 }

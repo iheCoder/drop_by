@@ -12,7 +12,7 @@ import (
 )
 
 func TestAutonomousUsageSharesTotalBudgetAndSettles(t *testing.T) {
-	// 自主与前台共用总预算；保留自主用量统计，但不再设置隐藏子额度。
+	// 这个用例把探索比例设成整个周额度，确认前台和后台仍共用总预算。探索窗口的单独上限由专项测试覆盖。
 	s, _, _ := fixture(t)
 	cfg := testConfig()
 	cfg.WeeklyBudgetMicros = 300

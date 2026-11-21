@@ -200,12 +200,18 @@ func (e *Engine) dispatch(ctx context.Context) {
 				case recoverableNetwork(err):
 					status, due = "pending", time.Now().Add(e.Config.ExploreInterval)
 				case errors.Is(err, ErrBudget):
+					due = nextBudgetWeek()
 					var rejection *budgetRejection
 					if errors.As(err, &rejection) {
 						w.BudgetRequired = rejection.required
+						switch {
+						case rejection.skipWindowRetry:
+							due = explorationHoldDue()
+						case !rejection.resumeAt.IsZero():
+							due = rejection.resumeAt
+						}
 					}
 					status = "waiting_budget"
-					due = nextBudgetWeek()
 				default:
 					status = "failed"
 				}
@@ -391,7 +397,7 @@ WHERE id=? AND conversation_id=? AND kind IN ('research','revisit')`, status, ti
 }
 
 func (e *Engine) process(ctx context.Context, w Work) error {
-	// 自主来源仅用于用量统计与排队，不再另设消息配额或子预算。
+	// 自主来源沿用工作标记，决定这次调用是否计入探索额度。不另设条数或单人配额。
 	if autonomousWork(w) {
 		w.Autonomous = true
 		ctx = context.WithValue(ctx, autonomyKey{}, rootOf(w))

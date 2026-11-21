@@ -1,7 +1,9 @@
 package dropby
 
 import (
+	"context"
 	"fmt"
+	"maps"
 	"strconv"
 	"time"
 
@@ -38,6 +40,44 @@ func (m *HTTPModel) newModelCall(route modelRoute) (*modelCall, error) {
 	default:
 		return nil, fmt.Errorf("未接入模型协议 %q", route.Protocol)
 	}
+}
+
+// 只收紧自主探索路径上、且场景没有写明 maxOutputTokens 的 Hydrogen 调用。
+// 预留和实际请求使用同一上限，避免按 8192 记账却发出 65536。
+func (m *modelCall) applyAutonomousHydrogenCap(ctx context.Context) {
+	if autonomyRoot(ctx) == "" || m.Model != gemini.Hydrogen || geminiOutputCapExplicit(m.Options) {
+		return
+	}
+	if m.maxOutputTokens <= autonomousHydrogenOutputTokens {
+		return
+	}
+	m.maxOutputTokens = autonomousHydrogenOutputTokens
+	client, ok := m.backend.(*gemini.Client)
+	if !ok {
+		return
+	}
+	options := maps.Clone(client.Options)
+	if options == nil {
+		options = map[string]any{}
+	}
+	config, _ := options["generationConfig"].(map[string]any)
+	config = maps.Clone(config)
+	if config == nil {
+		config = map[string]any{}
+	}
+	config["maxOutputTokens"] = autonomousHydrogenOutputTokens
+	options["generationConfig"] = config
+	client.Options = options
+	m.Options = options
+}
+
+func geminiOutputCapExplicit(options map[string]any) bool {
+	config, _ := options["generationConfig"].(map[string]any)
+	if config == nil {
+		return false
+	}
+	_, ok := config["maxOutputTokens"]
+	return ok
 }
 
 func validateProviderProtocol(protocol string) error {

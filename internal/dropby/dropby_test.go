@@ -41,7 +41,9 @@ func testConfig() Config {
 		models.Scenes[scene] = modelSettings{Provider: "OpenAI", Model: "gpt-6.1-terra", ContextTokenBudget: 100_000, maxOutputTokens: 400,
 			Options: map[string]any{"max_output_tokens": 400}}
 	}
-	return Config{Address: "127.0.0.1:8090", Models: models, SearchKey: "test-only", ExploreInterval: time.Hour, WeeklyBudgetMicros: 1_000_000, ToolCostMicros: 750}
+	// 既有测试把探索比例设成整个周额度，总预算仍是唯一上限。
+	// 产品默认 0.4、8h、0.25 由配置加载和探索额度测试覆盖。
+	return Config{Address: "127.0.0.1:8090", Models: models, SearchKey: "test-only", ExploreInterval: time.Hour, WeeklyBudgetMicros: 1_000_000, ExplorationShare: 1, ExplorationWindow: 8 * time.Hour, ExplorationWindowShare: 1, ToolCostMicros: 750}
 }
 func fixture(t *testing.T) (*Store, Conversation, Member) {
 	t.Helper()

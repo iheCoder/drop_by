@@ -16,14 +16,17 @@ import (
 )
 
 type Config struct {
-	Models                modelConfig
-	Address, DataDir      string
-	SearchURL, SearchKey  string
-	ExploreInterval       time.Duration
-	WeeklyBudgetMicros    int64
-	TemporaryBudgetMicros int64
-	TemporaryBudgetUntil  time.Time
-	ToolCostMicros        int64
+	Models                 modelConfig
+	Address, DataDir       string
+	SearchURL, SearchKey   string
+	ExploreInterval        time.Duration
+	WeeklyBudgetMicros     int64
+	TemporaryBudgetMicros  int64
+	TemporaryBudgetUntil   time.Time
+	ExplorationShare       float64
+	ExplorationWindow      time.Duration
+	ExplorationWindowShare float64
+	ToolCostMicros         int64
 }
 
 type configFile struct {
@@ -37,9 +40,12 @@ type configFile struct {
 		APIKey  *string `yaml:"api_key"`
 	} `yaml:"search"`
 	Budget struct {
-		WeeklyUSD      *float64 `yaml:"weekly_usd"`
-		TemporaryUSD   *float64 `yaml:"temporary_usd"`
-		TemporaryUntil *string  `yaml:"temporary_until"`
+		WeeklyUSD              *float64 `yaml:"weekly_usd"`
+		TemporaryUSD           *float64 `yaml:"temporary_usd"`
+		TemporaryUntil         *string  `yaml:"temporary_until"`
+		ExplorationShare       *float64 `yaml:"exploration_share"`
+		ExplorationWindow      *string  `yaml:"exploration_window"`
+		ExplorationWindowShare *float64 `yaml:"exploration_window_share"`
 	} `yaml:"budget"`
 	ExploreInterval *string `yaml:"explore_interval"`
 }
@@ -106,6 +112,19 @@ func (raw configFile) resolve(getenv func(string) string) (Config, error) {
 	if err != nil || c.ExploreInterval < time.Minute {
 		return c, fmt.Errorf("explore_interval / DROPBY_EXPLORE_INTERVAL 至少为 1m")
 	}
+	// 探索额度是生效周额度的比例，不是另一笔写死的金额。窗口向后滚动，不按整点刷新。
+	c.ExplorationShare, err = budgetShare(raw.Budget.ExplorationShare, firstValue(getenv("DROPBY_EXPLORATION_SHARE"), "0.4"))
+	if err != nil {
+		return c, fmt.Errorf("budget.exploration_share / DROPBY_EXPLORATION_SHARE 是自主探索可使用的周额度比例，须大于 0 且不超过 1")
+	}
+	c.ExplorationWindow, err = time.ParseDuration(fileValue(raw.Budget.ExplorationWindow, getenv("DROPBY_EXPLORATION_WINDOW"), "8h"))
+	if err != nil || c.ExplorationWindow <= 0 {
+		return c, fmt.Errorf("budget.exploration_window / DROPBY_EXPLORATION_WINDOW 是向后滚动的时长，例如 8h")
+	}
+	c.ExplorationWindowShare, err = budgetShare(raw.Budget.ExplorationWindowShare, firstValue(getenv("DROPBY_EXPLORATION_WINDOW_SHARE"), "0.25"))
+	if err != nil {
+		return c, fmt.Errorf("budget.exploration_window_share / DROPBY_EXPLORATION_WINDOW_SHARE 是一个滚动窗口可使用的探索周额度比例，须大于 0 且不超过 1")
+	}
 	// 本机单用户服务只绑定回环地址。
 	host, _, err := net.SplitHostPort(c.Address)
 	if err != nil || (host != "localhost" && (net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback())) {
@@ -117,6 +136,20 @@ func (raw configFile) resolve(getenv func(string) string) (Config, error) {
 	}
 	err = c.Models.resolve(getenv)
 	return c, err
+}
+
+func budgetShare(configured *float64, fallback string) (float64, error) {
+	var n float64
+	var err error
+	if configured != nil {
+		n = *configured
+	} else {
+		n, err = strconv.ParseFloat(fallback, 64)
+	}
+	if err != nil || n <= 0 || n > 1 || math.IsNaN(n) || math.IsInf(n, 0) {
+		return 0, fmt.Errorf("比例无效")
+	}
+	return n, nil
 }
 
 func budgetMicros(configured *float64, fallback string) (int64, error) {
