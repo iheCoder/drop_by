@@ -32,7 +32,7 @@ func TestPouringWaterMemoryReplayReadsSourcesOnDemand(t *testing.T) {
 		ID: original.ID, Revision: &original.Revision, Body: "后续补充：原始研究里的听辨和机制是两回事。", SourceIDs: []string{"sound_page"},
 	})
 	args := map[string]any{"id": original.ID, "revision": original.Revision}
-	call := toolCall("read_memory", args)
+	call := toolCall("recall", args)
 	short, err := box.Execute(context.Background(), room, member, work, call)
 	if err != nil || !strings.Contains(short, original.Body) || !strings.Contains(short, `"historical":true`) ||
 		!strings.Contains(short, "sound_search") || !strings.Contains(short, "sound_page") || !strings.Contains(short, "tool:read_page:succeeded") ||
@@ -40,7 +40,7 @@ func TestPouringWaterMemoryReplayReadsSourcesOnDemand(t *testing.T) {
 		t.Fatalf("旧版记忆应返回全文和准确来源清单: %s, %v", short, err)
 	}
 	args["include_source_bodies"] = true
-	full, err := box.Execute(context.Background(), room, member, work, toolCall("read_memory", args))
+	full, err := box.Execute(context.Background(), room, member, work, toolCall("recall", args))
 	if err != nil || !strings.Contains(full, search) || !strings.Contains(full, page) {
 		t.Fatalf("显式展开丢失了某条原始来源: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestPersonalExperienceRevisionAndEvidence(t *testing.T) {
 	if err != nil || old.(map[string]any)["historical"] != true || !strings.Contains(asJSON(old), ma.Body) {
 		t.Fatalf("不能明确回查旧版本：%v %v", old, err)
 	}
-	latest, err := s.searchMemories(a.ID, c.ID, "动画", 0)
+	latest, err := s.recall(context.Background(), a.ID, recallRequest{SQL: `SELECT id, body FROM records WHERE kind='memory' AND instr(body,'动画')>0`})
 	if err != nil || strings.Contains(asJSON(latest), ma.Body) || !strings.Contains(asJSON(latest), updated.Body) {
 		t.Fatalf("普通检索仍返回旧结论：%v %v", latest, err)
 	}
@@ -129,7 +129,7 @@ func TestMemoryEvidenceScopeAndGrounding(t *testing.T) {
 			t.Fatalf("接受了不可引用的来源 %s", source)
 		}
 	}
-	if err := s.RecordTool(ToolRun{ID: "copied_note", WorkID: w.ID, ConversationID: c.ID, MemberID: a.ID, Name: "read_memory", Arguments: json.RawMessage(`{}`), Result: "旧观点的复制", Status: "succeeded", CreatedAt: now()}); err != nil {
+	if err := s.RecordTool(ToolRun{ID: "copied_note", WorkID: w.ID, ConversationID: c.ID, MemberID: a.ID, Name: "recall", Arguments: json.RawMessage(`{}`), Result: "旧观点的复制", Status: "succeeded", CreatedAt: now()}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := box.remember(context.Background(), c, a, w, memoryWrite{Body: "第二次独立印证", SourceIDs: []string{"copied_note"}}); err != nil {
@@ -187,7 +187,7 @@ func TestRelevantMemoryDoesNotCrowdOutCurrentWork(t *testing.T) {
 		t.Fatal("首次现场仍自动注入记忆，或丢失身份/当前消息")
 	}
 	// 旧经历仍可按需检索，无需先知道 ID；无需默认灌入全部匹配项。
-	found, err := box.perform(context.Background(), c, m, w, toolCall("search_memory", map[string]string{"query": "关闭入口"}))
+	found, err := box.perform(context.Background(), c, m, w, toolCall("recall", map[string]any{"sql": `SELECT id, body FROM records WHERE kind='memory' AND instr(body,'关闭入口')>0`}))
 	if err != nil || !strings.Contains(asJSON(found), useful.ID) {
 		t.Fatalf("主动检索找不到经历：%v", err)
 	}

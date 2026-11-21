@@ -152,7 +152,7 @@ func TestPersonalExplorationSharingAndRecovery(t *testing.T) {
 	if _, err := resumed.Tools.saveArtifact(context.Background(), personal, m, work, Artifact{ID: saved.ID, Title: "纸的运动", Content: "未分享的第二版"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := resumed.Tools.perform(context.Background(), room, people[1], work, toolCall("read_artifact", map[string]any{"id": saved.ID}))
+	result, err := resumed.Tools.perform(context.Background(), room, people[1], work, toolCall("recall", map[string]any{"id": saved.ID}))
 	if err != nil || strings.Contains(asJSON(result), "未分享") || !strings.Contains(asJSON(result), "换一个折法") {
 		t.Fatalf("分享版本不可读或泄漏了草稿: %v %v", result, err)
 	}
@@ -160,11 +160,11 @@ func TestPersonalExplorationSharingAndRecovery(t *testing.T) {
 	if err != nil || len(visible) != 1 || visible[0].Version != 1 {
 		t.Fatalf("聊天成果列表丢失已分享的个人作品或展示未发布版: %v %v", visible, err)
 	}
-	index, err := s.artifactIndexForMember(room.ID, people[1].ID, "纸", 0)
+	index, err := s.recall(context.Background(), people[1].ID, recallRequest{SQL: `SELECT r.id,r.title FROM records r JOIN shares s ON r.id=s.artifact_id AND r.version=s.version WHERE r.title LIKE '%纸%'`})
 	if err != nil || !strings.Contains(asJSON(index), saved.ID) {
 		t.Fatalf("不能发现已分享的个人作品: %v", err)
 	}
-	if _, err := resumed.Tools.perform(context.Background(), room, people[1], work, toolCall("read_artifact", map[string]any{"id": saved.ID, "version": 2})); err == nil {
+	if _, err := resumed.Tools.perform(context.Background(), room, people[1], work, toolCall("recall", map[string]any{"id": saved.ID, "version": 2})); err == nil {
 		t.Fatal("同伴读到了未分享版本")
 	}
 }
@@ -193,7 +193,7 @@ func TestReadConversationDeliversChatAndLeavesMemoryAvailableAcrossRooms(t *test
 	})
 	readDirect := toolCall("read_conversation", map[string]any{"conversation_id": direct.ID, "limit": 1})
 	readGroup := toolCall("read_conversation", map[string]any{"conversation_id": group.ID, "limit": 1})
-	lookup := toolCall("search_memory", map[string]string{"query": "提示音"})
+	lookup := toolCall("recall", map[string]any{"sql": `SELECT id, body FROM records WHERE kind='memory' AND instr(body,'提示音')>0`})
 	calls := 0
 	e := NewEngine(s, modelFunc(func(_ context.Context, messages []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
 		calls++
@@ -258,7 +258,7 @@ func TestPersonalRelationshipRecallUsesCorrection(t *testing.T) {
 	}
 	json.Unmarshal([]byte(asJSON(raw)), &first)
 	input, err := e.personalContext(m, Work{})
-	found, readErr := s.searchMemories(m.ID, "", "选择题", 0)
+	found, readErr := s.recall(context.Background(), m.ID, recallRequest{SQL: `SELECT id, body FROM records WHERE kind='memory' AND instr(body,'选择题')>0`})
 	if err != nil || readErr != nil || input["relationships"] != nil || !strings.Contains(asJSON(found), first.Memory.ID) {
 		t.Fatalf("自己对人的认识没有被召回: %v", err)
 	}

@@ -106,7 +106,7 @@ func (t *Toolbox) saveArtifact(ctx context.Context, c Conversation, m Member, w 
 		return err
 	})
 	// 源码已经在工具参数和成果里保存。返回可验证的版本与入口即可，不把长 HTML
-	// 再复制一遍塞进模型上下文；需要核对时可调用 read_artifact。
+	// 再复制一遍塞进模型上下文；需要核对时可调用 recall。
 	base := "/api/artifacts/" + a.ID
 	result := map[string]any{"artifact_id": a.ID, "title": a.Title, "version": a.Version, "format": a.Format, "url": base, "download_url": base + "/download?version=" + strconv.Itoa(a.Version)}
 	if a.Format == "html" {
@@ -182,9 +182,3 @@ const visibleArtifactSQL = `(a.conversation_id=? OR a.member_id=? OR EXISTS(
  WHERE message.conversation_id=? AND message.author_id=a.member_id
  AND json_extract(CASE WHEN json_valid(run.result) THEN run.result ELSE '{}' END,'$.artifact_id')=a.id
  AND json_extract(CASE WHEN json_valid(run.result) THEN run.result ELSE '{}' END,'$.version')=a.version))`
-
-func (s *Store) artifactVisible(room, member string, a Artifact) (bool, error) {
-	var count int
-	err := s.db.QueryRow(`SELECT count(*) FROM artifacts a WHERE a.id=? AND a.version=? AND `+visibleArtifactSQL, a.ID, a.Version, room, member, room).Scan(&count)
-	return count > 0, err
-}

@@ -16,7 +16,7 @@ func TestPrivateMemoryCannotLeakThroughSharedToolHistory(t *testing.T) {
 	wb := addWork(t, s, c, b, "research")
 	e := NewEngine(s, nil, testConfig())
 	secret := "只有阿甲的经历记录应携带这段标记"
-	for _, name := range []string{"remember", "read_memory", "search_memory"} {
+	for _, name := range []string{"remember", "read_memory", "search_memory", "recall"} {
 		run := ToolRun{ID: "private_" + name, WorkID: wa.ID, ConversationID: c.ID, MemberID: a.ID, Name: name,
 			Arguments: json.RawMessage(`{}`), Result: asJSON(map[string]string{"body": secret}), Status: "succeeded", CreatedAt: now()}
 		if err := s.RecordTool(run); err != nil {

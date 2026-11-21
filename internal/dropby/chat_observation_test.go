@@ -43,7 +43,7 @@ func TestChatAndObservationKeepResponsesUsage(t *testing.T) {
 					io.WriteString(w, `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"{\"message\":\"收到，已核对本地历史\"}"}]}],`+usage+`}`)
 					return
 				}
-				io.WriteString(w, `{"status":"completed","output":[{"type":"reasoning","encrypted_content":"cache-chat-opaque"},{"type":"function_call","name":"read_history","call_id":"call_cache_chat","arguments":"{}"}],`+usage+`}`)
+				io.WriteString(w, `{"status":"completed","output":[{"type":"reasoning","encrypted_content":"cache-chat-opaque"},{"type":"function_call","name":"recall","call_id":"call_cache_chat","arguments":"{}"}],`+usage+`}`)
 			}))
 			defer server.Close()
 
@@ -81,7 +81,7 @@ func TestChatAndObservationKeepResponsesUsage(t *testing.T) {
 				t.Fatalf("聊天和工具续接应各按 1295 微美元结算: %+v %v", calls, err)
 			}
 			tools, err := s.ToolRuns(room.ID, "")
-			if err != nil || len(tools) != 1 || tools[0].Name != "read_history" || tools[0].Status != "succeeded" {
+			if err != nil || len(tools) != 1 || tools[0].Name != "recall" || tools[0].Status != "succeeded" {
 				t.Fatalf("本地工具未成功执行一次: %+v %v", tools, err)
 			}
 

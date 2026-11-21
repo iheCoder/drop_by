@@ -192,7 +192,7 @@ func TestLiveMemberContextReplay(t *testing.T) {
 				}
 				if tc.note == "" {
 					var reads int
-					if err := s.db.QueryRow("SELECT count(*) FROM tool_runs WHERE work_id=? AND name='read_memory' AND status='succeeded'", work.ID).Scan(&reads); err != nil || reads != 1 {
+					if err := s.db.QueryRow("SELECT count(*) FROM tool_runs WHERE work_id=? AND name='recall' AND status='succeeded'", work.ID).Scan(&reads); err != nil || reads != 1 {
 						t.Fatalf("应读一次记忆并接续，实际 %d 次: %v", reads, err)
 					}
 					return

@@ -115,7 +115,7 @@ func referenceOldContext(history []ChatMessage, canReadHistory, canReadResults b
 					messages[j].Body = ""
 				}
 				if recoverable {
-					ref := "已读聊天来源，可用 read_history 按聊天和消息 ID 回读：" + asJSON(messages)
+					ref := "已读聊天来源，可用 recall 按聊天和消息 ID 回读：" + asJSON(messages)
 					if len(ref) < len(content) {
 						content = ref
 					}

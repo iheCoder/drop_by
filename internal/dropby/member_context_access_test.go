@@ -19,7 +19,7 @@ func TestMemberCarriesKnownContextAcrossRooms(t *testing.T) {
 	}
 	w := addWork(t, s, room, m, "followup")
 	box := NewEngine(s, nil, testConfig()).Tools
-	got, err := box.perform(context.Background(), room, m, w, toolCall("read_history", map[string]any{"conversation_id": private.ID, "id": msg.ID, "length": 10000}))
+	got, err := box.perform(context.Background(), room, m, w, toolCall("recall", map[string]any{"conversation_id": private.ID, "id": msg.ID, "length": 10000}))
 	if err != nil || !strings.Contains(asJSON(got), "末尾更正") {
 		t.Fatalf("跨场景原文: %v %v", got, err)
 	}
@@ -32,7 +32,7 @@ func TestMemberCarriesKnownContextAcrossRooms(t *testing.T) {
 		t.Fatalf("跨场景记忆及依据: %v %v", view, err)
 	}
 	// 未参与者无法凭消息 ID 读取这段交流；这不是限制知情成员的表达。
-	if _, err := box.perform(context.Background(), room, people[1], w, toolCall("read_history", map[string]any{"conversation_id": private.ID, "id": msg.ID})); err == nil {
+	if _, err := box.perform(context.Background(), room, people[1], w, toolCall("recall", map[string]any{"conversation_id": private.ID, "id": msg.ID})); err == nil {
 		t.Fatal("未参与者取得了原文")
 	}
 }

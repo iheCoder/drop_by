@@ -64,7 +64,7 @@ func TestSteeringProtocolAccountingAndPendingTools(t *testing.T) {
 				}
 				output := []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]string{"type": "output_text", "text": "original"}}}}
 				if mode == "tool_pending" {
-					output = []any{map[string]string{"type": "function_call", "call_id": "call_one", "name": "read_history", "arguments": "{}"}}
+					output = []any{map[string]string{"type": "function_call", "call_id": "call_one", "name": "recall", "arguments": "{}"}}
 				}
 				status := "completed"
 				if mode == "incomplete" {

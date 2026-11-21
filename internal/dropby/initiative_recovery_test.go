@@ -148,7 +148,7 @@ func TestPersonalActivityYieldsAtSavedBoundary(t *testing.T) {
 		if scene.Trigger.ID == w.ID {
 			close(entered)
 			<-release
-			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("search_memory", map[string]string{"query": ""})}}, nil
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("recall", map[string]string{"query": ""})}}, nil
 		}
 		return jsonReply(Outcome{Message: "我看到你了。"}), nil
 	}), testConfig())

@@ -154,7 +154,7 @@ func (t *Toolbox) remember(ctx context.Context, c Conversation, m Member, w Work
 		}
 		// 更新者必须确认自己读到的版本；另一个会话刚保存的纠正不能被老草稿覆盖。
 		if args.Revision == nil || *args.Revision != previous.Revision {
-			return nil, fmt.Errorf("经历已有版本 %d；请 read_memory 后带 revision 更新原 ID", previous.Revision)
+			return nil, fmt.Errorf("经历已有版本 %d；请 recall 后带 revision 更新原 ID", previous.Revision)
 		}
 	}
 	next := previous

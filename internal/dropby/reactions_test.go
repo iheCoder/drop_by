@@ -126,7 +126,7 @@ func TestMessageReactionsOnOlderPage(t *testing.T) {
 		t.Fatal("表情写入或撤回向群聊引擎发布了消息事件")
 	default:
 	}
-	history := runTool(toolCall("read_history", map[string]string{"id": old.ID}), "succeeded")
+	history := runTool(toolCall("recall", map[string]string{"id": old.ID}), "succeeded")
 	var receipt struct {
 		Result struct {
 			Message Message `json:"message"`
@@ -136,7 +136,7 @@ func TestMessageReactionsOnOlderPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectActors(receipt.Result.Message.Reactions, m.ID)
-	// read_history 使用原有工具事件；表情写入和撤回单独验证不会发布这类事件。
+	// recall 使用原有工具事件；表情写入和撤回单独验证不会发布这类事件。
 	for len(engineEvents) > 0 {
 		<-engineEvents
 	}

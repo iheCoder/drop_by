@@ -232,11 +232,11 @@ func TestLivePersonalExperienceContinuity(t *testing.T) {
 			round(room, "合作反馈与个人理解", feedback)
 		}
 		for _, member := range members {
-			result, err := s.searchMemories(member.ID, room.ID, "同伴 合作 配合", 0)
+			result, err := s.recall(context.Background(), member.ID, recallRequest{SQL: `SELECT id,body FROM records WHERE kind='memory' AND (body LIKE '%同伴%' OR body LIKE '%合作%' OR body LIKE '%配合%')`})
 			if err != nil {
 				t.Fatal(err)
 			}
-			notes := result.(map[string]any)["memories"].([]Memory)
+			notes := result.(recallTable).Rows
 			if len(notes) == 0 {
 				t.Fatalf("%s 没有检索到合作相关理解", member.Name)
 			}

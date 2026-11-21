@@ -221,7 +221,7 @@ func TestLiveModelSelection(t *testing.T) {
 					if scenario == "decision_recall" {
 						found := false
 						for _, r := range runs {
-							if r.Status == "succeeded" && (r.Name == "read_history" || r.Name == "search_memory") {
+							if r.Status == "succeeded" && r.Name == "recall" {
 								found = true
 							}
 						}

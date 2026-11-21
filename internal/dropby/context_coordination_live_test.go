@@ -100,7 +100,7 @@ func TestLiveContextRecallAndCoordination(t *testing.T) {
 	for ctx.Err() == nil {
 		e.dispatch(ctx)
 		var recalled, assigned, reviewed, artifacts int
-		s.db.QueryRow(`SELECT count(*) FROM tool_runs WHERE conversation_id=? AND member_id=? AND name IN ('search_memory','read_history') AND status='succeeded'`, c.ID, members[0].ID).Scan(&recalled)
+		s.db.QueryRow(`SELECT count(*) FROM tool_runs WHERE conversation_id=? AND member_id=? AND name='recall' AND status='succeeded'`, c.ID, members[0].ID).Scan(&recalled)
 		s.db.QueryRow(`SELECT count(*) FROM work WHERE conversation_id=? AND assigned_by=? AND member_id=? AND status='done'`, c.ID, members[0].ID, members[1].ID).Scan(&assigned)
 		// 接住结果可以发生在自动复看，也可以发生在同伴公开分享后的正常交流。
 		// 两条路径都必须真的 read_work 核对完成结果；不能用固定回调状态代替行为证据。

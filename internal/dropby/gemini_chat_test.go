@@ -155,7 +155,7 @@ func TestGeminiChatAndObservation(t *testing.T) {
 			}
 			const human = "Hydrogen 请核对这条原话"
 			const reply = "已读回聊天原话"
-			const modelTurn = `{"role":"model","parts":[{"text":"仅供观测的思考摘要","thought":true},{"functionCall":{"id":"gemini-history-id","name":"read_history","args":{"query":"Hydrogen"}},"thoughtSignature":"c2lnbmF0dXJl"}]}`
+			const modelTurn = `{"role":"model","parts":[{"text":"仅供观测的思考摘要","thought":true},{"functionCall":{"id":"gemini-history-id","name":"recall","args":{"sql":"SELECT body FROM records WHERE instr(body,'Hydrogen')"}},"thoughtSignature":"c2lnbmF0dXJl"}]}`
 			const usage = `"usageMetadata":{"promptTokenCount":5000,"cachedContentTokenCount":4000,"candidatesTokenCount":40,"toolUsePromptTokenCount":10,"thoughtsTokenCount":60,"totalTokenCount":5110}`
 			const eachCost = 2565 // 1,010 普通输入 + 4,000 缓存命中 + 100 输出（含思考）。
 			var requests int
@@ -177,7 +177,7 @@ func TestGeminiChatAndObservation(t *testing.T) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
-				if !strings.Contains(string(body.Tools), `"name":"read_history"`) || !strings.Contains(string(body.Tools), `"parametersJsonSchema"`) ||
+				if !strings.Contains(string(body.Tools), `"name":"recall"`) || !strings.Contains(string(body.Tools), `"parametersJsonSchema"`) ||
 					string(body.ToolConfig) != `{"functionCallingConfig":{"mode":"VALIDATED"}}` ||
 					string(body.GenerationConfig) != `{"maxOutputTokens":2048,"responseFormat":{"text":{"mimeType":"APPLICATION_JSON","schema":{"additionalProperties":true,"type":"object"}}},"thinkingConfig":{"thinkingLevel":"low"}}` {
 					t.Errorf("没有使用场景配置与新版原生工具、JSON 输出设置: %s %s", body.GenerationConfig, body.ToolConfig)
@@ -200,7 +200,7 @@ func TestGeminiChatAndObservation(t *testing.T) {
 					for i, turn := range body.Contents {
 						if string(turn) == modelTurn && i+1 < len(body.Contents) {
 							result := string(body.Contents[i+1])
-							matched = strings.Contains(result, `"functionResponse":{"id":"gemini-history-id","name":"read_history","response":`) &&
+							matched = strings.Contains(result, `"functionResponse":{"id":"gemini-history-id","name":"recall","response":`) &&
 								strings.Contains(result, human) && strings.Contains(result, `"status":"succeeded"`)
 						}
 					}
@@ -267,7 +267,7 @@ func TestGeminiChatAndObservation(t *testing.T) {
 				t.Fatalf("聊天未提交最终正文，或展示了思考摘要: %d %s", w.Code, w.Body)
 			}
 			tools, err := s.ToolRuns(room.ID, "")
-			if err != nil || len(tools) != 1 || tools[0].Name != "read_history" || tools[0].Status != "succeeded" || string(tools[0].Arguments) != `{"query":"Hydrogen"}` {
+			if err != nil || len(tools) != 1 || tools[0].Name != "recall" || tools[0].Status != "succeeded" || string(tools[0].Arguments) != `{"sql":"SELECT body FROM records WHERE instr(body,'Hydrogen')"}` {
 				t.Fatalf("原生参数应原样用于真实本地工具，且只执行一次: %+v %v", tools, err)
 			}
 			ledger, err := s.Usage()
@@ -376,7 +376,7 @@ func TestGeminiRecountsLongContextBeforeReplacingReadableHistory(t *testing.T) {
 				maxOutputTokens: 400, Options: map[string]any{"generationConfig": map[string]any{"maxOutputTokens": 400}}}
 			client := &HTTPModel{Config: cfg, Store: s, Client: server.Client()}
 			ctx := context.WithValue(t.Context(), modelSceneKey{}, sceneChat)
-			defs := []ToolDefinition{definition("read_history", "查原话", map[string]any{"id": textField("消息 ID")})}
+			defs := []ToolDefinition{definition("recall", "查原话", map[string]any{"id": textField("消息 ID")})}
 			_, err := completeModel(ctx, client, &chain, defs, false)
 			usage, usageErr := s.Usage()
 			if !tc.supported && tc.counting != "local" {

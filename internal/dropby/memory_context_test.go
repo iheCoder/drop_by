@@ -50,7 +50,7 @@ func TestTopicWindowRetainsIdentityGoalsAndRetrievableHistory(t *testing.T) {
 	if err != nil || !strings.Contains(asJSON(jobs), job.ID) {
 		t.Fatal("旧的未完成工作不能主动查回")
 	}
-	raw, err := s.searchHistory(c.ID, "", old.ID, 0, 0)
+	raw, err := s.readMessage(c.ID, old.ID, 0, 0)
 	if err != nil || !strings.Contains(asJSON(raw), old.Body) {
 		t.Fatalf("旧话题无法查回：%v %v", raw, err)
 	}
@@ -69,7 +69,7 @@ func TestTopicWindowRetainsIdentityGoalsAndRetrievableHistory(t *testing.T) {
 	private, _ := s.CreateConversation("私聊", "direct", []string{m.ID}, time.Hour)
 	secret := userMessage(private, "不能跨群的秘密")
 	s.AddUserMessage(secret, time.Hour)
-	if _, err := s.searchHistory(c.ID, "", secret.ID, 0, 0); err == nil {
+	if _, err := s.readMessage(c.ID, secret.ID, 0, 0); err == nil {
 		t.Fatal("历史读取越过会话边界")
 	}
 	if err := s.rememberContextStart(c, m.ID, seq, &secret.ID); err == nil {
@@ -90,12 +90,12 @@ func TestArtifactDiscoveryDoesNotRequireKnownID(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	result, err := s.artifactIndex(c.ID, "星灯", 0)
+	result, err := s.recall(context.Background(), m.ID, recallRequest{SQL: fmt.Sprintf(`SELECT id,title FROM records WHERE kind='artifact' AND conversation_id='%s' AND title LIKE '%%星灯%%'`, c.ID)})
 	if err != nil || !strings.Contains(asJSON(result), "artifact_0") || strings.Contains(asJSON(result), "原文不应进入索引") {
 		t.Fatalf("旧作品无法发现或正文挤占索引：%v %v", result, err)
 	}
 	private, _ := s.CreateConversation("私聊", "direct", []string{m.ID}, time.Hour)
-	result, err = s.artifactIndex(private.ID, "星灯", 0)
+	result, err = s.recall(context.Background(), m.ID, recallRequest{SQL: fmt.Sprintf(`SELECT id,title FROM records WHERE kind='artifact' AND conversation_id='%s' AND title LIKE '%%星灯%%'`, private.ID)})
 	if err != nil || strings.Contains(asJSON(result), "artifact_0") {
 		t.Fatal("作品发现越过会话范围")
 	}
@@ -136,29 +136,29 @@ func TestLongTermMemoryDiscoveryAndHistoryPagination(t *testing.T) {
 	}
 	s.db.Exec(`INSERT INTO memories VALUES(?,?,?,?,?,?)`, "other_person", members[1].ID, c.ID, "星灯卡秘密", "", now())
 	s.db.Exec(`INSERT INTO memories VALUES(?,?,?,?,?,?)`, "other_room", m.ID, "private_room", "星灯卡秘密", "", now())
-	result, err := s.searchMemories(m.ID, c.ID, "星灯 倒计时", 0)
+	result, err := s.recall(context.Background(), m.ID, recallRequest{SQL: `SELECT id,body FROM records WHERE kind='memory' AND (body LIKE '%星灯%' OR body LIKE '%倒计时%')`})
 	if err != nil || !strings.Contains(asJSON(result), "memory_0") || strings.Contains(asJSON(result), "other_person") || !strings.Contains(asJSON(result), "other_room") {
 		t.Fatalf("记忆范围/发现出错：%v %v", result, err)
 	}
-	page, err := s.searchHistory(c.ID, "", "", 0, 0)
+	q := recallRequest{Room: c.ID, Types: []string{"message"}}
+	page, err := s.recall(context.Background(), m.ID, q)
 	if err != nil {
 		t.Fatal(err)
 	}
 	first := page.(map[string]any)
-	page, err = s.searchHistory(c.ID, "", "", first["before_seq"].(int64), 0)
+	q.BeforeSeq = first["records"].([]recallRecord)[11].Seq
+	s.SystemMessage(c.ID, "arrived_later", "翻页时新来的消息")
+	page, err = s.recall(context.Background(), m.ID, q)
 	if err != nil {
 		t.Fatal(err)
 	}
 	second := page.(map[string]any)
-	if !first["has_more"].(bool) || first["messages"].([]Message)[11].Seq <= second["messages"].([]Message)[0].Seq {
+	if !first["has_more"].(bool) || q.BeforeSeq <= second["records"].([]recallRecord)[0].Seq {
 		t.Fatal("历史分页重复或无法向前")
 	}
 	long := strings.Repeat("旧描述", 2000) + "最后更正：改用暖白。"
 	s.SystemMessage(c.ID, "long_correction", long)
-	if !strings.Contains(contextExcerpt(long, 700), "最后更正") {
-		t.Fatal("近期摘录丢掉尾部更正")
-	}
-	full, err := s.searchHistory(c.ID, "", "long_correction", 0, 5000)
+	full, err := s.readMessage(c.ID, "long_correction", 5000, 0)
 	if err != nil || !strings.Contains(asJSON(full), "最后更正") {
 		t.Fatalf("完整原文尾部不能读取: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestMemberCanRecallBeforeChoosingSilence(t *testing.T) {
 		}
 
 		if calls == 1 {
-			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("search_memory", map[string]string{"query": "鲸鱼"})}}, nil
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("recall", map[string]any{"sql": `SELECT id, body FROM records WHERE kind='memory' AND instr(body,'鲸鱼')>0`})}}, nil
 		}
 		if !strings.Contains(messages[len(messages)-1].Content, "旧约定") {
 			t.Error("检索结果没有回到判断上下文")

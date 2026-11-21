@@ -853,6 +853,7 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 				}
 			}
 		}
+		presentRecallBatch(r.ToolCalls, messages[batchStart+1:])
 		deliveredBeforeOrganization := messages
 		// 一批工具全部执行并配对后才能切换窗口；同时调用的发言或保存结果不能丢失。
 		if organization != nil {

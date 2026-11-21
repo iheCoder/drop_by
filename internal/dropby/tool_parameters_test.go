@@ -126,13 +126,13 @@ func TestReadControlsAndLongWrites(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	raw, err := box.Execute(context.Background(), c, m, work, toolCall("read_artifact", map[string]any{"id": saved.Result.ID, "version": 1, "length": 100000}))
+	raw, err := box.Execute(context.Background(), c, m, work, toolCall("recall", map[string]any{"id": saved.Result.ID, "version": 1, "length": 100000}))
 	if err != nil || !strings.Contains(raw, "tail") {
 		t.Fatalf("old version lost: %v", err)
 	}
-	// 第九个查询词仍参与实际检索。
-	clauses, _ := likeTerms("a b c d e f g h tail")
-	if len(clauses) != 9 {
+	// 旧版正文末尾也参与 SQL 的真实筛选。
+	hits, err := s.recall(context.Background(), m.ID, recallRequest{SQL: `SELECT id FROM records WHERE body LIKE '%tail%'`})
+	if err != nil || !strings.Contains(asJSON(hits), saved.Result.ID) {
 		t.Fatal("query silently shortened")
 	}
 }

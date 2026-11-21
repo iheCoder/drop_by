@@ -26,6 +26,7 @@ func (e *Engine) resumeReceipts(messages []ChatMessage, w Work, m Member) ([]Cha
 	if len(last.ToolCalls) == 0 {
 		return append(messages[:len(messages)-1], ChatMessage{Role: "user", Content: "上次尚未完成发布的内容：" + last.Content, PendingDelivery: true}), nil
 	}
+	start := len(messages)
 	for _, call := range last.ToolCalls {
 		var status, result string
 		// 工具和消息使用相同的调用散列，仅前缀不同。
@@ -49,6 +50,7 @@ func (e *Engine) resumeReceipts(messages []ChatMessage, w Work, m Member) ([]Cha
 		}
 		messages = append(messages, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result, PendingDelivery: true})
 	}
+	presentRecallBatch(last.ToolCalls, messages[start:])
 	return messages, nil
 }
 

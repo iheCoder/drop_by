@@ -41,11 +41,7 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 		}, "note"),
 		definition("send_message", "发送消息后可继续行动。可发到自己所在的聊天；个人活动省略目的地时发给真人私聊。", map[string]any{"conversation_id": textField("目的聊天 ID，普通聊天省略则发在当前聊天"), "message": textField("自己的消息"), "reply_to": textField("可选的目的聊天消息 ID"), "evidence": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "可选成果 tool_run ID"}, "notify": map[string]any{"type": "boolean", "description": "额外系统通知，默认 false"}}, "message"),
 		definition("read_tool_result", "查找或读取本人可访问的工具记录。省略 id 可按 query 检索或浏览索引，提供 id 按需读取正文。", map[string]any{"id": textField("真实 tool_run ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}, "id"),
-		definition("read_memory", "读取个人记忆全文和来源清单。按来源 ID 用 read_history、read_tool_result 或 read_work 核对原文。", map[string]any{
-			"id":                    textField("已有记忆 ID"),
-			"revision":              map[string]any{"type": "integer", "minimum": 0, "description": "省略读取最新版本"},
-			"include_source_bodies": map[string]any{"type": "boolean", "description": "同时展开所有来源的完整正文，默认 false"},
-		}, "id"),
+		recallDefinition(),
 		definition("remember", "保存个人经历或想法。更新用原 id 和 revision；body 为空时删除。", map[string]any{
 			"id": textField("更新已有笔记的 ID；新建省略"), "revision": map[string]any{"type": "integer", "minimum": 0, "description": "更新/删除时填写读到的 revision；发生冲突先重新读取"},
 			"scope":       map[string]any{"type": "string", "enum": []string{"conversation", "member"}, "description": "新建默认 conversation，更新默认沿用；member 属于本人，conversation 标明来源场景"},
@@ -53,12 +49,9 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 			"subject_ids": map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "相关人的真实 ID，不限当前聊天成员"},
 			"source_ids":  map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "相关消息或行动 ID；可引用失败和旧笔记，来源状态如实保留；省略时绑定本次触发"},
 		}, "body"),
-		definition("read_history", "检索当前聊天原话。可用多词换词搜索、before_seq 向前翻页；指定 id 后用 offset 分段读取完整原文。可用 conversation_id 选择本人参与的聊天。", map[string]any{"query": textField("字词以空格分隔，任一匹配；空串浏览记录"), "before_seq": map[string]any{"type": "integer", "minimum": 0}, "id": textField("完整读取某条消息时填写实际ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
-		definition("search_memory", "查找自己的全部经历。多个词以空格分隔，任一匹配；空串浏览，before 用返回游标翻页。旧经历不必常驻上下文，需要时 read_memory 读全文。", map[string]any{"query": textField("想找回的词；可换词检索，不是向量语义搜索"), "before": map[string]any{"type": "integer", "minimum": 0}}, "query"),
 		definition("read_work", "查看当前聊天的实际工作状态与结果。提供 id 读完整工作；省略 id 列出未完工作，可按 member_id 筛选、offset 翻页。可用 conversation_id 选择本人参与的其他聊天。", map[string]any{"id": textField("实际工作ID"), "member_id": textField("可选，浏览某位成员的未完工作"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
 		// 本地成果创作是基本能力，旧成员不必重新配置工具才能生成网页。
 		definition("save_artifact", "保存可查看的 Markdown 或 HTML 成果，如小卡片、文章、网页草稿。HTML 使用完整自包含文档和内联样式，不依赖 CDN 或外部资源。修改时提供原 id，新版本保留历史。", map[string]any{"id": textField("修改已有成果的 ID，新建时省略"), "title": textField("具体标题"), "format": map[string]any{"type": "string", "enum": []string{"markdown", "html"}, "description": "新建默认 markdown；修改省略时沿用原格式"}, "content": textField("完整内容；HTML 使用完整源代码")}, "title", "content"),
-		definition("read_artifact", "发现当前聊天的成果，或读取指定成果及历史版本。不知道 ID 时用 query 按标题查找，空串浏览，可用 offset 翻页；知道 ID 后读取正文。", map[string]any{"id": textField("已有成果 ID，可省略"), "query": textField("要找的标题字词，省略则浏览"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
 		definition("cancel_work", "取消自己在当前聊天里已经安排、但现在不再需要的后续或研究；不能取消同伴的工作，自己的已结束工作会返回实际终态。先从已有工作中取真实 ID；用户改意或事情已解决时及时取消。", map[string]any{"id": textField("自己的待执行工作 ID")}, "id"),
 	}
 	if !c.ResearchPaused {
@@ -106,7 +99,7 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 	for i := range defs {
 		props := defs[i].Function.Parameters.(map[string]any)["properties"].(map[string]any)
 		name := defs[i].Function.Name
-		if name == "read_history" || name == "read_work" || name == "read_artifact" || name == "read_tool_result" || name == "read_memory" || name == "search_memory" || name == "remember" || name == "ask_question" {
+		if name == "read_work" || name == "read_tool_result" || name == "remember" || name == "ask_question" {
 			props["conversation_id"] = textField("可选，自己参与的聊天 ID；省略使用当前场景")
 		}
 
@@ -115,11 +108,11 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 			props["refresh"] = map[string]any{"type": "boolean", "description": "重新获取，跳过已有缓存；默认 false"}
 		}
 		switch name {
-		case "read_tool_result", "read_history", "read_conversation", "search_memory", "read_work", "read_artifact":
+		case "read_tool_result", "read_conversation", "read_work":
 			props["limit"] = map[string]any{"type": "integer", "minimum": 1, "description": "列表条数；省略使用默认值"}
 		}
 		switch name {
-		case "read_tool_result", "read_history", "read_artifact":
+		case "read_tool_result":
 			props["length"] = map[string]any{"type": "integer", "minimum": 1, "description": "正文读取字符数；省略默认 5000"}
 		}
 		if name == "read_tool_result" {
@@ -129,9 +122,7 @@ func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition
 		if name == "schedule_exploration" {
 			props["due_at"] = textField("绝对预约时间，RFC3339，含时区；与 delay_seconds 二选一")
 		}
-		if name == "read_artifact" {
-			props["version"] = map[string]any{"type": "integer", "minimum": 1, "description": "指定历史版本；省略读最新版"}
-		}
+
 	}
 	return defs
 }
@@ -206,7 +197,7 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 		}
 	}
 	if t.Activity != nil && call.Function.Name != reactionTool {
-		labels := map[string]string{"organize_context": "正在整理思路", "search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "set_wakeup_rhythm": "正在调整自己的活动节律", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_message": "正在发送消息", "read_conversation": "正在看聊天近况", "send_private": "正在准备私聊", "read_history": "正在翻阅聊天记录", "read_artifact": "正在查看成果", "read_tool_result": "正在核对已有材料", "read_memory": "正在回顾经历", "search_memory": "正在找回相关经历", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
+		labels := map[string]string{"organize_context": "正在整理思路", "search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "set_wakeup_rhythm": "正在调整自己的活动节律", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_message": "正在发送消息", "read_conversation": "正在看聊天近况", "send_private": "正在准备私聊", "recall": "正在回顾", "read_tool_result": "正在核对已有材料", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
 		t.Activity(c.ID, m.ID, labels[call.Function.Name])
 	}
 	toolStep := beginTool(ctx, run.ID, call.Function.Name, call.Function.Arguments, resuming)
@@ -279,17 +270,12 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		Offset         int          `json:"offset"`
 		Text           string       `json:"text"`
 		Options        []string     `json:"options"`
-		Before         int64        `json:"before"`
-		BeforeSeq      int64        `json:"before_seq"`
 		MemberID       string       `json:"member_id"`
 		DueAt          string       `json:"due_at"`
 		Coordinate     bool         `json:"coordinate"`
 		Limit          int          `json:"limit"`
 		Length         int          `json:"length"`
-		Version        int          `json:"version"`
 		Refresh        bool         `json:"refresh"`
-		Revision       *int         `json:"revision"`
-		SourceBodies   bool         `json:"include_source_bodies"`
 		Enabled        *bool        `json:"enabled"`
 		Timezone       string       `json:"timezone"`
 		SetWindows     []wakeWindow `json:"set_windows"`
@@ -314,7 +300,7 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		}
 	}
 	var err error
-	if args.ConversationID != "" && (call.Function.Name == "read_history" || call.Function.Name == "read_work" || call.Function.Name == "read_artifact" || call.Function.Name == "read_tool_result" || call.Function.Name == "read_memory" || call.Function.Name == "search_memory" || call.Function.Name == "remember" || call.Function.Name == "ask_question") {
+	if args.ConversationID != "" && (call.Function.Name == "read_work" || call.Function.Name == "read_tool_result" || call.Function.Name == "remember" || call.Function.Name == "ask_question") {
 		c, err = t.Store.accessibleConversation(m.ID, args.ConversationID)
 		if err != nil {
 			return nil, err
@@ -402,8 +388,14 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		}
 		end := args.Offset + min(args.Length, len(chars)-args.Offset)
 		return map[string]any{"tool_run_id": args.ID, "name": run.Name, "arguments": json.RawMessage(originalArguments), "created_at": run.CreatedAt, "content": string(chars[args.Offset:end]), "next_offset": end, "has_more": end < len(chars)}, nil
-	case "read_memory":
-		return t.Store.readMemory(m.ID, c.ID, args.ID, args.Revision, args.SourceBodies)
+	case "recall":
+		var q recallRequest
+		decoder := json.NewDecoder(strings.NewReader(call.Function.Arguments))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&q); err != nil {
+			return nil, err
+		}
+		return t.Store.recall(ctx, m.ID, q)
 	case "search", "read_page":
 		// 原生参数完整传给供应商；refresh 只控制本地缓存。
 		var body map[string]any
@@ -438,10 +430,6 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 			return nil, fmt.Errorf("经历参数格式不正确")
 		}
 		return t.remember(ctx, c, m, w, memory)
-	case "read_history":
-		return t.Store.searchHistory(c.ID, args.Query, args.ID, args.BeforeSeq, args.Offset, args.Limit, args.Length)
-	case "search_memory":
-		return t.Store.searchMemories(m.ID, c.ID, args.Query, args.Before, args.Limit)
 	case "read_work":
 		if args.ID != "" {
 			w, err := t.Store.ReadWork(c.ID, args.ID)
@@ -478,34 +466,6 @@ func (t *Toolbox) perform(ctx context.Context, c Conversation, m Member, w Work,
 		return map[string]any{"work_id": assigned.ID, "work": assigned}, err
 	case "save_artifact":
 		return t.saveArtifact(ctx, c, m, w, Artifact{ID: args.ID, Title: args.Title, Content: args.Content, Format: args.Format})
-	case "read_artifact":
-		if args.ID == "" {
-			return t.Store.artifactIndexForMember(c.ID, m.ID, args.Query, args.Offset, args.Limit)
-		}
-		list, err := t.Store.ArtifactVersions(args.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, artifact := range list {
-			visible, err := t.Store.artifactVisible(c.ID, m.ID, artifact)
-			if err != nil {
-				return nil, err
-			}
-			if !visible {
-				continue
-			}
-			if args.Version == 0 || artifact.Version == args.Version {
-				chars := []rune(artifact.Content)
-				if args.Offset < 0 || args.Offset > len(chars) {
-					return nil, fmt.Errorf("读取位置无效")
-				}
-				end := args.Offset + min(args.Length, len(chars)-args.Offset)
-				artifact.Content = string(chars[args.Offset:end])
-				return map[string]any{"artifact": artifact, "next_offset": end, "has_more": end < len(chars)}, nil
-			}
-		}
-		return nil, fmt.Errorf("没有这版成果")
 	case "schedule_exploration":
 		if args.DelaySeconds < 0 {
 			return nil, fmt.Errorf("延时不能为负数")
@@ -651,7 +611,7 @@ func decode(s string, out any) { _ = json.Unmarshal([]byte(s), out) }
 // 这些现有工具只读取数据；结果未落盘的读取可以重做。写入/发送不走这条路径。
 func readOnlyTool(name string) bool {
 	switch name {
-	case "organize_context", "search", "read_page", "read_conversation", "read_history", "read_memory", "search_memory", "read_work", "read_artifact", "read_tool_result", "read_domain_profile":
+	case "organize_context", "search", "read_page", "read_conversation", "recall", "read_work", "read_tool_result", "read_domain_profile":
 		return true
 	}
 	return false

@@ -246,7 +246,7 @@ func TestObservationAndStateRespectRevisionAndConversation(t *testing.T) {
 	if saved.Body != state {
 		t.Fatal("跨场景来源覆盖了当前群状态")
 	}
-	if _, err := s.searchHistory(c.ID, "", secret.ID, 0, 0); err == nil {
+	if _, err := s.readMessage(c.ID, secret.ID, 0, 0); err == nil {
 		t.Fatal("可以选择另一个场景的消息")
 	}
 	s.AddUserMessage(userMessage(c, "暂停讨论"), time.Hour)
@@ -350,7 +350,7 @@ func TestQuestionToolIsARealContributionAndKeepsQuestionContext(t *testing.T) {
 	if len(messages) != 2 || messages[1].AuthorID != m.ID || messages[1].Question == nil {
 		t.Fatalf("真实问题没有成为唯一回复: %+v", messages)
 	}
-	selected, err := s.searchHistory(c.ID, "", messages[1].ID, 0, 0)
+	selected, err := s.readMessage(c.ID, messages[1].ID, 0, 0)
 	if err != nil || !strings.Contains(asJSON(selected), "你喜欢我怎样分享新的想法") {
 		t.Fatalf("较早问题不能回查: %v", err)
 	}

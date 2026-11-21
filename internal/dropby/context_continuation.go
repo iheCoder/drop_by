@@ -77,7 +77,7 @@ func (m *modelCall) prepareLargeResponse(ctx context.Context, messages []ChatMes
 	canReadResults, canReadHistory := false, false
 	for _, def := range defs {
 		canReadResults = canReadResults || def.Function.Name == "read_tool_result"
-		canReadHistory = canReadHistory || def.Function.Name == "read_history"
+		canReadHistory = canReadHistory || def.Function.Name == "recall"
 	}
 	tooLarge := func(count int) error {
 		if m.TokenCounting == "local" {

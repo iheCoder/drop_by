@@ -16,8 +16,10 @@ import (
 )
 
 type Store struct {
-	db   *sql.DB
-	lock *os.File
+	path        string
+	recallModel recallEncoderProcess
+	db          *sql.DB
+	lock        *os.File
 }
 
 func OpenStore(dir string) (*Store, error) {
@@ -52,7 +54,7 @@ func OpenStore(dir string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, lock: lock}
+	s := &Store{db: db, path: path, lock: lock, recallModel: newRecallEncoder(dir)}
 	_, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS members(id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
@@ -134,6 +136,7 @@ CREATE TABLE IF NOT EXISTS usage(day TEXT PRIMARY KEY, calls INTEGER NOT NULL DE
 	return s, nil
 }
 func (s *Store) Close() error {
+	s.recallModel.close()
 	err := s.db.Close()
 	if s.lock != nil {
 		s.lock.Close()
@@ -322,24 +325,16 @@ func (s *Store) messagesAfter(room string, after, before int64, limit int) ([]Me
 	if before <= 0 {
 		before = 1 << 62
 	}
-	rows, e := s.db.Query(`SELECT m.seq,m.id,m.conversation_id,m.author_id,m.body,m.reply_to,m.mentions,m.evidence,m.notify,m.created_at,COALESCE(q.question,''),COALESCE(q.status,'') FROM (SELECT * FROM messages WHERE conversation_id=? AND seq>? AND seq<? AND NOT (author_id='system' AND substr(id,1,7)='budget_') ORDER BY seq DESC LIMIT ?) m LEFT JOIN message_questions q ON q.message_id=m.id ORDER BY m.seq`, room, after, before, limit)
+	rows, e := s.db.Query(`SELECT `+chatMessageColumns+` FROM (SELECT * FROM messages WHERE conversation_id=? AND seq>? AND seq<? AND NOT (author_id='system' AND substr(id,1,7)='budget_') ORDER BY seq DESC LIMIT ?) m LEFT JOIN message_questions q ON q.message_id=m.id ORDER BY m.seq`, room, after, before, limit)
 	if e != nil {
 		return nil, e
 	}
 	defer rows.Close()
 	result := []Message{}
 	for rows.Next() {
-		var m Message
-		var mentions, evidence, question string
-		if e = rows.Scan(&m.Seq, &m.ID, &m.ConversationID, &m.AuthorID, &m.Body, &m.ReplyTo, &mentions, &evidence, &m.Notify, &m.CreatedAt, &question, &m.QuestionStatus); e != nil {
-			return nil, e
-		}
-		json.Unmarshal([]byte(mentions), &m.Mentions)
-		json.Unmarshal([]byte(evidence), &m.Evidence)
-		if question != "" {
-			if e = json.Unmarshal([]byte(question), &m.Question); e != nil {
-				return nil, e
-			}
+		m, err := scanChatMessage(rows)
+		if err != nil {
+			return nil, err
 		}
 		result = append(result, m)
 	}
@@ -354,6 +349,24 @@ func (s *Store) messagesAfter(room string, after, before int64, limit int) ([]Me
 	return result, s.attachMessageReactions(result)
 }
 
+// 列表和按 ID 回读共用消息解码，保留引用、问题和原始作者信息。
+const chatMessageColumns = `m.seq,m.id,m.conversation_id,m.author_id,m.body,m.reply_to,m.mentions,m.evidence,m.notify,m.created_at,COALESCE(q.question,''),COALESCE(q.status,'')`
+
+func scanChatMessage(row interface{ Scan(...any) error }) (Message, error) {
+	var m Message
+	var mentions, evidence, question string
+	if e := row.Scan(&m.Seq, &m.ID, &m.ConversationID, &m.AuthorID, &m.Body, &m.ReplyTo, &mentions, &evidence, &m.Notify, &m.CreatedAt, &question, &m.QuestionStatus); e != nil {
+		return m, e
+	}
+	json.Unmarshal([]byte(mentions), &m.Mentions)
+	json.Unmarshal([]byte(evidence), &m.Evidence)
+	if question != "" {
+		if e := json.Unmarshal([]byte(question), &m.Question); e != nil {
+			return m, e
+		}
+	}
+	return m, nil
+}
 func insertMessage(tx *sql.Tx, m Message) error {
 	_, e := tx.Exec(`INSERT INTO messages(id,conversation_id,author_id,body,reply_to,mentions,evidence,notify,created_at,work_id) VALUES(?,?,?,?,?,?,?,?,?,?)`, m.ID, m.ConversationID, m.AuthorID, m.Body, m.ReplyTo, asJSON(m.Mentions), asJSON(m.Evidence), m.Notify, m.CreatedAt, m.workID)
 	if e != nil {

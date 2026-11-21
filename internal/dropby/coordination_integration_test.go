@@ -129,7 +129,7 @@ func TestCoordinatorAPIAndTwoStagePeerHandoff(t *testing.T) {
 				return ChatMessage{}, fmt.Errorf("handoff escaped autonomous budget")
 			}
 			if step == 1 {
-				return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("read_artifact", map[string]string{"id": referenceID})}}, nil
+				return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("recall", map[string]string{"id": referenceID})}}, nil
 			}
 			if step == 2 {
 				return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("save_artifact", map[string]string{"title": "一句话卡片", "format": "html", "content": "<!doctype html><html lang=\"zh-CN\"><body><p id=\"sentence\">今天慢慢来。</p><button onclick=\"document.getElementById('sentence').textContent='明天再走一步。'\">换一句</button></body></html>"})}}, nil

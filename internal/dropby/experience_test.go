@@ -287,7 +287,7 @@ func TestResearchSavesRequestedNoteBeforeClosing(t *testing.T) {
 			t.Fatal("不应按轮数剥夺工具或强迫收尾")
 		}
 		if calls <= 12 {
-			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("read_history", map[string]any{"query": ""})}}, nil
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("recall", map[string]any{"query": ""})}}, nil
 		}
 		if calls == 13 {
 			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("save_artifact", map[string]string{"title": "已核对的短笔记", "content": "记录实际材料缺口。"})}}, nil

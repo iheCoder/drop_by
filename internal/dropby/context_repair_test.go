@@ -155,7 +155,7 @@ func TestSteeredCursorSavedWithResponseBeforeToolCancellation(t *testing.T) {
 		steering := ctx.Value(steeringKey{}).(*steeringInput)
 		steering.Applied[delivered.ID] = true
 		cancel()
-		return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("read_history", map[string]any{})}}, nil
+		return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("recall", map[string]any{})}}, nil
 	}), cfg)
 	if _, err := e.memberAction(ctx, c, m, w); err == nil {
 		t.Fatal("预期工具前取消")

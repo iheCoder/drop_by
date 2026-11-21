@@ -112,11 +112,11 @@ func TestToolCallReplayUsesRecordedResult(t *testing.T) {
 		t.Fatal("问题卡恢复重复发布")
 	}
 	// 相反，未落盘的只读查询可安全再读，不套用写操作的未知结果保护。
-	read := toolCall("read_history", map[string]string{"query": ""})
+	read := toolCall("recall", map[string]string{"query": ""})
 	if _, err = box.Execute(context.Background(), c, m, w, read); err != nil {
 		t.Fatal(err)
 	}
-	s.db.Exec("UPDATE tool_runs SET status='running' WHERE name='read_history'")
+	s.db.Exec("UPDATE tool_runs SET status='running' WHERE name='recall'")
 	if _, err = box.Execute(context.Background(), c, m, w, read); err != nil {
 		t.Fatalf("只读恢复被拦截: %v", err)
 	}
