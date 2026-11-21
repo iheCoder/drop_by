@@ -88,6 +88,8 @@ func TestChatProjectionReturnsOnlyObservatoryFields(t *testing.T) {
 			w.Write([]byte(`{"members":[{"id":"m1","name":"阿澄","profile":"不需要的画像"}],"conversations":[{"id":"room1","name":"群聊","kind":"group","member_ids":["m1"],"guidance":"不需要的指令"}]}`))
 		case "/api/conversations/room1?activity=paged":
 			w.Write([]byte(`{"messages":[{"id":"message1","author_id":"m1","body":"已发出的正文","created_at":"2026-11-14T21:28:00+08:00","evidence":["不需要的引用"]}],"has_earlier":true,"work":[{"instruction":"不需要的行动指令"}]}`))
+		case "/api/usage/scope?conversation=room1&period=all":
+			w.Write([]byte(`{"direct":{"estimate_micros":235}}`))
 		default:
 			t.Errorf("意外的聊天接口 %s", r.URL.RequestURI())
 			http.NotFound(w, r)
@@ -102,6 +104,7 @@ func TestChatProjectionReturnsOnlyObservatoryFields(t *testing.T) {
 	}{
 		{"/api/catalog", `{"members":[{"id":"m1","name":"阿澄"}],"conversations":[{"id":"room1","name":"群聊","kind":"group","member_ids":["m1"]}]}`},
 		{"/api/conversations/room1/messages", `{"messages":[{"id":"message1","author_id":"m1","body":"已发出的正文","created_at":"2026-11-14T21:28:00+08:00"}],"has_earlier":true}`},
+		{"/api/costs?conversation=room1&period=all", `{"direct":{"estimate_micros":235}}`},
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://www.dropby.ob.ai"+tc.path, nil))

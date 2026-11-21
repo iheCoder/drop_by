@@ -104,6 +104,110 @@ func TestUsageReportKeepsHistoryAndReconcilesPerRequest(t *testing.T) {
 	}
 }
 
+func TestCostScopeKeepsEstimateApartFromReservation(t *testing.T) {
+	s, room, m := fixture(t)
+	other := Member{ID: "member_other", Name: "别人", CreatedAt: now()}
+	if err := s.AddMember(other); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	ctx := context.Background()
+	nowAt := time.Now()
+	personal := "work_personal"
+	if _, err := s.db.Exec(`INSERT INTO work(id,conversation_id,member_id,kind,instruction,reason,source_id,status,due_at,created_at,root_id,autonomous,assigned_by,parent_id,first_speakers)
+ VALUES(?,NULL,?,?,?,?,?,?,?,?,?,1,'','','[]')`, personal, m.ID, "explore", "自己看看", "", "", "waiting_budget", nowAt.UnixMilli(), now(), personal); err != nil {
+		t.Fatal(err)
+	}
+	reserve := func(call usageCall, at time.Time, amount int64) usageReservation {
+		t.Helper()
+		got, err := s.reserveBudget(ctx, cfg, amount, at, &call)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	own := usageCall{purpose: "research", provider: "Gemini", model: "gemini-4-hydrogen", member: m.ID, root: personal}
+	settled := reserve(own, nowAt, 1000)
+	reason := 30
+	usage := responseUsage{InputTokens: 200, OutputTokens: 40}
+	usage.InputDetails.CachedTokens = 50
+	usage.OutputDetails.ReasoningTokens = &reason
+	if err := s.settleCall(settled, 400, usage, ""); err != nil {
+		t.Fatal(err)
+	}
+	search := reserve(usageCall{purpose: "search", provider: "deepseek", model: "search", member: m.ID, root: personal}, nowAt, 750)
+	if err := s.settleCall(search, 750, responseUsage{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	held := reserve(own, nowAt, 5000)
+	s.finishUsageCall(held)
+	reserve(usageCall{purpose: "research", provider: "Gemini", model: "gemini-4-hydrogen", member: m.ID, root: personal}, nowAt, 800)
+	unsent := reserve(own, nowAt, 900)
+	if err := s.settleCall(unsent, 0, responseUsage{}, "not_sent"); err != nil {
+		t.Fatal(err)
+	}
+	group := reserve(usageCall{purpose: "chat", provider: "Gemini", model: "gemini-4-hydrogen", member: m.ID, room: room.ID, root: "work_group"}, nowAt, 300)
+	if err := s.settleCall(group, 120, responseUsage{InputTokens: 10, OutputTokens: 2}, ""); err != nil {
+		t.Fatal(err)
+	}
+	later := reserve(usageCall{purpose: "chat", provider: "Gemini", model: "gemini-4-hydrogen", member: other.ID, room: room.ID, root: personal}, nowAt, 200)
+	if err := s.settleCall(later, 80, responseUsage{InputTokens: 8, OutputTokens: 1}, "no_message"); err != nil {
+		t.Fatal(err)
+	}
+	yesterday := nowAt.AddDate(0, 0, -1)
+	old := reserve(usageCall{purpose: "chat", provider: "Gemini", model: "gemini-4-hydrogen", member: m.ID, room: room.ID, root: "work_old"}, yesterday, 50)
+	if err := s.settleCall(old, 25, responseUsage{InputTokens: 4, OutputTokens: 1}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.reserveContextAt(ctx, cfg, 70, nowAt); err != nil {
+		t.Fatal(err)
+	}
+
+	read := func(raw string) costScope {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		NewHandler(NewEngine(s, nil, cfg)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://localhost/api/usage/scope?"+raw, nil))
+		if rec.Code != 200 {
+			t.Fatalf("费用范围 %s: %d %s", raw, rec.Code, rec.Body)
+		}
+		var report costScope
+		if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
+			t.Fatal(err)
+		}
+		return report
+	}
+	activity := read("root=" + personal)
+	if activity.Direct.EstimateMicros != 1150 || activity.Direct.EstimateCalls != 2 || activity.Direct.UnverifiedMicros != 5000 || activity.Direct.UnverifiedCalls != 1 || activity.Direct.RunningMicros != 800 || activity.Direct.NotSentCalls != 1 {
+		t.Fatalf("活动自己的估算、待核实和进行中被混在一起: %+v", activity.Direct)
+	}
+	if activity.Direct.CachedTokens != 50 || activity.Direct.ReasoningTokens != 30 || activity.Direct.OutputTokens != 40 {
+		t.Fatalf("缓存和思考应来自回执且不另加成输入输出: %+v", activity.Direct)
+	}
+	if len(activity.Later) != 1 || activity.Later[0].ConversationID != room.ID || activity.Later[0].SameMember || activity.Later[0].EstimateMicros != 80 {
+		t.Fatalf("别人随后在群里的费用应分开: %+v", activity.Later)
+	}
+	roomScope := read("conversation=" + room.ID + "&period=all")
+	if roomScope.Direct.EstimateMicros != 225 || roomScope.Direct.EstimateCalls != 3 {
+		t.Fatalf("群的直接费用不应包含个人活动: %+v", roomScope.Direct)
+	}
+	today := read("conversation=" + room.ID + "&period=day&date=" + nowAt.Format(usageDate))
+	if today.Direct.EstimateMicros != 200 || today.Direct.EstimateCalls != 2 {
+		t.Fatalf("按天不应带上另一天: %+v", today.Direct)
+	}
+	if today.LegacyCalls != 1 || today.LegacyHold != 70 || today.LegacyMicros != 0 || today.LegacyNote == "" {
+		t.Fatalf("没有逐笔归属的旧账要单独说明: %+v", today)
+	}
+	page := read("conversation=" + room.ID + "&period=day&date=" + nowAt.Format(usageDate))
+	if page.Direct.EstimateMicros != today.Direct.EstimateMicros {
+		t.Fatalf("同一次范围重复读取不应改变金额")
+	}
+	rec := httptest.NewRecorder()
+	NewHandler(NewEngine(s, nil, cfg)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://localhost/api/usage/scope?personal=1&conversation="+room.ID, nil))
+	if rec.Code != 400 {
+		t.Fatalf("混用范围应拒绝: %d", rec.Code)
+	}
+}
+
 func TestUsageCallPreservesReservationDateAndRestartsUnknown(t *testing.T) {
 	// 跨周返回的旧调用仍计入开始那周；本周未收到回执的预留在重启后继续占用。
 	dir := t.TempDir()

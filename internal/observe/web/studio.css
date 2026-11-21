@@ -209,10 +209,13 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .matter { display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; }
 .matter h1 { margin: 0; font-size: 22px; letter-spacing: -0.04em; font-weight: 650; }
 .matter p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
-.totals { display: flex; gap: 18px; }
+.totals { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.totals-main { display: flex; gap: 18px; }
+.totals-parts { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
 .totals p { margin: 0; text-align: right; }
 .totals small { display: block; color: var(--faint); font-size: 12px; }
 .totals strong { font-size: 20px; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; font-weight: 620; }
+.totals-parts strong { font-size: 13px; letter-spacing: 0; }
 .totals .hold strong { color: var(--c-hold); }
 .legend { display: flex; flex-wrap: wrap; gap: 10px 14px; margin: 14px 0 8px; color: var(--muted); font-size: 12px; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -410,7 +413,7 @@ body.inspect-wide .bubble.grouped { margin-left: 36px; }
 .cost-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 14px 0 4px; }
 .cost-line b { font-size: 13px; font-variant-numeric: tabular-nums; font-weight: 650; }
 .inspect-body.workbench { flex-direction: row; overflow: hidden; padding-bottom: 0; align-items: stretch; }
-.workbench .chain-card, .workbench .payload { margin: 0; min-height: 0; overflow: auto; }
+.workbench .chain-card, .workbench .payload { margin: 0; min-height: 0; overflow: auto; overflow-anchor: none; overscroll-behavior: contain; }
 .workbench .chain-card { flex: 0 0 340px; }
 .workbench .payload { flex: 1 1 auto; }
 .workbench .chain-head { flex-direction: column; align-items: flex-start; }

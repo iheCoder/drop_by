@@ -193,4 +193,89 @@ func TestResumeStaysOpenUntilItFinishes(t *testing.T) {
 	}
 }
 
+func TestRunPagesStayInsideTheFilter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "observe.sqlite")
+	log, err := OpenLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go log.Serve()
+	defer log.Close()
+	log.BeginRun(Run{ID: "run_old", WorkID: "work_room", ConversationID: "room", MemberID: "m", Kind: "chat"})
+	log.Sync()
+	log.BeginRun(Run{ID: "run_new", WorkID: "work_room", ConversationID: "room", MemberID: "m", Kind: "chat", Status: "running"})
+	log.WriteRunEnd("run_new", "waiting_budget", "本周可用预算还剩 $0.080，本次调用需预留 $0.261")
+	log.BeginRun(Run{ID: "run_personal", WorkID: "work_personal", RootID: "work_personal", MemberID: "m", Kind: "explore"})
+	log.WriteStep(Step{ID: "sent", RunID: "run_personal", Kind: "message", Name: "send_message", Status: "sent", BusinessID: "message_1", TargetID: "room"})
+	log.Sync()
+
+	db, err := OpenRead(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	first, err := ListRunPage(db, RunFilter{Conversation: "room", Limit: 1})
+	if err != nil || len(first.Runs) != 1 || !first.HasEarlier || first.BudgetBlocked != 1 || first.Runs[0].ID != "run_new" {
+		t.Fatalf("第一页 %+v %v", first, err)
+	}
+	second, err := ListRunPage(db, RunFilter{Conversation: "room", Limit: 1, BeforeAt: first.Runs[0].StartedAt, BeforeID: first.Runs[0].ID})
+	if err != nil || len(second.Runs) != 1 || second.HasEarlier || second.Runs[0].ID != "run_old" || second.BudgetBlocked != 1 {
+		t.Fatalf("翻页后范围变了 %+v %v", second, err)
+	}
+	personal, err := ListRunPage(db, RunFilter{Personal: true, Limit: 10})
+	if err != nil || len(personal.Runs) != 1 || personal.Runs[0].ID != "run_personal" {
+		t.Fatalf("个人活动 %+v %v", personal, err)
+	}
+	own, err := ListRunPage(db, RunFilter{Work: "work_personal", Limit: 10})
+	if err != nil || len(own.Outputs) != 1 || own.Outputs[0].ConversationID != "room" || own.Outputs[0].Count != 1 {
+		t.Fatalf("活动产出 %+v %v", own, err)
+	}
+	links, err := Deliveries(db, "room")
+	if err != nil || len(links) != 1 || links[0].MessageID != "message_1" || links[0].ConversationID != "" || links[0].WorkID != "work_personal" {
+		t.Fatalf("消息来源 %+v %v", links, err)
+	}
+}
+
+func TestMemberFilterIncludesStepsWhenRunHasNoMember(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "observe.sqlite")
+	log, err := OpenLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go log.Serve()
+	defer log.Close()
+	log.BeginRun(Run{ID: "run_group", WorkID: "work_group", ConversationID: "room", Kind: "followup"})
+	log.WriteStep(Step{ID: "lin_model", RunID: "run_group", Kind: "model", Name: "gemini", Status: "succeeded", MemberID: "lin"})
+	log.WriteStep(Step{ID: "cheng_model", RunID: "run_group", Kind: "model", Name: "gemini", Status: "succeeded", MemberID: "cheng"})
+	log.BeginRun(Run{ID: "run_lin", WorkID: "work_lin", MemberID: "lin", Kind: "explore"})
+	log.Sync()
+
+	db, err := OpenRead(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	lin, err := ListRunPage(db, RunFilter{Member: "lin", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, run := range lin.Runs {
+		got[run.ID] = true
+	}
+	if !got["run_group"] || !got["run_lin"] || len(lin.Runs) != 2 {
+		t.Fatalf("林的群内执行和个人执行都要在: %+v", lin.Runs)
+	}
+	cheng, err := ListRunPage(db, RunFilter{Member: "cheng", Limit: 10})
+	if err != nil || len(cheng.Runs) != 1 || cheng.Runs[0].ID != "run_group" {
+		t.Fatalf("程只应看到自己参与的群执行 %+v %v", cheng.Runs, err)
+	}
+	other, err := ListRunPage(db, RunFilter{Member: "other", Limit: 10})
+	if err != nil || len(other.Runs) != 0 {
+		t.Fatalf("没有步骤的角色不应看到这次执行 %+v %v", other.Runs, err)
+	}
+}
+
 func int64ptr(v int64) *int64 { return &v }

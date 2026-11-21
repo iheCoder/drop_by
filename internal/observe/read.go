@@ -77,29 +77,160 @@ type Gap struct {
 	Note string `json:"note"`
 }
 
+// RunFilter 只描述要看的范围。费用合计不从这一页的运行里加出来。
+type RunFilter struct {
+	Limit                int
+	BeforeAt, BeforeID   string
+	Conversation, Member string
+	Work, Root           string
+	From, To             string // 日期，右边界不含 To。
+	Personal             bool
+}
+
+type RunOutput struct {
+	ConversationID string `json:"conversation_id"`
+	Count          int    `json:"count"`
+}
+
+type RunPage struct {
+	Runs          []RunView
+	Gaps          []Gap
+	HasEarlier    bool
+	BudgetBlocked int
+	Outputs       []RunOutput
+}
+
 func ListRuns(db *sql.DB, limit int) ([]RunView, []Gap, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 40
-	}
-	rows, err := db.Query(`SELECT id,work_id,parent_work_id,member_id,conversation_id,kind,source_id,root_id,execution,trigger,status,note,started_at,ended_at
- FROM runs ORDER BY started_at DESC LIMIT ?`, limit)
+	page, err := ListRunPage(db, RunFilter{Limit: limit})
 	if err != nil {
 		return nil, nil, err
 	}
+	return page.Runs, page.Gaps, nil
+}
+
+func ListRunPage(db *sql.DB, f RunFilter) (RunPage, error) {
+	limit := f.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 40
+	}
+	where, args := runWhere(f, true)
+	rows, err := db.Query(`SELECT id,work_id,parent_work_id,member_id,conversation_id,kind,source_id,root_id,execution,trigger,status,note,started_at,ended_at
+ FROM runs`+where+` ORDER BY started_at DESC, id DESC LIMIT ?`, append(args, limit+1)...)
+	if err != nil {
+		return RunPage{}, err
+	}
 	defer rows.Close()
-	runs := []RunView{}
+	page := RunPage{Runs: []RunView{}, Outputs: []RunOutput{}}
 	for rows.Next() {
 		var r RunView
 		if err = rows.Scan(&r.ID, &r.WorkID, &r.ParentWorkID, &r.MemberID, &r.ConversationID, &r.Kind, &r.SourceID, &r.RootID, &r.Execution, &r.Trigger, &r.Status, &r.Note, &r.StartedAt, &r.EndedAt); err != nil {
-			return nil, nil, err
+			return RunPage{}, err
 		}
-		runs = append(runs, r)
+		page.Runs = append(page.Runs, r)
 	}
 	if err = rows.Err(); err != nil {
-		return nil, nil, err
+		return RunPage{}, err
 	}
-	gaps, err := recentGaps(db)
-	return runs, gaps, err
+	if len(page.Runs) > limit {
+		page.HasEarlier = true
+		page.Runs = page.Runs[:limit]
+	}
+	scope, scopeArgs := runWhere(f, false)
+	if err = db.QueryRow(`SELECT count(*) FROM runs`+scope+` AND status='waiting_budget'`, scopeArgs...).Scan(&page.BudgetBlocked); err != nil {
+		return RunPage{}, err
+	}
+	if f.Work != "" {
+		out, err := db.Query(`SELECT target_conversation_id, count(*) FROM steps s JOIN runs r ON r.id=s.run_id
+ WHERE r.work_id=? AND s.kind='message' AND s.name='send_message' AND s.status IN ('sent','reused')
+ GROUP BY target_conversation_id ORDER BY count(*) DESC`, f.Work)
+		if err != nil {
+			return RunPage{}, err
+		}
+		defer out.Close()
+		for out.Next() {
+			var item RunOutput
+			if err = out.Scan(&item.ConversationID, &item.Count); err != nil {
+				return RunPage{}, err
+			}
+			page.Outputs = append(page.Outputs, item)
+		}
+		if err = out.Err(); err != nil {
+			return RunPage{}, err
+		}
+	}
+	page.Gaps, err = recentGaps(db)
+	return page, err
+}
+
+func runWhere(f RunFilter, paged bool) (string, []any) {
+	clause, args := " WHERE 1=1", []any{}
+	if f.Personal {
+		clause += " AND conversation_id=''"
+	} else if f.Conversation != "" {
+		clause += " AND conversation_id=?"
+		args = append(args, f.Conversation)
+	}
+	if f.Member != "" {
+		// Group runs leave the run's member empty and record who acted on each step.
+		clause += " AND (member_id=? OR id IN (SELECT run_id FROM steps WHERE member_id=?))"
+		args = append(args, f.Member, f.Member)
+	}
+	if f.Work != "" {
+		clause += " AND work_id=?"
+		args = append(args, f.Work)
+	}
+	if f.Root != "" {
+		clause += " AND root_id=?"
+		args = append(args, f.Root)
+	}
+	if f.From != "" {
+		clause += " AND substr(started_at,1,10)>=?"
+		args = append(args, f.From)
+	}
+	if f.To != "" {
+		clause += " AND substr(started_at,1,10)<?"
+		args = append(args, f.To)
+	}
+	if paged && f.BeforeAt != "" {
+		clause += " AND (started_at<? OR (started_at=? AND id<?))"
+		args = append(args, f.BeforeAt, f.BeforeAt, f.BeforeID)
+	}
+	return clause, args
+}
+
+// Delivery 把群里的一条消息指回来源执行。来源会话不同时，消息本身不是那场活动的费用。
+type Delivery struct {
+	MessageID      string `json:"message_id"`
+	StepID         string `json:"step_id"`
+	RunID          string `json:"run_id"`
+	WorkID         string `json:"work_id"`
+	RootID         string `json:"root_id"`
+	MemberID       string `json:"member_id"`
+	Kind           string `json:"kind"`
+	ConversationID string `json:"conversation_id"`
+	Status         string `json:"status"`
+	Note           string `json:"note"`
+	Execution      int    `json:"execution"`
+}
+
+func Deliveries(db *sql.DB, room string) ([]Delivery, error) {
+	rows, err := db.Query(`SELECT s.business_id, s.id, r.id, r.work_id, r.root_id, coalesce(nullif(s.member_id,''), r.member_id), r.kind, r.conversation_id, r.status, r.note, r.execution
+ FROM steps s JOIN runs r ON r.id=s.run_id
+ WHERE s.kind='message' AND s.name='send_message' AND s.status IN ('sent','reused') AND s.target_conversation_id=? AND s.business_id<>''
+ ORDER BY s.seq`, room)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []Delivery{}
+	for rows.Next() {
+		var d Delivery
+		if err = rows.Scan(&d.MessageID, &d.StepID, &d.RunID, &d.WorkID, &d.RootID, &d.MemberID, &d.Kind, &d.ConversationID, &d.Status, &d.Note, &d.Execution); err != nil {
+			return nil, err
+		}
+		list = append(list, d)
+	}
+	return list, rows.Err()
 }
 
 func recentGaps(db *sql.DB) ([]Gap, error) {

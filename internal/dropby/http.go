@@ -33,6 +33,7 @@ func NewHandler(engine *Engine) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", a.state)
 	mux.HandleFunc("GET /api/usage", a.usageDetails)
+	mux.HandleFunc("GET /api/usage/scope", a.usageScope)
 	mux.HandleFunc("PATCH /api/profile", a.userProfile)
 	mux.HandleFunc("PATCH /api/budget", a.updateBudget)
 	mux.HandleFunc("PATCH /api/conversations/{id}", a.updateGroup)

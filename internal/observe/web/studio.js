@@ -1,4 +1,5 @@
-import { display } from "./studio-data.js?v=1";
+import { display } from "./studio-data.js?v=3";
+
 
 const M = display;
 let source;
@@ -18,6 +19,8 @@ const ui = {
   focus: "end",
   local: null,
   shown: 12,
+  activity: null,
+  activityKey: "",
   space: "browse",
   threadAnchor: null,
   threadTop: 0,
@@ -25,9 +28,20 @@ const ui = {
   bodyTop: 0,
   keepBody: false,
   hold: false,
-  anchor: null
+  anchor: null,
+  stepKey: "",
+  stepStart: 0,
+  stepEnd: 0,
+  fillChain: false,
+  chainHold: false,
+  chainAnchor: null
 };
 
+const RUN_TITLE = { chat: "聊天响应", explore: "个人探索", research: "研究", followup: "后续行动" };
+const RUN_STATUS = {
+  started: "进行中", running: "进行中", succeeded: "成功", done: "完成", failed: "失败", error: "出错",
+  pending: "待执行", cancelled: "已取消", skipped: "已跳过", interrupted: "已中断", waiting_budget: "预算不足"
+};
 const TONE_NAME = {
   sol: "Sol",
   terra: "Terra",
@@ -114,6 +128,7 @@ function stepOf(item) {
   return item.call || null;
 }
 function hasAction(item) {
+  if (item?.stepRef?.work) return true;
   const step = stepOf(item);
   return !!(step && step.kind !== "said");
 }
@@ -160,7 +175,7 @@ function feed() {
 }
 function itemSearch(item) {
   const step = stepOf(item);
-  return [item.text || "", item.title || "", item.who || "", item.where || "", step ? snippet(step) : "", step ? step.title : ""].join(" ");
+  return [item.text || "", item.title || "", item.detail || "", item.who || "", item.where || "", step ? snippet(step) : "", step ? step.title : ""].join(" ");
 }
 function feedHits() {
   const q = ui.q.trim().toLowerCase();
@@ -178,9 +193,56 @@ function ancestorModel(steps, step) {
   }
   return null;
 }
+function deliveryKey(step) {
+  const matched = /^(?:tool|msg)_([0-9a-f]+)$/.exec(step?.business || step?.message || "");
+  return matched ? matched[1] : "";
+}
+function messageOf(steps, step) {
+  if (!step) return null;
+  if (step.kind === "message") return step;
+  if (step.kind !== "tool" || step.name !== "send_message") return null;
+  const messages = steps.filter(one => one.kind === "message" && one.parent === step.parent);
+  const key = deliveryKey(step);
+  const matched = key ? messages.filter(one => deliveryKey(one) === key) : [];
+  if (matched.length) return matched[0];
+  return messages.length === 1 ? messages[0] : null;
+}
+// 同一次调用会带上更早的重试，以及这次模型顺手做的其他工具。一条消息只认写出它的那次尝试，和把它发出去的那次发送。
+function messageRound(steps, step) {
+  const model = ancestorModel(steps, step);
+  if (!model) return [step];
+  const ids = new Set([step.id, model.id]);
+  const parent = steps.find(one => one.id === model.parent);
+  if (parent && (parent.kind === "compact" || parent.name === "input_tokens" || parent.name === "input_tokens_local")) ids.add(parent.id);
+  const key = deliveryKey(step);
+  const sends = steps.filter(one => one.parent === model.id && one.kind === "tool" && one.name === "send_message");
+  const matched = key ? sends.filter(one => deliveryKey(one) === key) : [];
+  const chosen = matched.length ? matched : (sends.length === 1 ? sends : []);
+  for (const send of chosen) ids.add(send.id);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const one of steps) {
+      if (ids.has(one.id) || !one.parent || !ids.has(one.parent) || one.parent === model.id) continue;
+      ids.add(one.id);
+      grew = true;
+    }
+  }
+  const index = steps.findIndex(one => one.id === model.id);
+  for (let i = index - 1; i >= 0; i--) {
+    const one = steps[i];
+    if (one.kind === "model" || (one.call && one.call !== model.call)) break;
+    if (one.name === "input_tokens" || one.name === "input_tokens_local") ids.add(one.id);
+    else break;
+  }
+  const round = steps.filter(one => ids.has(one.id));
+  return round.length ? round : [step];
+}
 function roundSteps(steps, step) {
   if (!step || !steps?.length) return steps || [];
   if (!steps.some(one => one.parent || one.call)) return steps;
+  const message = messageOf(steps, step);
+  if (message) return messageRound(steps, message);
   const model = step.kind === "model" ? step : ancestorModel(steps, step);
   if (!model) return steps.filter(one => one.id === step.id);
   const ids = new Set([model.id]);
@@ -206,23 +268,33 @@ function roundSteps(steps, step) {
   const round = steps.filter(one => ids.has(one.id));
   return round.length ? round : [step];
 }
-function focusedWork(work, step) {
+function focusedWork(work, step, item) {
   if (!work) return { work, step };
   const steps = roundSteps(work.steps, step);
-  if (steps.length === (work.steps || []).length) return { work, step };
+  const message = item?.kind === "say";
+  const narrowed = steps.length !== (work.steps || []).length;
+  const picked = message ? (ancestorModel(steps, step) || steps.find(one => one.kind === "model") || step) : step;
+  const purpose = !message && item?.purpose ? item.purpose : "";
+  if (!narrowed && !message && !purpose) return { work, step: picked };
   return {
     work: {
-      ...work, steps, title: "这一轮调用", status: "",
-      scope: `同一次${work.kind || "执行"}里还有 ${work.steps.length - steps.length} 步，不属于这一轮。`
+      ...work, steps, title: purpose || "这一轮调用", status: "", scope: "",
+      kind: message ? "这条消息" : work.kind
     },
-    step
+    step: picked
   };
 }
 function viewOf(item) {
+  if (item?.stepRef && source.workById?.(item.stepRef.work)) {
+    const work = source.workById(item.stepRef.work);
+    const step = work.steps.find(one => one.id === item.stepRef.step);
+    const owned = work.person ? work : { ...work, person: item.person, who: item.who };
+    if (step) return focusedWork(owned, step, item);
+  }
   const step = stepOf(item);
   if (step && item.stepRef) {
     const work = source.workById(item.stepRef.work);
-    return focusedWork(work, step);
+    return focusedWork(work, step, item);
   }
   if (step) {
     return {
@@ -249,15 +321,100 @@ function reveal(item) {
   const need = items.length - index + 2;
   if (need > ui.shown) ui.shown = need;
 }
+function pendingView(item) {
+  const ref = item.stepRef || {};
+  const message = item.kind === "say";
+  const title = message ? "这一轮调用" : (RUN_TITLE[ref.kind] || "执行记录");
+  return {
+    work: {
+      id: ref.work, person: item.person, who: item.who || "", pending: true, steps: [],
+      rootId: ref.rootId || "", execution: ref.execution || 1, conversationId: ref.conversationId || "",
+      title, kind: message ? "这条消息" : title
+    },
+    step: { id: ref.step, kind: "run", title, kicker: message ? "这条消息" : "执行记录" }
+  };
+}
 function applyItem(item, focus) {
   ui.item = item.id;
   ui.focus = focus || "end";
-  ui.local = viewOf(item);
-  ui.step = ui.local.step.id;
   ui.chainTop = 0;
   ui.revealStep = true;
   ui.keepBody = false;
+  ui.activity = null;
+  ui.activityKey = "";
   reveal(item);
+  const known = item.stepRef && source.workById?.(item.stepRef.work);
+  if (item.stepRef && !known && source.ensureRun) {
+    ui.local = pendingView(item);
+    ui.step = item.stepRef.step || "";
+    ui.activity = null;
+    ui.activityKey = "";
+    const token = item.id;
+    source.ensureRun(item.stepRef).then(() => {
+      if (ui.item !== token) return;
+      ui.local = viewOf(item);
+      ui.step = ui.local.step?.id || "";
+      updateDetail();
+    }).catch(() => {
+      if (ui.item !== token) return;
+      const missing = {
+        id: item.stepRef.step, kind: "run", title: "执行记录", kicker: "执行记录",
+        body: "暂时读不到步骤，请刷新重试。"
+      };
+      ui.local = {
+        work: { who: item.who, person: item.person, kind: "执行记录", title: "执行记录", steps: [missing] },
+        step: missing
+      };
+      ui.step = missing.id;
+      updateDetail();
+    });
+    return;
+  }
+  ui.local = viewOf(item);
+  ui.step = ui.local.step.id;
+}
+function ensureActivity(work) {
+  if (work?.separate) return;
+  if (!source?.activity || !work?.rootId || work.pending) {
+    ui.activity = null;
+    ui.activityKey = "";
+    return;
+  }
+  const key = work.rootId;
+  if (ui.activityKey === key && ui.activity && !ui.activity.loading) return;
+  activityEarlierFailed = false;
+  ui.activityKey = key;
+  ui.activity = { loading: true, rootId: key };
+  source.activity(key).then(data => {
+    if (ui.activityKey !== key || !data) return;
+    ui.activity = { ...data, rootId: key };
+    updateDetail();
+  }).catch(() => {
+    if (ui.activityKey !== key) return;
+    ui.activity = null;
+    ui.activityKey = "";
+  });
+}
+function moneyParts(bag) {
+  if (!bag) return "";
+  return [
+    bag.estimate_micros ? M.money(bag.estimate_micros) + " 用量估算" : "",
+    bag.running_micros ? "进行中 " + M.money(bag.running_micros) : "",
+    bag.unverified_micros ? "预留 " + M.money(bag.unverified_micros) : ""
+  ].filter(Boolean).join(" · ");
+}
+function activityMoney(work) {
+  const data = ui.activity;
+  if (!data || data.loading || !work?.rootId || data.rootId !== work.rootId) return "";
+  if (work.separate) return moneyParts(work.place);
+  if (data.cost?.attribution === "unknown") return "";
+  const ownerRoom = data.cost?.owner_room || "";
+  if ((work.conversationId || "") !== ownerRoom) return "";
+  const own = (data.runs || []).filter(run => (run.conversation_id || "") === ownerRoom);
+  const several = own.length > 1 || data.hasEarlier;
+  const elsewhere = ownerRoom === "" && ui.scope === "room" && ui.room !== "personal";
+  if (!several && !elsewhere) return "";
+  return moneyParts(data.cost?.direct);
 }
 function sumFeed(items) {
   let settled = 0;
@@ -320,6 +477,9 @@ function blocksHTML(step, segments) {
 }
 
 function costSummary(step) {
+  if (step.costKind === "budget" || step.costKind === "not_sent") return "未发送";
+  if (step.costKind === "released") return "不另计";
+  if (step.costKind === "running" && step.reserve) return "进行中 " + M.money(step.reserve);
   if (step.reserve) return "预留 " + M.money(step.reserve) + "，还没有回执";
   if (step.costStatus === "unknown") return "金额待确认";
   if (!step.price) return M.priceLabel(step);
@@ -331,6 +491,7 @@ function costSummary(step) {
 }
 function usageHTML(usage) {
   const rows = [["输入", usage.input], ["缓存读", usage.cached], ["缓存写", usage.write], ["输出", usage.output]];
+  if (Number.isInteger(usage.reasoning)) rows.push(["其中思考", usage.reasoning]);
   return `<table class="bill"><tbody>${rows.map(([label, tokens]) => `<tr><th>${label}</th><td>${tokens.toLocaleString("zh-CN")} tokens</td></tr>`).join("")}</tbody></table>`;
 }
 
@@ -495,36 +656,50 @@ function failedStep(step) {
   if (step.reserve) return true;
   return step.kind === "tool" && /超时|失败/.test((step.title || "") + (step.result || ""));
 }
+const shanghaiClock = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+});
 function partsOf(at, raw) {
   const d = new Date(at);
   if (!Number.isFinite(d.getTime())) return null;
   const bag = {};
-  for (const part of new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
-  }).formatToParts(d)) bag[part.type] = part.value;
+  for (const part of shanghaiClock.formatToParts(d)) bag[part.type] = part.value;
   if (bag.hour === "24") bag.hour = "00";
   const matched = String(raw || "").match(/\.(\d+)/);
   bag.frac = (matched ? matched[1] : String(d.getMilliseconds()).padStart(3, "0")).padEnd(3, "0");
   return bag;
 }
-function sameClock(one, two, digits) {
-  if (!one || !two) return false;
-  const fields = ["year", "month", "day", "hour", "minute", "second"];
-  if (fields.some(field => one[field] !== two[field])) return false;
-  if (!digits) return true;
-  return one.frac.slice(0, digits) === two.frac.slice(0, digits);
+function clockLabels(entries) {
+  const parsed = entries.map(entry => partsOf(entry?.at, entry?.raw));
+  const seconds = new Map();
+  const millis = new Map();
+  for (const part of parsed) {
+    if (!part) continue;
+    const second = `${part.year}|${part.month}|${part.day}|${part.hour}:${part.minute}:${part.second}`;
+    seconds.set(second, (seconds.get(second) || 0) + 1);
+    millis.set(second + "|" + part.frac.slice(0, 3), (millis.get(second + "|" + part.frac.slice(0, 3)) || 0) + 1);
+  }
+  return parsed.map(part => {
+    if (!part) return "";
+    const base = `${part.hour}:${part.minute}:${part.second}`;
+    const second = `${part.year}|${part.month}|${part.day}|${base}`;
+    if ((seconds.get(second) || 0) < 2) return base;
+    const ms = part.frac.slice(0, 3);
+    return (millis.get(second + "|" + ms) || 0) < 2 ? `${base}.${ms}` : `${base}.${part.frac.slice(0, 6)}`;
+  });
 }
+let clockCache = { list: null, size: 0, byEntry: new Map() };
 function clockText(entry, peers) {
-  const p = partsOf(entry?.at, entry?.raw);
-  if (!p) return "";
-  const base = `${p.hour}:${p.minute}:${p.second}`;
-  const parsed = (peers || []).map(one => partsOf(one?.at, one?.raw)).filter(Boolean);
-  const sameSecond = parsed.filter(one => sameClock(one, p));
-  if (sameSecond.length < 2) return base;
-  const ms = p.frac.slice(0, 3);
-  const sameMs = sameSecond.filter(one => one.frac.slice(0, 3) === ms);
-  return sameMs.length < 2 ? `${base}.${ms}` : `${base}.${p.frac.slice(0, 6)}`;
+  const list = peers?.length ? peers : [entry];
+  if (clockCache.list !== list || clockCache.size !== list.length) {
+    const labels = clockLabels(list);
+    const byEntry = new Map();
+    list.forEach((item, index) => { if (item && !byEntry.has(item)) byEntry.set(item, labels[index]); });
+    clockCache = { list, size: list.length, byEntry };
+  }
+  if (clockCache.byEntry.has(entry)) return clockCache.byEntry.get(entry);
+  return clockLabels([entry])[0];
 }
 function detailStamp(step) {
   const p = partsOf(step?.at, step?.raw);
@@ -551,14 +726,53 @@ function stepClock(step, peers) {
   const item = feed().find(entry => entry.id === ui.item);
   return rowClock(item, feed());
 }
+const STEP_PAGE = 12;
+function stepKey(work) {
+  const steps = work?.steps || [];
+  return [work?.id || "", work?.separate ? "s" : "a", steps.length, steps[0]?.id || "", steps.at(-1)?.id || ""].join(":");
+}
+function placeWindow(steps, index) {
+  const at = index >= 0 ? index : steps.length - 1;
+  if (steps.length - at <= STEP_PAGE) {
+    ui.stepEnd = steps.length;
+    ui.stepStart = Math.max(0, ui.stepEnd - STEP_PAGE);
+    return;
+  }
+  ui.stepStart = Math.max(0, at - Math.floor((STEP_PAGE - 1) / 2));
+  ui.stepEnd = Math.min(steps.length, ui.stepStart + STEP_PAGE);
+}
+function ensureStepWindow(work) {
+  const steps = work?.steps || [];
+  const key = stepKey(work);
+  const around = steps.findIndex(step => step.id === ui.step);
+  if (ui.stepKey !== key) {
+    ui.stepKey = key;
+    placeWindow(steps, around);
+    ui.fillChain = true;
+    fillGuard = 0;
+    chainMark = null;
+    return;
+  }
+  if (around >= 0 && (around < ui.stepStart || around >= ui.stepEnd)) placeWindow(steps, around);
+}
+function openedStep(steps) {
+  if (!steps?.length) return null;
+  if (steps.length <= STEP_PAGE) return steps.find(item => item.kind === "model") || steps[0];
+  const tail = steps.slice(-STEP_PAGE);
+  for (let i = tail.length - 1; i >= 0; i--) if (tail[i].kind === "model") return tail[i];
+  return steps.at(-1);
+}
 function stepsHTML(work) {
-  const max = Math.max(...work.steps.map(step => step.ms || 0), 1);
-  return `<ol class="steps">${work.steps.map(step => {
+  ensureStepWindow(work);
+  const all = work.steps || [];
+  const steps = all.slice(ui.stepStart, ui.stepEnd);
+  const max = Math.max(...all.map(step => step.ms || 0), 1);
+  return `<ol class="steps" data-run-steps>${steps.map(step => {
     const on = step.id === ui.step ? " on" : "";
     const bad = failedStep(step) ? " bad" : "";
     const width = Math.max(4, Math.round((step.ms || 0) / max * 100));
     const mark = failedStep(step) ? alertIcon() : "";
-    return `<li><button type="button" class="tone-${toneKey(step)}${on}${bad}" data-step="${M.esc(step.id)}"${on ? ` aria-current="step"` : ""}><i></i><time>${M.esc(stepClock(step, work.steps))}</time><span>${mark}<b>${M.esc(step.title)}</b><span class="meter" aria-hidden="true"><i style="width:${width}%"></i></span></span><em>${step.ms ? M.dur(step.ms) : (step.reserve ? "未回执" : M.dur(step.ms))} · ${M.priceLabel(step)}</em></button></li>`;
+    return `<li><button type="button" class="tone-${toneKey(step)}${on}${bad}" data-step="${M.esc(step.id)}"${on ? ` aria-current="step"` : ""}><i></i><time>${M.esc(stepClock(step, steps))}</time><span>${mark}<b>${M.esc(step.title)}</b><span class="meter" aria-hidden="true"><i style="width:${width}%"></i></span></span><em>${step.ms ? M.dur(step.ms) : (step.reserve ? "未回执" : M.dur(step.ms))} · ${M.priceLabel(step)}</em></button></li>`;
   }).join("")}</ol>`;
 }
 function jumpButtons(work) {
@@ -577,19 +791,20 @@ function chainHead(work) {
   const jumps = jumpButtons(work);
   const when = (work.steps || []).find(step => step.raw);
   const date = when ? dayOf(when) : "";
-  const note = work.scope ? `<p class="aside">${M.esc(work.scope)}</p>` : "";
-  return `<div class="chain-head"><h3>${work.scope ? "这一轮调用" : "这次行动的调用"}</h3>${date ? `<p class="aside">${M.esc(date)}</p>` : ""}${note}${jumps.length ? `<div class="chain-jumps">${jumps.join("")}</div>` : ""}</div>`;
+  const heading = work.title && work.title !== work.kind ? "这一轮调用" : "这次行动的调用";
+  return `<div class="chain-head"><h3>${heading}</h3>${date ? `<p class="aside">${M.esc(date)}</p>` : ""}${jumps.length ? `<div class="chain-jumps">${jumps.join("")}</div>` : ""}</div>`;
 }
 function pinHTML(work, step, spoken, tone) {
+  const pending = !!work?.pending;
   const spent = (work.steps || []).reduce((sum, item) => sum + (item.ms || 0), 0);
-  const money = spoken ? "没有单独的调用" : `${spent ? "调用合计 " + M.dur(spent) + " · " : ""}${M.costLine(work)}`;
-  const fault = !spoken && (work.steps || []).find(item => item.reserve)
-    ? "有一步还没有回执。预留还在，不能写成已经花掉。"
-    : (!spoken && (work.steps || []).some(failedStep) ? "有一步失败了。" : "");
+  const money = pending ? ""
+    : spoken ? "没有单独的调用"
+    : `${spent ? "调用合计 " + M.dur(spent) + " · " : ""}${M.costLine(work)}`;
+  const fault = !spoken && !pending && (work.steps || []).some(item => item.failed) ? "有一步失败了。" : "";
   const title = spoken ? step.title : work.title;
   const kicker = spoken ? `${work.who} · 原话` : `${work.who} · ${work.kind || ""}`;
-  const outcome = !spoken && work.status ? `<p class="pin-outcome">${M.esc(work.status)}</p>` : "";
-  return `<header class="pin pin-tight tone-${tone}"><div class="pin-row">${faceHTML(work.person || personKey(work.who), true)}<div class="pin-copy"><p class="kicker">${M.esc(kicker)}</p><h2>${M.esc(title)}</h2></div></div><p class="pin-meta">${M.esc(money)}</p>${outcome}${fault ? `<p class="fault">${alertIcon()}${M.esc(fault)}</p>` : ""}</header>`;
+  const outcome = !spoken && !pending && work.status ? `<p class="pin-outcome">${M.esc(work.status)}</p>` : "";
+  return `<header class="pin pin-tight tone-${tone}"><div class="pin-row">${faceHTML(work.person || personKey(work.who), true)}<div class="pin-copy"><p class="kicker">${M.esc(kicker)}</p><h2>${M.esc(title)}</h2></div></div>${money ? `<p class="pin-meta">${M.esc(money)}</p>` : ""}${outcome}${fault ? `<p class="fault">${alertIcon()}${M.esc(fault)}</p>` : ""}</header>`;
 }
 function stepHead(step) {
   if (!step || step.kind === "said") return "";
@@ -597,28 +812,61 @@ function stepHead(step) {
   return `<header class="step-head"><h3>${M.esc(step.title)}</h3><p>${when ? `<time>${M.esc(when)}</time> · ` : ""}<b>${M.esc(costSummary(step))}</b> · ${M.esc(stepStatus(step))}</p></header>`;
 }
 
+function activityChainHTML(work) {
+  const data = ui.activity;
+  if (!data || data.loading || !work || data.rootId !== work.rootId) return "";
+  const ownerRoom = data.cost?.owner_room || "";
+  const own = (data.runs || []).filter(run => (run.conversation_id || "") === ownerRoom).slice().reverse();
+  const later = (data.cost?.later || []).filter(place => place.estimate_micros || place.running_micros || place.unverified_micros);
+  if (own.length < 2 && !later.length && !data.hasEarlier) return "";
+  const peers = own.map(run => ({ at: Date.parse(run.started_at), raw: run.started_at }));
+  const clocks = clockLabels(peers);
+  const rows = own.map((run, index) => {
+    const on = !work.separate && run.id === work.id;
+    const tone = run.kind === "explore" ? "personal" : "terra";
+    const clock = clocks[index];
+    return `<li><button type="button" class="tone-${tone}${on ? " on" : ""}" data-activity-run="${M.esc(run.id)}"${on ? ` aria-current="step"` : ""}><i></i><time>${M.esc(clock)}</time><span><b>${M.esc(RUN_TITLE[run.kind] || run.kind || "执行记录")}</b></span><em>${M.esc(RUN_STATUS[run.status] || "")}</em></button></li>`;
+  }).join("");
+  const laterRows = later.map(place => {
+    const on = !!work.separate && work.place?.member_id === place.member_id && (work.place?.conversation_id || "") === (place.conversation_id || "");
+    const label = [place.member_name, place.name].filter(Boolean).join(" · ");
+    const amount = place.estimate_micros ? M.money(place.estimate_micros) : (place.unverified_micros ? "预留 " + M.money(place.unverified_micros) : "");
+    return `<li><button type="button" class="tone-terra${on ? " on" : ""}" data-activity-later="${M.esc(place.member_id)}" data-later-room="${M.esc(place.conversation_id || "")}"${on ? ` aria-current="step"` : ""}><i></i><time></time><span><b>${M.esc(label)}</b></span><em>${M.esc(amount)}</em></button></li>`;
+  }).join("");
+  return `<ol class="steps">${rows}${laterRows}</ol>`;
+}
 function inspectHTML() {
   const { work, step } = current();
-  if (!step) return `<div class="inspect-body"><p class="empty-well">选一条记录查看详情。</p></div>`;
-  const spoken = step.kind === "said" || !(work.steps && work.steps.length);
+  if (work?.pending) return pinHTML(work, step || { title: work.title, kind: "run" }, false, "wait");
+  if (!step && !work?.separate) return `<div class="inspect-body"><p class="empty-well">选一条记录查看详情。</p></div>`;
+  const spoken = !work?.separate && (step?.kind === "said" || !(work.steps && work.steps.length));
   const tone = spoken ? "wait" : toneKey(step);
-  const pin = pinHTML(work, step, spoken, tone);
+  const pin = pinHTML(work, step || { title: work.title, kind: "run" }, spoken, tone);
   if (ui.space !== "focus" || spoken) {
     const text = spoken ? (step.text || "") : snippet(step);
     const state = spoken ? (step.body || "") : stepStatus(step);
     return `${pin}<div class="inspect-body"><section class="card summary"><p class="status">${M.esc(state)}</p><p>${M.esc(text)}</p></section></div>`;
   }
+  if (!step) return `${pin}<div class="inspect-body"></div>`;
   loadSnapshot(step);
   const payload = `<section class="card payload tone-${toneKey(step)}">${stepHead(step)}${payloadHTML(work, step)}</section>`;
-  if (work.steps.length > 1) {
+  if ((work.steps || []).length > 1) {
     return `${pin}<div class="inspect-body workbench"><section class="card chain-card">${chainHead(work)}${stepsHTML(work)}</section>${payload}</div>`;
   }
   return `${pin}<div class="inspect-body">${payload}</div>`;
 }
 
+function messageCall(item) {
+  const step = stepOf(item);
+  if (!step || item?.kind !== "say" || !item.stepRef) return step;
+  const work = source.workById?.(item.stepRef.work);
+  if (!work) return step;
+  const round = roundSteps(work.steps, step);
+  return ancestorModel(round, step) || round.find(one => one.kind === "model") || step;
+}
 function sayHTML(item, grouped) {
   const you = item.person === "you";
-  const step = stepOf(item);
+  const step = messageCall(item);
   const on = item.id === ui.item;
   const hit = ui.q && itemSearch(item).toLowerCase().includes(ui.q.trim().toLowerCase());
   const chip = step ? `<span class="callchip tone-${toneKey(step)}">${M.esc(step.model && step.snapshot ? step.model : TONE_NAME[toneKey(step)])} · ${M.priceLabel(step)}</span>` : "";
@@ -633,16 +881,18 @@ function eventHTML(item) {
   const on = item.id === ui.item;
   const hit = ui.q && itemSearch(item).toLowerCase().includes(ui.q.trim().toLowerCase());
   const tone = toneKey(step);
-  const text = snippet(step);
+  const purpose = item.purpose || "";
+  const text = purpose ? (item.detail || "") : snippet(step);
   const clock = rowClock(item, feed());
   const label = ui.scope === "person"
     ? `<span class="where">${M.esc(item.where || "")}</span>`
-    : `${M.esc(item.who)} · ${M.esc(kickerFor(step))}`;
-  return `<article class="event tone-${tone}${on ? " on" : ""}${hit ? " hit" : ""}${ui.focus === "hit" && on ? " focus" : ""}" id="item-${M.esc(item.id)}"><button type="button" data-item="${M.esc(item.id)}">${faceHTML(item.person, true)}<span class="event-copy"><b>${label}</b><strong>${M.esc(step.title)}</strong><small>${markText(text)}</small></span><span class="event-side"><em>${M.esc(M.priceLabel(step))}</em><time>${M.esc(clock)}</time></span></button></article>`;
+    : `${M.esc(item.who)} · ${M.esc(purpose ? (step.model || step.title) : kickerFor(step))}`;
+  const title = purpose || step.title;
+  return `<article class="event tone-${tone}${on ? " on" : ""}${hit ? " hit" : ""}${ui.focus === "hit" && on ? " focus" : ""}" id="item-${M.esc(item.id)}"><button type="button" data-item="${M.esc(item.id)}">${faceHTML(item.person, true)}<span class="event-copy"><b>${label}</b><strong>${M.esc(title)}</strong><small>${markText(text)}</small></span><span class="event-side"><em>${M.esc(M.priceLabel(step))}</em><time>${M.esc(clock)}</time></span></button></article>`;
 }
-function threadBody(items, more) {
+function threadBody(items, atStart) {
   const origin = (ui.scope === "room" && currentRoom()?.origin) || source.origin;
-  let html = `<div class="spacer"></div>${more ? `<button type="button" class="earlier" data-earlier>往上还有 ${more} 条</button>` : (origin ? `<p class="origin">${M.esc(origin)}</p>` : "")}`;
+  let html = `<div class="spacer"></div>${atStart && origin ? `<p class="origin">${M.esc(origin)}</p>` : ""}`;
   if (!items.length) html += `<p class="origin">${M.esc(source.emptyText || "这里还没有记录。")}</p>`;
   let day = "";
   let who = "";
@@ -700,6 +950,13 @@ function openRoom(room) {
   ui.shown = 12;
   ui.chainTop = 0;
   ui.space = "browse";
+  earlierFailed = false;
+  refreshAccount();
+  source.prepare?.({ room }).then(() => {
+    if (ui.scope === "room" && ui.room === room.id) render();
+  }).catch(() => {
+    if (ui.scope === "room" && ui.room === room.id) render();
+  });
 }
 function openPerson(id) {
   ui.scope = "person";
@@ -714,6 +971,20 @@ function openPerson(id) {
   ui.shown = 12;
   ui.chainTop = 0;
   ui.space = "browse";
+  earlierFailed = false;
+  refreshAccount();
+  source.prepare?.({ person: id }).then(() => {
+    if (ui.scope === "person" && ui.person === id) render();
+  }).catch(() => {
+    if (ui.scope === "person" && ui.person === id) render();
+  });
+}
+function refreshAccount() {
+  if (!source?.loadAccount) return;
+  const next = ui.scope === "person"
+    ? { scope: "person", person: ui.person }
+    : { scope: "room", room: ui.room };
+  source.loadAccount(next).then(changed => { if (changed) render(); }).catch(() => render());
 }
 function jumpHit(delta) {
   const hits = feedHits();
@@ -737,20 +1008,38 @@ function rememberInspect() {
   const scroller = detail || document.querySelector(".inspect-body");
   if (scroller) ui.bodyTop = scroller.scrollTop;
 }
+function bindChain() {
+  document.querySelectorAll(".workbench .chain-card").forEach(chain => {
+    if (chain.dataset.bound) return;
+    chain.dataset.bound = "1";
+    chain.addEventListener("scroll", onChainScroll, { passive: true });
+  });
+}
 function restoreInspect() {
+  ui.chainHold = true;
+  bindChain();
   const workbench = document.querySelector(".workbench");
   if (workbench) {
     const chain = workbench.querySelector(".chain-card");
     const payload = workbench.querySelector(".payload");
-    if (chain) chain.scrollTop = ui.chainTop || 0;
+    if (chain && ui.chainAnchor) {
+      const anchor = ui.chainAnchor;
+      ui.chainAnchor = null;
+      chain.scrollTop = anchor.top + (chain.scrollHeight - anchor.before);
+    } else if (chain) chain.scrollTop = ui.chainTop || 0;
     if (payload) payload.scrollTop = ui.keepBody ? (ui.bodyTop || 0) : 0;
     if (ui.revealStep) revealChainStep();
-    return;
+  } else {
+    const body = document.querySelector(".inspect-body");
+    if (body) body.scrollTop = ui.keepBody ? (ui.bodyTop || 0) : 0;
+    const rail = document.querySelector(".step-rail");
+    if (rail && !ui.revealStep) rail.scrollLeft = ui.railLeft || 0;
   }
-  const body = document.querySelector(".inspect-body");
-  if (body) body.scrollTop = ui.keepBody ? (ui.bodyTop || 0) : 0;
-  const rail = document.querySelector(".step-rail");
-  if (rail && !ui.revealStep) rail.scrollLeft = ui.railLeft || 0;
+  ui.chainHold = false;
+  if (ui.fillChain) {
+    ui.fillChain = false;
+    requestAnimationFrame(fillChain);
+  }
 }
 function paintDetail() {
   const aside = document.querySelector("aside.inspect");
@@ -758,9 +1047,16 @@ function paintDetail() {
     render();
     return;
   }
+  const page = document.scrollingElement;
+  const pageTop = page ? page.scrollTop : 0;
+  const bench = document.querySelector(".inspect-body");
+  const benchTop = bench ? bench.scrollTop : 0;
   rememberInspect();
   aside.innerHTML = inspectHTML();
   restoreInspect();
+  if (page) page.scrollTop = pageTop;
+  const nextBench = document.querySelector(".inspect-body");
+  if (nextBench) nextBench.scrollTop = benchTop;
   ui.revealStep = false;
   ui.keepBody = false;
 }
@@ -782,12 +1078,31 @@ function revealRail() {
 }
 function revealChainStep() {
   const chain = document.querySelector(".chain-card");
-  const current = chain && chain.querySelector('[aria-current="step"]');
+  const current = chain && chain.querySelector("[data-run-steps] [aria-current='step']");
   if (!chain || !current) return;
   const chainRect = chain.getBoundingClientRect();
   const stepRect = current.getBoundingClientRect();
   if (stepRect.top < chainRect.top) chain.scrollTop += stepRect.top - chainRect.top - 8;
   else if (stepRect.bottom > chainRect.bottom) chain.scrollTop += stepRect.bottom - chainRect.bottom + 8;
+}
+function headerTotals(items) {
+  if (!source.ledger) {
+    const sum = sumFeed(items);
+    return sum.settled || sum.reserve
+      ? `<div class="totals"><p><small>已结算</small><strong>${M.money(sum.settled)}</strong></p>${sum.reserve ? `<p class="hold"><small>未回执</small><strong>${M.money(sum.reserve)}</strong></p>` : ""}</div>`
+      : "";
+  }
+  const direct = source.account?.direct;
+  if (!direct) return "";
+  const running = direct.running_micros ? `<p class="hold"><small>进行中</small><strong>${M.money(direct.running_micros)}</strong></p>` : "";
+  const waiting = direct.unverified_micros ? `<p class="hold"><small>待核实</small><strong>${M.money(direct.unverified_micros)}</strong></p>` : "";
+  const names = { chat: "聊天", research: "研究", search: "搜索", read_page: "读网页", compact: "压缩", personality: "人物整理", preferences: "偏好", control: "指令", model: "模型" };
+  const parts = (source.account?.parts || []).filter(part => part.estimate_micros > 0);
+  const split = parts.length > 1 ? `<div class="totals-parts">${parts.map(part => {
+    const name = (names[part.purpose] || part.purpose || "调用") + (part.model ? " · " + part.model : "");
+    return `<p><small>${M.esc(name)}</small><strong>${M.money(part.estimate_micros)}</strong></p>`;
+  }).join("")}</div>` : "";
+  return `<div class="totals"><div class="totals-main"><p><small>用量估算</small><strong>${M.money(direct.estimate_micros || 0)}</strong></p>${running}${waiting}</div>${split}</div>`;
 }
 function render() {
   const oldThread = document.getElementById("thread");
@@ -799,25 +1114,30 @@ function render() {
   if (selected) reveal(selected);
   const visible = items.slice(Math.max(0, items.length - ui.shown));
   const more = items.length - visible.length;
-  const sum = sumFeed(items);
+  const remoteEarlier = !!source.hasEarlier?.(ui.scope === "person" ? { person: ui.person } : { room: currentRoom() });
+  const atStart = more === 0 && !remoteEarlier;
   const hits = feedHits();
   const person = ui.scope === "person" ? personById(ui.person) : null;
   const room = currentRoom() || { name: "测光", place: "", members: [], blurb: "" };
   const title = person ? person.name : room.name;
   const place = person ? "角色" : room.place;
   const blurb = person ? "这个人在群、私聊和个人活动里的调用。从最近一次往上翻。" : room.blurb;
-  const totals = sum.settled || sum.reserve
-    ? `<div class="totals"><p><small>已结算</small><strong>${M.money(sum.settled)}</strong></p>${sum.reserve ? `<p class="hold"><small>未回执</small><strong>${M.money(sum.reserve)}</strong></p>` : ""}</div>`
-    : "";
+  const totals = headerTotals(items);
+  const notice = [source.notice, source.accountError].filter(Boolean).join(" ");
   const face = person ? faceHTML(person.id) : (room.place === "群" ? facesHTML(room.members, true) : faceHTML(room.members[0]));
   const live = room.featured && ui.scope === "room" ? `<div class="live">${people.filter(one => room.members.includes(one.id)).map(one => `<button type="button" data-person="${M.esc(one.id)}">${faceHTML(one.id, true)}<span>${M.esc(one.name)}</span><small>${M.esc(one.note)}</small></button>`).join("")}</div>` : "";
   const hint = person ? "往上翻更早的调用。" : "从最新一条开始。往上翻更早的。";
   const count = ui.q ? (ui.focus === "hit" && hits.length ? `${ui.hit + 1} / ${hits.length}` : `${hits.length} 处`) : "";
   const jumps = ui.q ? `<span class="hit-count">${count}</span><button type="button" data-jump="-1" aria-label="上一个结果">上一个</button><button type="button" data-jump="1" aria-label="下一个结果">下一个</button>` : "";
   document.body.classList.toggle("space-focus", ui.space === "focus");
-  document.getElementById("app").innerHTML = `<a class="skip" href="#thread">跳到对话</a><header class="top"><a class="brand" href="/"><small>drop_by</small>测光</a><nav class="switch" aria-label="测光页面"><a href="/"${location.pathname === "/" ? ` aria-current="page"` : ""}>实际记录</a><a href="/demo.html"${location.pathname === "/demo.html" || location.pathname === "/spectrum.html" ? ` aria-current="page"` : ""}>样例</a><a href="/night.html"${document.body.dataset.skin === "night" ? ` aria-current="page"` : ""}>夜航</a><a href="/strata.html"${document.body.dataset.skin === "strata" ? ` aria-current="page"` : ""}>层叠</a></nav><button type="button" class="find" id="open-find"><span>查找</span><kbd>/</kbd></button></header><div class="body">${railHTML()}<main class="stage"><div class="stage-head">${face}<div class="stage-copy"><p class="kicker">${M.esc(place)}</p><h1>${M.esc(title)}</h1><p>${M.esc(blurb)}</p></div>${totals}</div>${source.notice ? `<p class="origin" role="status">${M.esc(source.notice)}</p>` : ""}${live}<div class="finder"><svg class="ico" aria-hidden="true"><use href="/icons.svg#search"/></svg><input id="thread-q" value="${M.esc(ui.q)}" placeholder="${person ? "在这个人的调用里找" : "在这段对话里找"}" aria-label="${person ? "在这个人的调用里找" : "在这段对话里找"}">${jumps}</div><p class="hint">${hint}</p><div id="thread">${threadBody(visible, more)}</div></main><aside class="inspect">${inspectHTML()}</aside></div>`;
+  document.getElementById("app").innerHTML = `<a class="skip" href="#thread">跳到对话</a><header class="top"><a class="brand" href="/"><small>drop_by</small>测光</a><nav class="switch" aria-label="测光页面"><a href="/"${location.pathname === "/" ? ` aria-current="page"` : ""}>实际记录</a><a href="/demo.html"${location.pathname === "/demo.html" || location.pathname === "/spectrum.html" ? ` aria-current="page"` : ""}>样例</a><a href="/night.html"${document.body.dataset.skin === "night" ? ` aria-current="page"` : ""}>夜航</a><a href="/strata.html"${document.body.dataset.skin === "strata" ? ` aria-current="page"` : ""}>层叠</a></nav><button type="button" class="find" id="open-find"><span>查找</span><kbd>/</kbd></button></header><div class="body">${railHTML()}<main class="stage"><div class="stage-head">${face}<div class="stage-copy"><p class="kicker">${M.esc(place)}</p><h1>${M.esc(title)}</h1><p>${M.esc(blurb)}</p></div>${totals}</div>${notice ? `<p class="origin" role="status">${M.esc(notice)}</p>` : ""}${live}<div class="finder"><svg class="ico" aria-hidden="true"><use href="/icons.svg#search"/></svg><input id="thread-q" value="${M.esc(ui.q)}" placeholder="${person ? "在这个人的调用里找" : "在这段对话里找"}" aria-label="${person ? "在这个人的调用里找" : "在这段对话里找"}">${jumps}</div><p class="hint">${hint}</p><div id="thread">${threadBody(visible, atStart)}</div></main><aside class="inspect">${inspectHTML()}</aside></div>`;
   const box = document.getElementById("thread");
   pinThread();
+  bindChain();
+  if (ui.fillChain) {
+    ui.fillChain = false;
+    requestAnimationFrame(fillChain);
+  }
   // Ignore the scroll event caused by restoring the thread, so it does not load older rows.
   ui.hold = true;
   if (box) box.addEventListener("scroll", onThreadScroll);
@@ -828,7 +1148,8 @@ function pinThread() {
   if (!box) return;
   ui.hold = true;
   if (ui.focus === "prepend" && ui.anchor) {
-    box.scrollTop = ui.anchor.top + (box.scrollHeight - ui.anchor.before);
+    const scroller = ui.anchor.page ? document.scrollingElement : box;
+    if (scroller) scroller.scrollTop = ui.anchor.top + (scroller.scrollHeight - ui.anchor.before);
     ui.focus = "stay";
     ui.hold = false;
     revealRail();
@@ -872,22 +1193,240 @@ function pinThread() {
   ui.revealStep = false;
   ui.hold = false;
 }
+function viewQuery() {
+  return ui.scope === "person" ? { person: ui.person } : { room: currentRoom() };
+}
+let earlierFlight = null;
+let earlierFailed = false;
+let activityFlight = null;
+let activityEarlierFailed = false;
+let fillGuard = 0;
+let chainMark = null;
+function loadEarlier() {
+  if (earlierFlight) return;
+  const hidden = feed().length - ui.shown;
+  const box = document.getElementById("thread");
+  const mark = () => {
+    ui.hold = true;
+    const scroller = box && box.scrollHeight > box.clientHeight + 8 ? box : document.scrollingElement;
+    ui.anchor = {
+      before: scroller ? scroller.scrollHeight : 0,
+      top: scroller ? scroller.scrollTop : 0,
+      page: scroller === document.scrollingElement
+    };
+    ui.focus = "prepend";
+  };
+  if (hidden > 0) {
+    mark();
+    ui.shown = Math.min(feed().length, ui.shown + 12);
+    render();
+    continueIfShort();
+    return;
+  }
+  if (earlierFailed || !source.earlier || !source.hasEarlier?.(viewQuery())) return;
+  mark();
+  const before = feed().length;
+  earlierFlight = Promise.resolve(source.earlier(viewQuery())).then(added => {
+    earlierFlight = null;
+    const grew = Number(added) > 0 || feed().length > before;
+    if (grew) ui.shown += Math.min(Math.max(Number(added) || feed().length - before, 1), 12);
+    earlierFailed = false;
+    render();
+    if (grew) continueIfShort();
+  }).catch(() => {
+    earlierFlight = null;
+    earlierFailed = true;
+    render();
+  });
+}
+function threadScrolls(box) {
+  return !!box && box.scrollHeight > box.clientHeight + 8;
+}
+function continueIfShort() {
+  requestAnimationFrame(() => {
+    const thread = document.getElementById("thread");
+    if (!thread || earlierFlight || ui.hold || threadScrolls(thread)) return;
+    if (thread.getBoundingClientRect().height >= window.innerHeight * 0.75) return;
+    if (feed().length > ui.shown || (!earlierFailed && source.hasEarlier?.(viewQuery()))) loadEarlier();
+  });
+}
 function onThreadScroll() {
   const box = document.getElementById("thread");
-  if (!box || ui.hold) return;
+  if (!box || ui.hold || earlierFlight || !threadScrolls(box)) return;
   if (box.scrollTop < box.scrollHeight - box.clientHeight - 48) ui.focus = "stay";
-  if (box.scrollHeight <= box.clientHeight + 8 || box.scrollTop > 28) return;
-  if (ui.shown >= feed().length) return;
-  ui.hold = true;
-  ui.anchor = { before: box.scrollHeight, top: box.scrollTop };
-  ui.shown = Math.min(feed().length, ui.shown + 12);
-  ui.focus = "prepend";
-  render();
+  if (box.scrollTop > 28) return;
+  if (feed().length > ui.shown || (!earlierFailed && source.hasEarlier?.(viewQuery()))) loadEarlier();
 }
+let pageMark = null;
+document.addEventListener("scroll", () => {
+  const thread = document.getElementById("thread");
+  const doc = document.scrollingElement;
+  if (!thread || !doc || ui.hold || earlierFlight || threadScrolls(thread)) {
+    pageMark = doc ? { top: doc.scrollTop } : null;
+    return;
+  }
+  const edge = thread.getBoundingClientRect().top;
+  const goingUp = pageMark && doc.scrollTop < pageMark.top - 8;
+  pageMark = { top: doc.scrollTop };
+  if (!goingUp || edge > 96 || edge < -40) return;
+  if (feed().length > ui.shown || (!earlierFailed && source.hasEarlier?.(viewQuery()))) loadEarlier();
+}, { passive: true });
 window.addEventListener("resize", () => {
   if (ui.focus === "end") pinThread();
 });
 
+let detailToken = 0;
+function shiftSteps(delta) {
+  const work = current().work;
+  const steps = work?.steps || [];
+  if (!steps.length || ui.stepKey !== stepKey(work)) return;
+  const start = delta < 0 ? Math.max(0, ui.stepStart + delta) : ui.stepStart;
+  const end = delta > 0 ? Math.min(steps.length, ui.stepEnd + delta) : ui.stepEnd;
+  if (start === ui.stepStart && end === ui.stepEnd) return;
+  const chain = document.querySelector(".workbench .chain-card");
+  if (delta < 0 && chain) ui.chainAnchor = { before: chain.scrollHeight, top: chain.scrollTop };
+  ui.stepStart = start;
+  ui.stepEnd = end;
+  chainMark = null;
+  ui.keepBody = true;
+  ui.revealStep = false;
+  paintDetail();
+  const next = document.querySelector(".workbench .chain-card");
+  if (!next) return;
+  const box = next.getBoundingClientRect();
+  const rows = [...next.querySelectorAll("[data-run-steps] [data-step]")];
+  chainMark = {
+    top: next.scrollTop,
+    edge: rows[0] ? rows[0].getBoundingClientRect().top - box.top : null,
+    tail: rows.length ? box.bottom - rows[rows.length - 1].getBoundingClientRect().bottom : null
+  };
+}
+function onChainScroll() {
+  const chain = document.querySelector(".workbench .chain-card");
+  if (!chain || ui.chainHold || activityFlight) return;
+  const box = chain.getBoundingClientRect();
+  const rows = [...chain.querySelectorAll("[data-run-steps] [data-step]")];
+  const firstTop = rows[0] ? rows[0].getBoundingClientRect().top - box.top : null;
+  const lastGap = rows.length ? box.bottom - rows[rows.length - 1].getBoundingClientRect().bottom : null;
+  const top = chain.scrollTop;
+  const previous = chainMark;
+  const goingUp = previous && top < previous.top - 12;
+  const goingDown = previous && top > previous.top + 12;
+  const total = current().work?.steps?.length || 0;
+  const crossedOlder = previous && previous.edge != null && previous.edge <= -48 && firstTop > -48;
+  const atOlder = firstTop != null && firstTop > -48 && firstTop < 140;
+  const crossedNewer = previous && previous.tail != null && previous.tail <= -48 && lastGap > -48;
+  const atNewer = lastGap != null && lastGap > -48 && lastGap < 140;
+  // Reaching the loaded edge reveals one page. The same edge staying on
+  // screen must not reveal another page on the next scroll event.
+  if (goingUp && ui.stepStart > 0 && (atOlder || crossedOlder)) {
+    shiftSteps(-STEP_PAGE);
+    return;
+  }
+  if (goingDown && ui.stepEnd < total && (atNewer || crossedNewer)) {
+    shiftSteps(STEP_PAGE);
+    return;
+  }
+  chainMark = { top, edge: firstTop, tail: lastGap };
+}
+function fillChain() {
+  const chain = document.querySelector(".workbench .chain-card");
+  const steps = current().work?.steps || [];
+  if (!chain) return;
+  if (chain.scrollHeight > chain.clientHeight + 8) {
+    fillGuard = 0;
+    return;
+  }
+  if (chain.scrollHeight === fillGuard) return;
+  fillGuard = chain.scrollHeight;
+  if (ui.stepStart > 0) {
+    ui.stepStart = Math.max(0, ui.stepStart - STEP_PAGE);
+    ui.chainAnchor = { before: chain.scrollHeight, top: chain.scrollTop };
+    ui.keepBody = true;
+    ui.revealStep = false;
+    ui.fillChain = true;
+    paintDetail();
+    return;
+  }
+  if (ui.stepEnd < steps.length) {
+    ui.stepEnd = Math.min(steps.length, ui.stepEnd + STEP_PAGE);
+    ui.keepBody = true;
+    ui.revealStep = false;
+    ui.fillChain = true;
+    paintDetail();
+  }
+}
+function loadEarlierActivity(filling) {
+  if (activityFlight || activityEarlierFailed || !ui.activity?.hasEarlier || !source.activityMore) return;
+  const key = ui.activityKey;
+  const chain = document.querySelector(".workbench .chain-card");
+  const before = chain ? chain.scrollHeight : 0;
+  const top = chain ? chain.scrollTop : 0;
+  activityFlight = source.activityMore(key).then(data => {
+    activityFlight = null;
+    if (!data || ui.activityKey !== key) return;
+    if ((data.runs || []).length <= (ui.activity?.runs || []).length) {
+      activityEarlierFailed = true;
+      return;
+    }
+    ui.activity = { ...data, rootId: key };
+    ui.chainAnchor = { before, top };
+    ui.keepBody = true;
+    ui.revealStep = false;
+    ui.fillChain = !!filling;
+    updateDetail();
+  }).catch(() => {
+    activityFlight = null;
+    activityEarlierFailed = true;
+  });
+}
+function openActivityRun(id) {
+  const run = (ui.activity?.runs || []).find(item => item.id === id);
+  if (!run || !source.ensureRun) return;
+  if (!ui.local?.work?.separate && ui.local?.work?.id === id) return;
+  const token = ++detailToken;
+  source.ensureRun(run).then(work => {
+    if (token !== detailToken || !work) return;
+    const step = openedStep(work.steps || []);
+    if (!step) return;
+    ui.local = { work, step };
+    ui.step = step.id;
+    ui.space = "focus";
+    ui.keepBody = true;
+    ui.revealStep = true;
+    ensureActivity(work);
+    updateDetail();
+  }).catch(() => {});
+}
+function openLater(memberId, conversationId) {
+  const data = ui.activity;
+  if (!data || !source.ensureRun) return;
+  const token = ++detailToken;
+  const runs = (data.runs || []).filter(run => (run.conversation_id || "") === (conversationId || ""));
+  Promise.all(runs.map(run => source.ensureRun(run))).then(loaded => {
+    if (token !== detailToken) return;
+    const steps = [];
+    for (const work of loaded) {
+      for (const step of work?.steps || []) if ((step.person || "") === memberId) steps.push(step);
+    }
+    const place = (data.cost?.later || []).find(item => item.member_id === memberId && (item.conversation_id || "") === (conversationId || ""));
+    if (!place) return;
+    const step = openedStep(steps);
+    ui.local = {
+      work: {
+        id: loaded.find(Boolean)?.id || "", person: memberId, who: place.member_name || "",
+        title: place.name || "", kind: place.name || "", steps, separate: true, place,
+        rootId: data.rootId, conversationId: conversationId || ""
+      },
+      step
+    };
+    ui.step = step?.id || "";
+    ui.space = "focus";
+    ui.keepBody = true;
+    ui.revealStep = !!step;
+    updateDetail();
+  }).catch(() => {});
+}
 document.body.addEventListener("click", event => {
   const foldBtn = event.target.closest("[data-fold]");
   const hide = event.target.closest("[data-hide-cache]");
@@ -916,12 +1455,8 @@ document.body.addEventListener("click", event => {
   }
   if (jump) { jumpHit(Number(jump.dataset.jump)); return; }
   if (event.target.closest("[data-earlier]")) {
-    const box = document.getElementById("thread");
-    ui.hold = true;
-    ui.anchor = { before: box ? box.scrollHeight : 0, top: box ? box.scrollTop : 0 };
-    ui.shown = Math.min(feed().length, ui.shown + 12);
-    ui.focus = "prepend";
-    render();
+    earlierFailed = false;
+    loadEarlier();
     return;
   }
   if (itemBtn) {
@@ -1151,7 +1686,7 @@ document.body.addEventListener("click", event => {
 const app = document.getElementById("app");
 try {
   source = location.pathname === "/"
-    ? await (await import("./studio-observe.js?v=2")).observeSource()
+    ? await (await import("./studio-observe.js?v=10")).observeSource()
     : (await import("./studio-demo.js?v=1")).demoSource();
   if (source.origin) document.title = "样例 · 测光";
   people = source.people;

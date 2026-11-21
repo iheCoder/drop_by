@@ -27,6 +27,7 @@ type chatRoom struct {
 }
 
 type chatMessage struct {
+	Seq       int64  `json:"seq,omitempty"`
 	ID        string `json:"id"`
 	AuthorID  string `json:"author_id"`
 	Body      string `json:"body"`
@@ -89,12 +90,28 @@ func (c chatReader) messages(w http.ResponseWriter, r *http.Request) {
 		HasEarlier bool          `json:"has_earlier"`
 	}
 	path := "/api/conversations/" + url.PathEscape(r.PathValue("id")) + "?activity=paged"
+	if before := r.URL.Query().Get("before"); before != "" {
+		path += "&before=" + url.QueryEscape(before)
+	}
 	if err := c.read(r.Context(), path, &data); err != nil {
 		if errors.Is(err, errChatMissing) {
 			http.NotFound(w, r)
 			return
 		}
 		http.Error(w, "暂时读不到这段会话的消息", http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, data)
+}
+
+func (c chatReader) costs(w http.ResponseWriter, r *http.Request) {
+	path := "/api/usage/scope"
+	if q := r.URL.RawQuery; q != "" {
+		path += "?" + q
+	}
+	var data json.RawMessage
+	if err := c.read(r.Context(), path, &data); err != nil {
+		http.Error(w, "暂时读不到账本，不能把已加载的调用当成完整费用", http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, http.StatusOK, data)
