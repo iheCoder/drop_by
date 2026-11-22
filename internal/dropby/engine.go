@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -442,7 +443,8 @@ func memberSystem(m Member, instruction string) ChatMessage {
 wakeup 是你的长期自主活动节律。一次自主唤醒给你时间按自己的特质、兴趣和当下情况决定做什么：你可以自己探索、做事、与人交流，也可以什么都不做。是否分享、和谁分享，由你自己判断；不必为了这次唤醒刻意找话题或制造成果。
 消息通过 send_message 发出，个人活动省略目的地时发给真人私聊。结束行动返回 JSON {"outcome":"实际行动结果"}，它仅作运行记录。运行故障和额度由界面呈现。
 工作窗口会延续。需要更新续接内容时，用 organize_context。旧记录可按需回读，以最新现场为准。
-personal_focus 是自己的近期关注或打算，state 是界面展示的当前感受或目标；省略沿用，空串清除。state_source_ids 可附来源。
+personal_focus 是你上次记下的近期关注。自己有了新兴趣、关心的重点变了，或已经放下某个方向时，用 set_personal_focus 更新。
+state 是在这段聊天里的当前感受或目标；省略沿用，空串清除。state_source_ids 可附来源。
 conversation.responsibilities 是当前组织职责，按真人约定用 apply_instruction 记录；工作安排、进展与结束通过相应工具处理。`}
 }
 
@@ -533,7 +535,6 @@ func explicitStop(body string) (discussion, research bool) {
 type Outcome struct {
 	seen           int64
 	ConversationID string   `json:"conversation_id,omitempty"`
-	PersonalFocus  *string  `json:"personal_focus,omitempty"`
 	Message        string   `json:"message"`
 	Outcome        string   `json:"outcome"`
 	Notify         bool     `json:"notify"`
@@ -789,9 +790,6 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 					return out, err
 				}
 			}
-			if err = e.Store.updatePersonalActivity(m.ID, out.PersonalFocus); err != nil {
-				return out, err
-			}
 			cp.Messages, cp.Seen = messages, seen
 			if err = e.Store.saveAction(cp); err != nil {
 				return out, err
@@ -799,6 +797,7 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 			return out, nil
 		}
 		batchStart := len(messages) - 1
+		var focusCalled bool
 		var organization *organizedContext
 		var organizationReceipt organizedReceipt
 		for _, call := range r.ToolCalls {
@@ -838,6 +837,9 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 				updateAfterTools = currentInput.Content
 				defs = e.Tools.Definitions(m, c, w)
 			}
+			if call.Function.Name == personalFocusTool {
+				focusCalled = true
+			}
 			if call.Function.Name == "organize_context" {
 				var receipt struct {
 					ID     string           `json:"tool_run_id"`
@@ -850,6 +852,25 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 					organizationReceipt = organizedReceipt{Name: call.Function.Name, CallID: call.ID, Result: asJSON(map[string]string{
 						"tool_run_id": receipt.ID, "status": receipt.Status, "work_id": w.ID,
 					})}
+				}
+			}
+		}
+		// 重放旧调用只复用回执。下一次模型请求和整理后的便笺窗口都以库里本人的最新关注为准。
+		if focusCalled {
+			focus, err := e.Store.personalActivity(m.ID)
+			if err != nil {
+				return Outcome{}, err
+			}
+			if input["personal_focus"] != focus {
+				input["personal_focus"] = focus
+				if updateAfterTools != "" {
+					// 恢复或指令变动留下的待交付现场还包含新消息。
+					updateAfterTools = asJSON(input)
+				} else if organization == nil {
+					// 普通更新只替换现场。此前交付的聊天原文由 withScene 保留。
+					fresh := maps.Clone(input)
+					fresh["latest_messages"], fresh["new_message_ids"] = []Message{}, []string{}
+					updateAfterTools = asJSON(fresh)
 				}
 			}
 		}

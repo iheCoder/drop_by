@@ -281,7 +281,8 @@ body:has(#crop-dialog[open]) #workspace-page::backdrop { background:transparent;
 .activity-person > div { min-width:0; flex:1; }
 .activity-person strong,.activity-owner strong { font-size:14px; font-weight:600; }
 .activity-person p { margin:5px 0 0; color:var(--muted); font-size:13px; line-height:1.7; overflow-wrap:anywhere; }
-.activity-person > div > p { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.activity-person > div > p { white-space:pre-wrap; }
+.activity-person small { color:var(--muted); font-size:12px; }
 .wake-lines { margin-top:5px; color:var(--muted); font-size:13px; line-height:1.7; overflow-wrap:anywhere; }
 .participation-note { margin-top:7px; color:var(--muted); font-size:12px; }
 .participation-note summary,.activity-history > summary,.technical-record > summary { cursor:pointer; min-height:32px; padding:8px 0; }

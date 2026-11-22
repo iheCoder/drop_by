@@ -33,6 +33,9 @@ func textField(desc string) any { return map[string]string{"type": "string", "de
 
 func (t *Toolbox) Definitions(m Member, c Conversation, w Work) []ToolDefinition {
 	defs := []ToolDefinition{instructionDefinition(), wakeRhythmDefinition(),
+		definition(personalFocusTool, "写下你最近对哪类事感兴趣，尤其在意其中哪一点。根据自己的经历，只留眼下仍想留意的方向。临时要办的事留在待办里，做过的事留在行动记录里。", map[string]any{
+			"body": textField("更新后保留的全部近期关注。没写进来的旧关注会被删掉。全部放下时传空字符串 \"\"。"),
+		}, "body"),
 		definition("read_domain_profile", "按 self.domain_names 中的名称读取本人的领域画像全文和版本。", map[string]any{"domain": textField("要读取的领域名称")}, "domain"),
 		definition("organize_context", "更新给下次的工作窗口。按你的特质和眼下关注重新挑选，换题时把无关旧事留在历史。新便笺和所选原话替换旧窗口，同批新结果照常交付。", map[string]any{
 			"note":              textField("写给接下来的自己，留下会影响后续的个人判断、有效约定或未完线索。已完结且无关的事项直接省略，可为空。"),
@@ -177,7 +180,7 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	readErr := t.Store.db.QueryRow("SELECT status,result FROM tool_runs WHERE id=?", runID).Scan(&oldStatus, &oldResult)
 	if readErr == nil {
 		if oldStatus == "running" {
-			if !readOnlyTool(call.Function.Name) && call.Function.Name != "send_message" && call.Function.Name != reactionTool && call.Function.Name != "ask_question" {
+			if !readOnlyTool(call.Function.Name) && call.Function.Name != "send_message" && call.Function.Name != reactionTool && call.Function.Name != "ask_question" && call.Function.Name != personalFocusTool {
 				noteBlockedTool(ctx, call.Function.Name, call.Function.Arguments, "结果不明，没有重放")
 				return "", errUncertainTool
 			}
@@ -197,19 +200,22 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 		}
 	}
 	if t.Activity != nil && call.Function.Name != reactionTool {
-		labels := map[string]string{"organize_context": "正在整理思路", "search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "set_wakeup_rhythm": "正在调整自己的活动节律", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_message": "正在发送消息", "read_conversation": "正在看聊天近况", "send_private": "正在准备私聊", "recall": "正在回顾", "read_tool_result": "正在核对已有材料", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
+		labels := map[string]string{personalFocusTool: "正在更新近期关注", "organize_context": "正在整理思路", "search": "正在搜索网页", "read_page": "正在阅读网页", "save_artifact": "正在保存成果", "remember": "正在整理经历", "schedule_exploration": "正在安排后续探索", "schedule_followup": "正在记下之后想继续的事", "set_wakeup_rhythm": "正在调整自己的活动节律", "cancel_work": "正在取消已不需要的安排", "ask_question": "正在提出一个问题", "send_message": "正在发送消息", "read_conversation": "正在看聊天近况", "send_private": "正在准备私聊", "recall": "正在回顾", "read_tool_result": "正在核对已有材料", "read_work": "正在查看实际进展", "delegate_work": "正在和同伴分工", "close_responsibility": "正在整理已完成的分工"}
 		t.Activity(c.ID, m.ID, labels[call.Function.Name])
 	}
 	toolStep := beginTool(ctx, run.ID, call.Function.Name, call.Function.Arguments, resuming)
 	var result any
 	var err error
-	if call.Function.Name == reactionTool {
+	// 表情和当前状态会把变更与成功回执一起提交。其余工具在执行后保存回执。
+	receiptSaved := false
+	switch call.Function.Name {
+	case reactionTool:
 		result, err = t.reactToMessage(ctx, c, m, call, run.ID)
-		if err == nil {
-			finishTool(ctx, toolStep, "succeeded", asJSON(result))
-			return asJSON(map[string]any{"tool_run_id": run.ID, "status": "succeeded", "result": result}), nil
-		}
-	} else {
+		receiptSaved = err == nil
+	case personalFocusTool:
+		result, err = t.Store.setPersonalFocus(ctx, c, m.ID, call.Function.Arguments, runID)
+		receiptSaved = err == nil
+	default:
 		result, err = t.perform(ctx, c, m, w, call)
 	}
 	status := "succeeded"
@@ -233,9 +239,11 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	}
 	// 完整工具返回值留在本地；旧上下文可以折叠，原始结果始终可回读。
 	raw := asJSON(result)
-	if _, saveErr := t.Store.db.Exec(`UPDATE tool_runs SET result=?,status=? WHERE id=?`, raw, status, run.ID); saveErr != nil {
-		finishTool(ctx, toolStep, "failed", saveErr.Error())
-		return "", saveErr
+	if !receiptSaved {
+		if _, saveErr := t.Store.db.Exec(`UPDATE tool_runs SET result=?,status=? WHERE id=?`, raw, status, run.ID); saveErr != nil {
+			finishTool(ctx, toolStep, "failed", saveErr.Error())
+			return "", saveErr
+		}
 	}
 	finishTool(ctx, toolStep, status, raw)
 	if call.Function.Name != reactionTool {

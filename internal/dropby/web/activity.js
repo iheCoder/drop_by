@@ -79,8 +79,9 @@ function wakeSection() {
 function activityPeople() {
   const group = roomData.conversation.kind === 'group';
   return roomData.conversation.member_ids.map(id=>{
-    const focus = roomData.member_states?.find(s=>s.member_id===id)?.body || state.personal_focus?.[id]?.body || '还没有新的近况';
-    return `<div class="activity-person">${avatar(member(id),true)}<div>${group ? `<strong>${escapeHTML(authorName(id))}</strong>` : ''}<p>${escapeHTML(focus)}</p></div></div>`;
+    const focus = state.personal_focus?.[id];
+    const written = focus?.updated_at ? `<small>上次写于 ${escapeHTML(activityTime(focus.updated_at))}</small>` : '';
+    return `<div class="activity-person">${avatar(member(id),true)}<div>${group ? `<strong>${escapeHTML(authorName(id))}</strong>` : ''}<p>${escapeHTML(focus?.body || '暂无近期关注')}</p>${written}</div></div>`;
   }).join('');
 }
 function activityFacts(entry) {
@@ -123,7 +124,7 @@ function refreshActivityOverview() {
 }
 function showActivity() {
   if (!roomData) return;
-  showPanel(activityPanelName(), '', `<div class="activity-view" id="activity-overview"><div id="activity-wake"></div><h3 class="section-label">近况</h3><div id="activity-people"></div><h3 class="section-label">后续安排</h3><div id="activity-plans"></div><h3 class="section-label">最近行动</h3><div id="activity-rows"></div><p id="activity-page-status" class="activity-empty" role="status"></p><div id="activity-end" aria-hidden="true"></div></div>`, 'activity');
+  showPanel(activityPanelName(), '', `<div class="activity-view" id="activity-overview"><div id="activity-wake"></div><h3 class="section-label">当前状态</h3><div id="activity-people"></div><h3 class="section-label">后续安排</h3><div id="activity-plans"></div><h3 class="section-label">最近行动</h3><div id="activity-rows"></div><p id="activity-page-status" class="activity-empty" role="status"></p><div id="activity-end" aria-hidden="true"></div></div>`, 'activity');
   const overview = $('activity-overview');
   activityFeed = {room:selected, overview, rows:$('activity-rows'), status:$('activity-page-status'), end:$('activity-end'), next:'', loaded:false, loading:false, seen:new Set(), top:0};
   const feed = activityFeed;

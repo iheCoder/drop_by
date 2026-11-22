@@ -58,7 +58,7 @@ func TestPersonalExplorationSharingAndRecovery(t *testing.T) {
 			for _, d := range defs {
 				available[d.Function.Name] = true
 			}
-			for _, name := range []string{"search", "read_page", "save_artifact", "send_message", "read_conversation", "remember"} {
+			for _, name := range []string{"search", "read_page", "save_artifact", "send_message", "read_conversation", "remember", personalFocusTool} {
 				if !available[name] {
 					t.Errorf("行动缺少工具 %s", name)
 				}
@@ -88,8 +88,10 @@ func TestPersonalExplorationSharingAndRecovery(t *testing.T) {
 		if calls == 4 {
 			return ChatMessage{}, failure
 		}
-		focus := "想试试折纸怎样从平面展开成小机关。"
-		return jsonReply(Outcome{PersonalFocus: &focus, Outcome: "分享了自己的折纸发现。"}), nil
+		if calls == 5 {
+			return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall(personalFocusTool, map[string]string{"body": "想试试折纸怎样从平面展开成小机关。"})}}, nil
+		}
+		return jsonReply(Outcome{Outcome: "分享了自己的折纸发现。"}), nil
 	})
 	e := NewEngine(s, model, cfg)
 	if err := e.process(context.Background(), work); !errors.Is(err, failure) {
@@ -108,7 +110,7 @@ func TestPersonalExplorationSharingAndRecovery(t *testing.T) {
 	}
 	var wakeups int
 	s.db.QueryRow(`SELECT count(*) FROM work WHERE kind='followup' AND conversation_id=?`, room.ID).Scan(&wakeups)
-	if wakeups != 1 || calls != 5 {
+	if wakeups != 1 || calls != 6 {
 		t.Fatalf("恢复重复唤醒或重演完成行动: wakes=%d calls=%d", wakeups, calls)
 	}
 	focus, _ := s.personalActivity(m.ID)
@@ -404,4 +406,108 @@ func TestResearchPublicationInvitesPeersBeforeItsOwnActionEnds(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("本人的研究失败没有留下可恢复记录")
+}
+
+// 一次活动先新增两个关注，再与整理便笺同批删去其中之一，最后清空。
+// 直接检查下一次模型收到的现场，确保便笺整理和旧式收尾字段都不会复活旧关注。
+func TestPersonalFocusInWorkingScene(t *testing.T) {
+	s, room, m := fixture(t)
+	const both = "街道怎样引导人走路。采访中的称呼怎样变化。"
+	const remaining = "街道怎样引导人走路。"
+	expected := []string{"", both, remaining, ""}
+	calls := 0
+	var written string
+	model := modelFunc(func(_ context.Context, messages []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		if calls >= len(expected) {
+			t.Fatal("意外的额外模型请求")
+		}
+		var scene struct {
+			Focus PersonalActivity `json:"personal_focus"`
+		}
+		if err := json.Unmarshal([]byte(latestSceneContent(t, messages)), &scene); err != nil {
+			t.Fatal(err)
+		}
+		if scene.Focus.Body != expected[calls] {
+			t.Fatalf("第 %d 次模型请求中的关注为 %+v", calls+1, scene.Focus)
+		}
+		currentScenes := 0
+		for _, message := range messages {
+			if sceneFields(message) != nil {
+				currentScenes++
+			}
+		}
+		if currentScenes != 1 {
+			t.Fatalf("同一请求中出现 %d 份现场", currentScenes)
+		}
+		if calls > 0 && scene.Focus.UpdatedAt == "" {
+			t.Fatal("更新后的关注没有写入时间")
+		}
+		calls++
+		var batch []ToolCall
+		switch calls {
+		case 1:
+			batch = []ToolCall{toolCall(personalFocusTool, map[string]string{"body": both})}
+		case 2:
+			batch = []ToolCall{toolCall("organize_context", map[string]string{"note": "约好的采访还要校对。"}), toolCall(personalFocusTool, map[string]string{"body": remaining})}
+		case 3:
+			if !strings.Contains(asJSON(messages), "约好的采访还要校对。") {
+				t.Fatal("更新关注覆盖了便笺")
+			}
+			focuses, err := s.personalFocuses()
+			if err != nil || focuses[m.ID] != scene.Focus {
+				t.Fatal("页面和模型读到不同的关注", focuses, err)
+			}
+			batch = []ToolCall{toolCall(personalFocusTool, map[string]string{"body": ""})}
+		case 4:
+			written = scene.Focus.UpdatedAt
+			return jsonReply(map[string]string{"outcome": "结束", "personal_focus": both}), nil
+		}
+		return ChatMessage{Role: "assistant", ToolCalls: batch}, nil
+	})
+	e := NewEngine(s, model, testConfig())
+	work := addWork(t, s, room, m, "research")
+	if err := e.process(context.Background(), work); err != nil {
+		t.Fatal(err)
+	}
+	if calls != len(expected) {
+		t.Fatal("模型未走完清空流程", calls)
+	}
+	personal, err := e.personalContext(m, Work{Kind: "explore"})
+	if err != nil || personal["personal_focus"] != (PersonalActivity{UpdatedAt: written}) {
+		t.Fatal("下次个人探索恢复了旧关注", personal, err)
+	}
+	focuses, err := s.personalFocuses()
+	if _, present := focuses[m.ID]; err != nil || present {
+		t.Fatal("清空后页面仍有旧关注", focuses, err)
+	}
+}
+
+func TestPersonalFocusReplayAndOmittedBody(t *testing.T) {
+	s, c, m := fixture(t)
+	w := addWork(t, s, c, m, "research")
+	e := NewEngine(s, nil, testConfig())
+	run := func(call ToolCall, want string) {
+		t.Helper()
+		raw, err := e.Tools.Execute(context.Background(), c, m, w, call)
+		var receipt struct{ Status string }
+		if err != nil || json.Unmarshal([]byte(raw), &receipt) != nil || receipt.Status != want {
+			t.Fatalf("工具未返回预期的 %s 回执：%v %v", want, raw, err)
+		}
+	}
+	old := toolCall(personalFocusTool, map[string]string{"body": "原先在意的方向"})
+	run(old, "succeeded")
+	next := map[string]string{"body": "现在在意的方向"}
+	run(toolCall(personalFocusTool, next), "succeeded")
+	saved, err := s.personalActivity(m.ID)
+	if err != nil || saved.Body != next["body"] {
+		t.Fatal(saved, err)
+	}
+	// 重放旧调用、新调用提交相同内容，以及省略或传 null，都不应覆盖正文或刷新日期。
+	run(old, "succeeded")
+	run(toolCall(personalFocusTool, next), "succeeded")
+	run(toolCall(personalFocusTool, map[string]any{}), "failed")
+	run(toolCall(personalFocusTool, map[string]any{"body": nil}), "failed")
+	if got, err := s.personalActivity(m.ID); err != nil || got != saved {
+		t.Fatal("旧回执或无效输入改写了最新关注", got, err)
+	}
 }

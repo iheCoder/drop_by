@@ -1,7 +1,9 @@
 package dropby
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -158,13 +160,35 @@ func (s *Store) personalConversation(member string) (Conversation, error) {
 	return c, nil
 }
 
-func (s *Store) updatePersonalActivity(member string, body *string) error {
-	if body == nil {
-		return nil
+const personalFocusTool = "set_personal_focus"
+
+// 空字符串是本人明确清空，缺少 body 的调用不能误删。关注和回执一起提交，
+// 中断后重放已完成的调用只取原回执，不会把后来改过的关注写回去。
+func (s *Store) setPersonalFocus(ctx context.Context, c Conversation, member, arguments, runID string) (map[string]bool, error) {
+	var args struct {
+		Body *string `json:"body"`
 	}
-	_, err := s.db.Exec(`INSERT INTO personal_activity(member_id,body,updated_at) VALUES(?,?,?)
- ON CONFLICT(member_id) DO UPDATE SET body=excluded.body,updated_at=excluded.updated_at`, member, strings.TrimSpace(*body), now())
-	return err
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil || args.Body == nil {
+		return nil, fmt.Errorf("body 需要填写字符串，清空时传空字符串")
+	}
+	body := strings.TrimSpace(*args.Body)
+	var receipt map[string]bool
+	err := s.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
+		// 同样的正文不刷新日期，也不触碰同表里的唤醒安排。
+		result, err := tx.ExecContext(ctx, `INSERT INTO personal_activity(member_id,body,updated_at) VALUES(?,?,?)
+ ON CONFLICT(member_id) DO UPDATE SET body=excluded.body,updated_at=excluded.updated_at WHERE personal_activity.body<>excluded.body`, member, body, now())
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		receipt = map[string]bool{"changed": n != 0}
+		_, err = tx.ExecContext(ctx, `UPDATE tool_runs SET status='succeeded',result=? WHERE id=?`, asJSON(receipt), runID)
+		return err
+	})
+	return receipt, err
 }
 
 // 当前关注和相关关系以有界索引进入上下文，完整经历和行动保留回读入口。
