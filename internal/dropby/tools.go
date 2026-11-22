@@ -225,6 +225,12 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	if err != nil {
 		status = "failed"
 		result = map[string]any{"error": err.Error()}
+		if errors.Is(err, ErrBudget) {
+			result = map[string]any{
+				"status": "not_sent", "reason": "上次额度不足，受阻的那次请求没有发出；请按当前情况重新决定。",
+				"previous_budget_rejection": err.Error(),
+			}
+		}
 		var transport *requestFailure
 		if errors.As(err, &transport) {
 			result = map[string]any{"error": err.Error(), "execution_error": true}

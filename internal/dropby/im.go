@@ -304,7 +304,7 @@ func (s *Store) recheckBudgetWait(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	// budget_required 不在通用工作列里。这里单独读取，避免把还放不下的探索提前唤醒。
+	// 只读取恢复判断所需的列，避免把还放不下的工作提前唤醒。
 	rows, err := s.db.Query(`SELECT id, kind, source_id, autonomous, budget_required FROM work WHERE status='waiting_budget' AND budget_required>0`)
 	if err != nil {
 		return err

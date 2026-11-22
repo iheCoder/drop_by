@@ -50,11 +50,7 @@ func (e *Engine) setActivity(room, member, label string) {
 
 // 服务拥有后台工作的生命周期，浏览器的 SSE 连接只负责查看，不控制任务存亡。
 func (e *Engine) Run(ctx context.Context) {
-	// 启动配置可能把日预算改为周预算，或提高了原额度。让既有预算等待重新
-	// 经过真实预留检查，而不是继续被旧的“明天/下周再试”时间挡住；不重置账本。
-	if _, err := e.Store.db.Exec(`UPDATE work SET due_at=? WHERE status='waiting_budget'`, time.Now().UnixMilli()); err != nil {
-		slog.Error("重新核对预算等待失败", "error", err)
-	}
+	// 首轮 dispatch 会按当前配置核对余额。重启本身不应提前执行尚未放得下的工作。
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
@@ -162,6 +158,7 @@ func (e *Engine) dispatch(ctx context.Context) {
 				}
 			}()
 			err := e.process(runCtx, w)
+			w.BudgetRequired = 0
 			var due time.Time
 			status, result, due = "done", "", time.Now()
 			if err != nil {
@@ -664,8 +661,8 @@ func (e *Engine) actLocked(ctx context.Context, c Conversation, m Member, w Work
 		if len(messages) > 0 && messages[0].Role == "system" {
 			messages[0] = currentSystem
 		}
-		// 有新消息或控制变化，旧调用必须重新判断；没有变化则继续消费断点。
-		if seen > cp.Seen || cp.Revision != c.Revision || cp.ProfileRevision != m.ProfileRevision {
+		// 预算恢复也重新判断。保留已经发生的事实，不把未发送的旧工具当作新请求。
+		if w.BudgetRequired > 0 || seen > cp.Seen || cp.Revision != c.Revision || cp.ProfileRevision != m.ProfileRevision {
 			messages, err = e.resumeReceipts(messages, w, m)
 			if err != nil {
 				return Outcome{}, err

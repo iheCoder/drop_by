@@ -448,7 +448,7 @@ func (r usageReservation) idTime(t *testing.T, s *Store) time.Time {
 func TestScheduleKeepsTheWorkOrigin(t *testing.T) {
 	s, c, m := fixture(t)
 	e := NewEngine(s, nil, explorationConfig(20_000_000))
-	revisit := Work{ID: newID("work"), ConversationID: c.ID, MemberID: m.ID, Kind: "revisit", SourceID: "human-msg", Autonomous: false, Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
+	revisit := Work{ID: newID("work"), ConversationID: c.ID, MemberID: m.ID, Kind: "revisit", SourceID: "human-msg", Autonomous: true, Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
 	chat := Work{ID: newID("work"), ConversationID: c.ID, MemberID: m.ID, Kind: "chat", SourceID: "human-msg", Autonomous: false, Status: "pending", DueAt: time.Now().UnixMilli(), CreatedAt: now()}
 	for _, w := range []Work{revisit, chat} {
 		if err := s.Guard(c.ID, c.Revision, func(tx *sql.Tx) error { return insertWork(tx, w) }); err != nil {
@@ -860,4 +860,240 @@ func waitFor(t *testing.T, limit time.Duration, ready func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("等待超时")
+}
+
+func TestBudgetRecoveryLetsMemberReconsiderUnsentSearch(t *testing.T) {
+	for _, mode := range []string{"继续", "暂不需要", "停止研究"} {
+		t.Run(mode, func(t *testing.T) {
+			s, c, m := fixture(t)
+			var searches, modelCalls atomic.Int32
+			search := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				searches.Add(1)
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil || r.URL.Path != "/search" || body["query"] != "蓝色自行车" {
+					t.Errorf("恢复后搜索实际请求不对: path=%s body=%v err=%v", r.URL.Path, body, err)
+				}
+				fmt.Fprint(w, `{"results":[{"url":"https://example.test/bike","summary":"检索结果已找到"}]}`)
+			}))
+			defer search.Close()
+			cfg := quietBudget(explorationConfig(20_000_000), search.URL, search.URL)
+			reserveExplorationAt(t, s, cfg, time.Now(), "other", "fill", "model", 2_000_000)
+			if _, err := s.db.Exec(`UPDATE personal_activity SET next_at=-1`); err != nil {
+				t.Fatal(err)
+			}
+			work := addWork(t, s, c, m, "research")
+			send := toolCall("send_message", map[string]any{"message": "我先记下这件事"})
+			oldSearch := toolCall("search", map[string]any{"query": "蓝色自行车"})
+			newSearch := toolCall("search", map[string]any{"query": "蓝色自行车"})
+			e := NewEngine(s, modelFunc(func(ctx context.Context, ms []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+				if autonomyRoot(ctx) != work.ID {
+					return jsonReply(Outcome{}), nil
+				}
+				switch n := modelCalls.Add(1); n {
+				case 1:
+					return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{send, oldSearch}}, nil
+				case 2:
+					var sentReceipt, unsentReceipt, newMessage bool
+					var scene string
+					for _, msg := range ms {
+						if msg.Role == "tool" && msg.ToolCallID == send.ID {
+							sentReceipt = strings.Contains(msg.Content, "succeeded")
+						}
+						if msg.Role == "tool" && msg.ToolCallID == oldSearch.ID {
+							unsentReceipt = strings.Contains(msg.Content, "not_sent") && strings.Contains(msg.Content, "上次额度不足")
+						}
+						newMessage = newMessage || (msg.Role == "user" && strings.Contains(msg.Content, "那辆车我已找到，暂不需要"))
+						if sceneFields(msg) != nil {
+							scene = msg.Content
+						}
+					}
+					if !sentReceipt || !unsentReceipt || scene == "" {
+						t.Errorf("没有把成功回执、历史未发送回执和最新现场交给模型: 成功=%v 未发=%v 现场=%v", sentReceipt, unsentReceipt, scene != "")
+					}
+					if mode == "暂不需要" {
+						if !newMessage {
+							t.Error("没有交付真人新消息")
+						}
+						return jsonReply(Outcome{Outcome: "不再搜索"}), nil
+					}
+					if mode != "继续" {
+						t.Errorf("已取消的工作再次请求模型")
+					}
+					return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{newSearch}}, nil
+				default:
+					found := false
+					for _, msg := range ms {
+						found = found || (msg.Role == "tool" && msg.ToolCallID == newSearch.ID && strings.Contains(msg.Content, "检索结果已找到"))
+					}
+					if !found {
+						t.Error("新搜索结果未返回给模型")
+					}
+					return jsonReply(Outcome{Outcome: "已核对"}), nil
+				}
+			}), cfg)
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() { e.Run(ctx); close(done) }()
+			defer func() { cancel(); <-done }()
+			waitFor(t, 5*time.Second, func() bool { return workStatus(t, s, work.ID) == "waiting_budget" })
+			if searches.Load() != 0 || modelCalls.Load() != 1 {
+				t.Fatalf("受阻的搜索不可发送: 搜索=%d 模型=%d", searches.Load(), modelCalls.Load())
+			}
+			switch mode {
+			case "暂不需要":
+				if err := e.Submit(userMessage(c, "那辆车我已找到，暂不需要")); err != nil {
+					t.Fatal(err)
+				}
+			case "停止研究":
+				if err := e.Submit(userMessage(c, "停止研究")); err != nil {
+					t.Fatal(err)
+				}
+				if status := workStatus(t, s, work.ID); status != "stopped" {
+					t.Fatalf("明确取消优先: %s", status)
+				}
+			}
+			past := time.Now().Add(-9 * time.Hour).Format(time.RFC3339Nano)
+			if _, err := s.db.Exec(`UPDATE usage_calls SET started_at=? WHERE root_id='fill'`, past); err != nil {
+				t.Fatal(err)
+			}
+			wantStatus, wantSearches, wantModels := "done", int32(1), int32(3)
+			if mode == "暂不需要" {
+				wantSearches, wantModels = 0, 2
+			} else if mode == "停止研究" {
+				wantStatus, wantSearches, wantModels = "stopped", 0, 1
+				if err := s.recheckBudgetWait(cfg); err != nil {
+					t.Fatal(err)
+				}
+			}
+			waitFor(t, 5*time.Second, func() bool { return workStatus(t, s, work.ID) == wantStatus })
+			if searches.Load() != wantSearches || modelCalls.Load() != wantModels {
+				t.Fatalf("恢复实际调用: 搜索=%d 想要 %d，模型=%d 想要 %d", searches.Load(), wantSearches, modelCalls.Load(), wantModels)
+			}
+			var sends int
+			if err := s.db.QueryRow(`SELECT count(*) FROM messages WHERE conversation_id=? AND body='我先记下这件事'`, c.ID).Scan(&sends); err != nil || sends != 1 {
+				t.Fatalf("不得重复发送已成功消息: %d %v", sends, err)
+			}
+		})
+	}
+}
+
+func TestBudgetRestartKeepsUnaffordableWorkParked(t *testing.T) {
+	s, c, m := fixture(t)
+	cfg := explorationConfig(20_000_000)
+	reserveExplorationAt(t, s, cfg, time.Now(), "other", "fill", "model", 2_000_000)
+	if _, err := s.db.Exec(`UPDATE personal_activity SET next_at=-1`); err != nil {
+		t.Fatal(err)
+	}
+	job, oversized := addWork(t, s, c, m, "research"), addWork(t, s, c, m, "research")
+	for _, item := range []struct {
+		work Work
+		cost int64
+		due  time.Time
+	}{{job, 1_000_000, time.Now().Add(8 * time.Hour)}, {oversized, 2_000_001, explorationHoldDue()}} {
+		if _, err := s.Claim(item.work.ID); err != nil {
+			t.Fatal(err)
+		}
+		item.work.BudgetRequired = item.cost
+		if err := s.Finish(item.work, "waiting_budget", "预算不足", item.due); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var calls atomic.Int32
+	e := NewEngine(s, modelFunc(func(ctx context.Context, _ []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		calls.Add(1)
+		return jsonReply(Outcome{Outcome: "现在可以继续"}), nil
+	}), cfg)
+	start := func() func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		stop := func() { cancel(); <-done }
+		go func() { e.Run(ctx); close(done) }()
+		t.Cleanup(stop)
+		return stop
+	}
+	stop := start()
+	// 等一个完整调度周期，确认普通等待和永久占位都没有被启动改写。
+	time.Sleep(1100 * time.Millisecond)
+	stop()
+	for _, w := range []Work{job, oversized} {
+		got, err := s.ReadWork(c.ID, w.ID)
+		if err != nil || got.Status != "waiting_budget" || got.Attempts != 1 || calls.Load() != 0 {
+			t.Fatalf("相同配置重启不应重领: %+v calls=%d err=%v", got, calls.Load(), err)
+		}
+	}
+	past := time.Now().Add(-9 * time.Hour).Format(time.RFC3339Nano)
+	if _, err := s.db.Exec(`UPDATE usage_calls SET started_at=? WHERE root_id='fill'`, past); err != nil {
+		t.Fatal(err)
+	}
+	start()
+	waitFor(t, 5*time.Second, func() bool { return workStatus(t, s, job.ID) == "done" })
+	got, err := s.ReadWork(c.ID, oversized.ID)
+	if err != nil || got.Status != "waiting_budget" || got.Attempts != 1 || calls.Load() != 1 {
+		t.Fatalf("只应唤醒已经付得起的工作: %+v calls=%d err=%v", got, calls.Load(), err)
+	}
+}
+
+func TestHumanDelegationAndTimedFollowupUseSiteBudget(t *testing.T) {
+	s, c, members := groupWithMembers(t, 2)
+	cfg := explorationConfig(20_000_000)
+	reserveExplorationAt(t, s, cfg, time.Now(), "other", "fill", "model", 2_000_000)
+	msg := userMessage(c, "@阿苇 请让同伴核对材料，收齐就反馈，并约定一小时后再看")
+	if err := s.AddUserMessage(msg, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = s.Conversation(c.ID)
+	c, err := s.SetCoordinator(c, members[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := latestChatWork(t, s, c.ID)
+	calls := 0
+	e := NewEngine(s, modelFunc(func(ctx context.Context, _ []ChatMessage, _ []ToolDefinition, _ bool) (ChatMessage, error) {
+		calls++
+		reservation, err := s.reserveCall(ctx, cfg, 1000, "test", "fake", "")
+		if err != nil {
+			return ChatMessage{}, err
+		}
+		if err := s.settleCall(reservation, 500, responseUsage{}, ""); err != nil {
+			return ChatMessage{}, err
+		}
+		return jsonReply(Outcome{Outcome: "材料核对完成"}), nil
+	}), cfg)
+	assigned, err := s.DelegateWork(c, members[0], parent, members[1].ID, "核对材料", "按真人要求安排")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.Claim(assigned.ID); err != nil || !ok {
+		t.Fatalf("领取真人委托: %v %v", ok, err)
+	}
+	if err := e.process(context.Background(), assigned); err != nil {
+		t.Fatalf("真人委托不应被自主窗口挡住: %v", err)
+	}
+	review, err := s.ReadWork(c.ID, "coordination_"+assigned.ID)
+	if err != nil || autonomousWork(review) || review.RootID != parent.ID || review.SourceID != msg.ID {
+		t.Fatalf("结果回报应继承真人来源: %+v %v", review, err)
+	}
+	if err := e.process(context.Background(), review); err != nil {
+		t.Fatalf("真人结果回报不应被自主窗口挡住: %v", err)
+	}
+	due := time.Now().Add(time.Hour).Truncate(time.Second)
+	follow := toolCall("schedule_followup", map[string]any{"instruction": "核对稍后有无变化", "due_at": due.Format(time.RFC3339)})
+	if _, err := e.Tools.Execute(context.Background(), c, members[0], review, follow); err != nil {
+		t.Fatalf("保存真人约定的明确时刻: %v", err)
+	}
+	timed := childWork(t, s, review.ID)
+	if autonomousWork(timed) || timed.DueAt != due.UnixMilli() || timed.RootID != parent.ID || timed.SourceID != msg.ID {
+		t.Fatalf("明确预约应沿用原任务的来源和指定时间: %+v", timed)
+	}
+	if err := e.process(context.Background(), timed); err != nil {
+		t.Fatalf("真人预约到期时不应被自主窗口挡住: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("应执行委托、回报、到期复看，得到 %d 次", calls)
+	}
+	for _, row := range usageRows(t, s) {
+		if row.root == parent.ID && row.autonomous {
+			t.Fatalf("真人链误进自主账: %+v", row)
+		}
+	}
 }

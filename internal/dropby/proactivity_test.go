@@ -82,15 +82,15 @@ func TestPersonalClockDoesNotBackoffOrMultiplyByRooms(t *testing.T) {
 	}
 }
 
-func TestFollowupKeepsHumanSourceButUsesAutonomousBudgetAndSurvivesNewMessage(t *testing.T) {
+func TestFollowupKeepsHumanSourceAndSurvivesNewMessage(t *testing.T) {
 	s, c, m := fixture(t)
-	msg := userMessage(c, "反攻略这个想法挺有趣")
+	msg := userMessage(c, "一小时后再看看反攻略的结尾")
 	if err := s.AddUserMessage(msg, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	c, _ = s.Conversation(c.ID)
 	parent := latestChatWork(t, s, c.ID)
-	if _, err := s.ScheduleFollowup(c, m, parent, "稍后再考虑反攻略的结尾", "由刚才的话产生的好奇", time.Now().Add(time.Hour)); err != nil {
+	if _, err := s.ScheduleFollowup(c, m, parent, "稍后再考虑反攻略的结尾", "真人约定的后续", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	var follow Work
@@ -100,7 +100,7 @@ func TestFollowupKeepsHumanSourceButUsesAutonomousBudgetAndSurvivesNewMessage(t 
 			follow = w
 		}
 	}
-	if follow.SourceID != msg.ID || !follow.Autonomous || follow.RootID != parent.ID {
+	if follow.SourceID != msg.ID || autonomousWork(follow) || follow.RootID != parent.ID {
 		t.Fatalf("source/budget/lineage lost: %+v", follow)
 	}
 	if err := s.AddUserMessage(userMessage(c, "先聊聊别的"), time.Hour); err != nil {
