@@ -150,12 +150,12 @@ func TestExplorationWindowSlidesByEntryAndSurvivesTheWeek(t *testing.T) {
 		t.Fatal(err)
 	}
 	observe := later.Add(5 * time.Hour)
-	_, longCharges, err := autonomousWindowCharges(s.db, observe, 8*time.Hour)
-	_, shortCharges, shortErr := autonomousWindowCharges(s.db, observe, 4*time.Hour)
-	if err != nil || shortErr != nil || !chargeHas(longCharges, 1_200_000) || chargeHas(shortCharges, 1_200_000) {
-		t.Fatalf("5 小时前的账应留在 8 小时窗口、离开 4 小时窗口: %+v %+v %v %v", longCharges, shortCharges, err, shortErr)
+	longSpend, err := autonomousWindowSpend(s.db, observe, 8*time.Hour)
+	shortSpend, shortErr := autonomousWindowSpend(s.db, observe, 4*time.Hour)
+	if err != nil || shortErr != nil || longSpend != 1_800_000 || shortSpend != 0 {
+		t.Fatalf("5 小时前的账应留在 8 小时窗口、离开 4 小时窗口: %d %d %v %v", longSpend, shortSpend, err, shortErr)
 	}
-	spent, _, err := autonomousWindowCharges(s.db, morning, cfg.explorationWindow())
+	spent, err := autonomousWindowSpend(s.db, morning, cfg.explorationWindow())
 	if err != nil || spent != 1_200_000 {
 		t.Fatalf("满 8 小时的旧账应滑出，较新的一笔仍占窗口，实际 %d %v", spent, err)
 	}
@@ -171,7 +171,7 @@ func TestExplorationWindowSlidesByEntryAndSurvivesTheWeek(t *testing.T) {
 		t.Fatalf("真人任务不应被探索窗口挡住: %v", err)
 	}
 	after := morning.Add(2*time.Hour + time.Minute)
-	spent, _, err = autonomousWindowCharges(s.db, after, cfg.explorationWindow())
+	spent, err = autonomousWindowSpend(s.db, after, cfg.explorationWindow())
 	if err != nil || spent != 0 {
 		t.Fatalf("第二笔满 8 小时后窗口应清空，实际 %d %v", spent, err)
 	}
@@ -184,15 +184,6 @@ func TestExplorationWindowSlidesByEntryAndSurvivesTheWeek(t *testing.T) {
 	if err != nil || sundayErr != nil || weekSpent != 900_000 || sundaySpent != 1_800_000 {
 		t.Fatalf("两周的探索账应分开，窗口清空不等于上周消失: 周一 %d 周日 %d %v %v", weekSpent, sundaySpent, err, sundayErr)
 	}
-}
-
-func chargeHas(charges []windowCharge, amount int64) bool {
-	for _, charge := range charges {
-		if charge.amount == amount {
-			return true
-		}
-	}
-	return false
 }
 
 func TestConcurrentExplorationCannotShareTheSameWindowBalance(t *testing.T) {
@@ -226,7 +217,7 @@ func TestConcurrentExplorationCannotShareTheSameWindowBalance(t *testing.T) {
 	if passed != 1 || failed != 1 {
 		t.Fatalf("两笔 $1.5 只能有一笔进入 $2 窗口: %+v", errs)
 	}
-	spent, _, err := autonomousWindowCharges(s.db, time.Now(), cfg.explorationWindow())
+	spent, err := autonomousWindowSpend(s.db, time.Now(), cfg.explorationWindow())
 	if err != nil || spent != 1_500_000 {
 		t.Fatalf("窗口里应只留下获准的一笔: %d %v", spent, err)
 	}
@@ -283,7 +274,7 @@ func TestExplorationSettlementReleasesAndUnknownKeepsTheReservation(t *testing.T
 	if err = s.settleCall(held[0], settledCharge, responseUsage{InputTokens: 20320, OutputTokens: 400}, "generated_message"); err != nil {
 		t.Fatal(err)
 	}
-	spent, _, err := autonomousWindowCharges(s.db, time.Now(), cfg.explorationWindow())
+	spent, err := autonomousWindowSpend(s.db, time.Now(), cfg.explorationWindow())
 	if err != nil || spent != settledCharge+2*reserved {
 		t.Fatalf("结算后窗口应留下实际 $0.035，而不是继续占着 $0.522: %d %v", spent, err)
 	}
@@ -307,7 +298,7 @@ func TestExplorationSettlementReleasesAndUnknownKeepsTheReservation(t *testing.T
 	}
 	unknown := held[1]
 	s.finishUsageCall(unknown)
-	spent, _, err = autonomousWindowCharges(s.db, time.Now(), cfg.explorationWindow())
+	spent, err = autonomousWindowSpend(s.db, time.Now(), cfg.explorationWindow())
 	if err != nil || spent != settledCharge+2*reserved {
 		t.Fatalf("结果未知的调用应继续占用预留: %d %v", spent, err)
 	}
@@ -316,7 +307,7 @@ func TestExplorationSettlementReleasesAndUnknownKeepsTheReservation(t *testing.T
 	for range 5 {
 		reserveExplorationAt(t, fresh, cfg, time.Now(), "liangye", "root-capped", "model", capped)
 	}
-	spent, _, err = autonomousWindowCharges(fresh.db, time.Now(), cfg.explorationWindow())
+	spent, err = autonomousWindowSpend(fresh.db, time.Now(), cfg.explorationWindow())
 	if err != nil || spent != 5*capped || spent > 2_000_000 {
 		t.Fatalf("8192 的前 5 笔预留应一起放进 $2 窗口: %d %v", spent, err)
 	}
@@ -331,20 +322,26 @@ func TestExplorationRecoveryWaitsUntilBothLimitsCanPass(t *testing.T) {
 	for monday.Weekday() != time.Monday {
 		monday = monday.AddDate(0, 0, 1)
 	}
-	_, weekEnd := budgetWeek(monday.Add(-time.Hour))
 	reserveExplorationAt(t, s, cfg, monday.Add(-4*time.Hour), "liangye", "root-both", "model", 500_000)
 	ctx := context.WithValue(context.Background(), autonomyKey{}, "root-next")
-	_, err := s.reserveBudget(ctx, cfg, 100_000, monday.Add(-time.Hour), &usageCall{purpose: "model", member: "awei", root: "root-next"})
-	var rejection *budgetRejection
-	if !errors.As(err, &rejection) || !rejection.resumeAt.Equal(wakeAfter(monday.Add(-4*time.Hour).Add(8*time.Hour))) || rejection.resumeAt.Before(weekEnd) {
-		t.Fatalf("周额度和窗口都不足时，应等到较晚的那个时刻: %v，周恢复 %s", err, weekEnd)
+	call := &usageCall{purpose: "model", member: "awei", root: "root-next"}
+	if _, err := s.reserveBudget(ctx, cfg, 100_000, monday.Add(-time.Hour), call); !errors.Is(err, ErrBudget) {
+		t.Fatalf("周额度和窗口均不足时不应放行: %v", err)
+	}
+	if _, err := s.reserveBudget(ctx, cfg, 100_000, monday.Add(time.Hour), call); !errors.Is(err, ErrBudget) {
+		t.Fatalf("换周但窗口仍不足时不应放行: %v", err)
+	}
+	recovered, err := s.reserveBudget(ctx, cfg, 100_000, monday.Add(5*time.Hour), call)
+	if err != nil {
+		t.Fatalf("周余额和窗口余额都够时应放行: %v", err)
+	}
+	if err = s.settleCall(recovered, 0, responseUsage{}, "released"); err != nil {
+		t.Fatal(err)
 	}
 	afternoon := monday.Add(15 * time.Hour)
 	reserveExplorationAt(t, s, cfg, afternoon.Add(-9*time.Hour), "liangye", "root-week", "model", 500_000)
-	_, weekEnd = budgetWeek(afternoon)
-	_, err = s.reserveBudget(ctx, cfg, 100_000, afternoon, &usageCall{purpose: "model", member: "awei", root: "root-week"})
-	if !errors.As(err, &rejection) || rejection.skipWindowRetry || !rejection.resumeAt.Equal(weekEnd) || !strings.Contains(err.Error(), "本周自主探索额度") {
-		t.Fatalf("只有探索周额度不足时应等到下周: %v", err)
+	if _, err = s.reserveBudget(ctx, cfg, 100_000, afternoon, call); !errors.Is(err, ErrBudget) || !strings.Contains(err.Error(), "本周自主探索额度") {
+		t.Fatalf("仅周额度不足仍应拒绝并给出原因: %v", err)
 	}
 }
 
@@ -356,9 +353,8 @@ func TestExplorationShortfallWaitsUntilItCanFitAndDoesNotSpin(t *testing.T) {
 	ctx := context.WithValue(context.Background(), autonomyKey{}, "root-next")
 	_, err := s.reserveBudget(ctx, cfg, 100_000, at, &usageCall{purpose: "model", member: "awei", root: "root-next"})
 	var rejection *budgetRejection
-	slide := wakeAfter(blocking.idTime(t, s).Add(cfg.explorationWindow()))
-	if !errors.As(err, &rejection) || rejection.skipWindowRetry || !rejection.resumeAt.Equal(slide) {
-		t.Fatalf("窗口不足应等到挡住它的那笔滑出: %v，期望 %s", err, slide)
+	if !errors.As(err, &rejection) || rejection.required != 100_000 || !strings.Contains(err.Error(), "最近8小时") {
+		t.Fatalf("窗口不足时应拒绝并保留待重新核对的金额: %v", err)
 	}
 	human := Work{ID: newID("work"), ConversationID: c.ID, MemberID: m.ID, Kind: "chat", SourceID: "msg-user", Status: "waiting_budget", BudgetRequired: 100_000, DueAt: at.Add(time.Hour).UnixMilli(), CreatedAt: now()}
 	explore := Work{ID: newID("work"), MemberID: m.ID, Kind: "explore", Autonomous: true, Status: "waiting_budget", BudgetRequired: 100_000, DueAt: at.Add(time.Hour).UnixMilli(), CreatedAt: now()}
@@ -430,19 +426,6 @@ func workStatus(t *testing.T, s *Store, id string) string {
 		t.Fatal(err)
 	}
 	return status
-}
-
-func (r usageReservation) idTime(t *testing.T, s *Store) time.Time {
-	t.Helper()
-	var raw string
-	if err := s.db.QueryRow(`SELECT started_at FROM usage_calls WHERE id=?`, r.id).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	at, err := time.Parse(time.RFC3339Nano, raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return at
 }
 
 func TestScheduleKeepsTheWorkOrigin(t *testing.T) {
@@ -832,21 +815,24 @@ func TestExplorationRequestThatCannotFitDoesNotSpin(t *testing.T) {
 	go func() { e.Run(ctx); close(done) }()
 	defer func() { cancel(); <-done }()
 	waitFor(t, 5*time.Second, func() bool { return workStatus(t, s, explore.ID) == "waiting_budget" })
-	var due int64
 	var result string
-	if err := s.db.QueryRow(`SELECT due_at, result FROM work WHERE id=?`, explore.ID).Scan(&due, &result); err != nil {
+	if err := s.db.QueryRow(`SELECT result FROM work WHERE id=?`, explore.ID).Scan(&result); err != nil {
 		t.Fatal(err)
 	}
-	if time.UnixMilli(due).Year() != 9999 || !strings.Contains(result, "超过每8小时") || requests.Load() != 0 {
-		t.Fatalf("空窗口也放不下时不应按窗口反复重试: due=%s result=%s requests=%d", time.UnixMilli(due), result, requests.Load())
+	if !strings.Contains(result, "最近8小时") || requests.Load() != 0 {
+		t.Fatalf("空窗口也放不下时不应发出请求: result=%s requests=%d", result, requests.Load())
 	}
 	if err := e.Submit(userMessage(c, "现在聊一聊")); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 5*time.Second, func() bool { return testMemberSpoke(s, c.ID, m.ID) })
 	time.Sleep(1200 * time.Millisecond)
-	if requests.Load() != 1 || workStatus(t, s, explore.ID) != "waiting_budget" {
-		t.Fatalf("探索停住时真人聊天仍应完成，且探索不能空转: requests=%d status=%s", requests.Load(), workStatus(t, s, explore.ID))
+	var attempts int
+	if err := s.db.QueryRow(`SELECT attempts FROM work WHERE id=?`, explore.ID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 1 || workStatus(t, s, explore.ID) != "waiting_budget" || attempts != 1 {
+		t.Fatalf("探索停住时真人聊天仍应完成，且探索不能空转: requests=%d status=%s attempts=%d", requests.Load(), workStatus(t, s, explore.ID), attempts)
 	}
 }
 
@@ -989,7 +975,7 @@ func TestBudgetRestartKeepsUnaffordableWorkParked(t *testing.T) {
 		work Work
 		cost int64
 		due  time.Time
-	}{{job, 1_000_000, time.Now().Add(8 * time.Hour)}, {oversized, 2_000_001, explorationHoldDue()}} {
+	}{{job, 1_000_000, time.Now().Add(8 * time.Hour)}, {oversized, 2_000_001, time.Now().Add(-time.Hour)}} {
 		if _, err := s.Claim(item.work.ID); err != nil {
 			t.Fatal(err)
 		}
@@ -1012,7 +998,7 @@ func TestBudgetRestartKeepsUnaffordableWorkParked(t *testing.T) {
 		return stop
 	}
 	stop := start()
-	// 等一个完整调度周期，确认普通等待和永久占位都没有被启动改写。
+	// 等一个完整调度周期，确认重启不会提前领取普通等待，也不会空跑已经到时但仍付不起的工作。
 	time.Sleep(1100 * time.Millisecond)
 	stop()
 	for _, w := range []Work{job, oversized} {
@@ -1096,4 +1082,42 @@ func TestHumanDelegationAndTimedFollowupUseSiteBudget(t *testing.T) {
 			t.Fatalf("真人链误进自主账: %+v", row)
 		}
 	}
+}
+
+func TestBudgetRecheckSkipsUnneededLedgerReads(t *testing.T) {
+	t.Run("no known waiting request", func(t *testing.T) {
+		s, c, m := fixture(t)
+		due := time.Now().Add(-time.Minute)
+		legacy := Work{ID: newID("work"), ConversationID: c.ID, MemberID: m.ID, Kind: "chat", Status: "waiting_budget", DueAt: due.UnixMilli(), CreatedAt: now()}
+		if err := insertWaiting(s, legacy); err != nil {
+			t.Fatal(err)
+		}
+		// 用临时库故意让账本不可读，证明没有已知预留金额时不查账。
+		if _, err := s.db.Exec(`ALTER TABLE usage RENAME TO unavailable_usage`); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.recheckBudgetWait(explorationConfig(20_000_000)); err != nil {
+			t.Fatalf("没有已知金额的等待项时不应读账: %v", err)
+		}
+		jobs, err := s.DueWorks()
+		if err != nil || len(jobs) != 1 || jobs[0].ID != legacy.ID {
+			t.Fatalf("旧等待仍按原约定时间进入队列: %+v %v", jobs, err)
+		}
+	})
+	t.Run("human waiters only", func(t *testing.T) {
+		s, c, m := fixture(t)
+		human := Work{ID: newID("work"), ConversationID: c.ID, MemberID: m.ID, Kind: "revisit", SourceID: "human-msg", Status: "waiting_budget", BudgetRequired: 100_000, CreatedAt: now()}
+		if err := insertWaiting(s, human); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(`ALTER TABLE usage_calls RENAME TO unavailable_usage_calls`); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.recheckBudgetWait(explorationConfig(20_000_000)); err != nil {
+			t.Fatalf("只有真人任务时不应读自主窗口明细: %v", err)
+		}
+		if status := workStatus(t, s, human.ID); status != "pending" {
+			t.Fatalf("真人任务付得起时应恢复: %s", status)
+		}
+	})
 }

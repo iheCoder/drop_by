@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
-	"sort"
 	"time"
 )
 
@@ -47,14 +46,8 @@ func shareMicros(total int64, share float64) int64 {
 	return (total*millionths + 500_000) / 1_000_000
 }
 
-type windowCharge struct {
-	at     time.Time
-	amount int64
-}
-
-type sqlQuery interface {
+type queryRows interface {
 	Query(query string, args ...any) (*sql.Rows, error)
-	QueryRow(query string, args ...any) *sql.Row
 }
 
 func autonomousWeekSpend(q queryRower, at time.Time) (int64, error) {
@@ -65,153 +58,61 @@ func autonomousWeekSpend(q queryRower, at time.Time) (int64, error) {
 }
 
 // 窗口按每笔调用的开始时间向后看。已结算用实际金额，在途和结果未知保留预留。
-func autonomousWindowCharges(q sqlQuery, at time.Time, window time.Duration) (int64, []windowCharge, error) {
-	if window <= 0 {
-		window = 8 * time.Hour
-	}
+func autonomousWindowSpend(q queryRows, at time.Time, window time.Duration) (int64, error) {
 	cutoff := at.Add(-window)
 	rows, err := q.Query(`SELECT started_at, status, reserved_micros, cost_micros FROM usage_calls WHERE autonomous=1 AND day>=?`, cutoff.Format(usageDate))
 	if err != nil {
-		return 0, nil, err
+		return 0, err
 	}
 	defer rows.Close()
 	var spent int64
-	var charges []windowCharge
 	for rows.Next() {
 		var startedRaw, status string
 		var reserved, cost int64
 		if err = rows.Scan(&startedRaw, &status, &reserved, &cost); err != nil {
-			return 0, nil, err
+			return 0, err
 		}
-		started, parseErr := time.Parse(time.RFC3339Nano, startedRaw)
-		if parseErr != nil {
-			started = at // 读不出时刻的记录继续占用窗口，不能把它当成已经滑出。
-		}
-		if !started.After(cutoff) {
+		if started, err := time.Parse(time.RFC3339Nano, startedRaw); err == nil && !started.After(cutoff) {
 			continue
 		}
+		// 读不出时刻的旧记录继续占用窗口。
 		amount := reserved
 		if status == "settled" {
 			amount = cost
 		}
-		if amount < 0 {
-			amount = 0
-		}
-		spent += amount
-		charges = append(charges, windowCharge{at: started, amount: amount})
+		spent += max(int64(0), amount)
 	}
-	return spent, charges, rows.Err()
+	return spent, rows.Err()
 }
 
-func (s *Store) explorationBalances(q sqlQuery, cfg Config, at time.Time, siteLimit int64) (siteRemaining, weekRemaining, windowRemaining, weeklyAllowance, windowAllowance int64, err error) {
-	weeklyAllowance, windowAllowance = cfg.explorationAllowances(siteLimit)
-	var weekSpent int64
-	weekSpent, err = autonomousWeekSpend(q, at)
+func explorationRemaining(q queryRows, cfg Config, at time.Time, siteLimit, weekSpent int64) (week, window int64, err error) {
+	windowSpent, err := autonomousWindowSpend(q, at, cfg.explorationWindow())
 	if err != nil {
-		return 0, 0, 0, 0, 0, err
+		return 0, 0, err
 	}
-	var windowSpent int64
-	windowSpent, _, err = autonomousWindowCharges(q, at, cfg.explorationWindow())
-	if err != nil {
-		return 0, 0, 0, 0, 0, err
-	}
-	usage, err := s.weeklyUsageAt(at)
-	if err != nil {
-		return 0, 0, 0, 0, 0, err
-	}
-	return max(int64(0), siteLimit-usage.CostMicros), max(int64(0), weeklyAllowance-weekSpent), max(int64(0), windowAllowance-windowSpent), weeklyAllowance, windowAllowance, nil
+	weeklyAllowance, windowAllowance := cfg.explorationAllowances(siteLimit)
+	// 异常的旧汇总不能把可用余额抬到配置额度以上。
+	return max(int64(0), weeklyAllowance-max(int64(0), weekSpent)), max(int64(0), windowAllowance-windowSpent), nil
 }
 
-// 站点周额度已经在同一事务里检查过。这里只拒绝自主探索放不进探索周额度或滚动窗口的预留。
-func rejectExploration(tx *sql.Tx, c Config, at time.Time, limit, cost int64) error {
-	weeklyAllowance, windowAllowance := c.explorationAllowances(limit)
+// 站点周额度已经在同一事务里检查过。
+func rejectExploration(tx *sql.Tx, cfg Config, at time.Time, limit, cost int64) error {
 	weekSpent, err := autonomousWeekSpend(tx, at)
 	if err != nil {
 		return err
 	}
-	spent, charges, err := autonomousWindowCharges(tx, at, c.explorationWindow())
+	week, window, err := explorationRemaining(tx, cfg, at, limit, weekSpent)
 	if err != nil {
 		return err
 	}
-	weekRemaining := max(int64(0), weeklyAllowance-weekSpent)
-	windowRemaining := max(int64(0), windowAllowance-spent)
-	if cost <= weekRemaining && cost <= windowRemaining {
+	if cost <= week && cost <= window {
 		return nil
 	}
-	return explorationRejection(c, at, cost, weekRemaining, weeklyAllowance, windowRemaining, windowAllowance, spent, charges)
-}
-
-func explorationRejection(c Config, at time.Time, cost, weekRemaining, weeklyAllowance, windowRemaining, windowAllowance, spent int64, charges []windowCharge) *budgetRejection {
-	window := c.explorationWindow()
-	_, weekEnd := budgetWeek(at)
-	label := durationLabel(window)
-	if cost > windowAllowance {
-		return &budgetRejection{
-			required: cost, skipWindowRetry: true,
-			message: fmt.Sprintf("本次调用需预留 $%.3f，超过每%s的自主探索额度 $%.3f，未完工作已保留。", float64(cost)/1e6, label, float64(windowAllowance)/1e6),
-		}
+	label, remaining := "本周自主探索额度", week
+	if window < week {
+		label, remaining = "最近"+durationLabel(cfg.explorationWindow())+"的自主探索额度", window
 	}
-	if cost > weeklyAllowance {
-		return &budgetRejection{
-			required: cost, skipWindowRetry: true,
-			message: fmt.Sprintf("本次调用需预留 $%.3f，超过本周自主探索额度 $%.3f，未完工作已保留。", float64(cost)/1e6, float64(weeklyAllowance)/1e6),
-		}
-	}
-	windowShort := cost > windowRemaining
-	weekShort := cost > weekRemaining
-	var slide time.Time
-	if windowShort {
-		resume, ok := windowResume(charges, spent, cost, windowAllowance, window)
-		if ok && resume.After(at) {
-			slide = resume
-		}
-	}
-	if windowShort && slide.IsZero() {
-		// 账面对不上时不要按窗口紧凑重试；等到周额度恢复再判断一次。
-		slide = weekEnd
-	}
-	if windowShort && (!weekShort || !slide.Before(weekEnd)) {
-		when := slide.Format("1月2日 15:04 MST")
-		if windowRemaining == 0 {
-			return &budgetRejection{required: cost, resumeAt: slide, message: fmt.Sprintf("最近%s的自主探索额度已用完，未完工作已保留，%s 后再判断。", label, when)}
-		}
-		return &budgetRejection{required: cost, resumeAt: slide, message: fmt.Sprintf("最近%s的自主探索额度还剩 $%.3f，本次调用需预留 $%.3f，未完工作已保留，%s 后再判断。", label, float64(windowRemaining)/1e6, float64(cost)/1e6, when)}
-	}
-	reset := weekEnd.Format("1月2日 15:04 MST")
-	if weekRemaining == 0 {
-		return &budgetRejection{required: cost, resumeAt: weekEnd, message: fmt.Sprintf("本周自主探索额度已用完，未完工作已保留，%s 恢复。", reset)}
-	}
-	return &budgetRejection{required: cost, resumeAt: weekEnd, message: fmt.Sprintf("本周自主探索额度还剩 $%.3f，本次调用需预留 $%.3f，暂时无法开始；未完工作已保留，%s 恢复。", float64(weekRemaining)/1e6, float64(cost)/1e6, reset)}
-}
-
-// 从最旧的一笔开始释放。返回的时刻是“刚好够本次预留”的那一笔滑出窗口的时间。
-func windowResume(charges []windowCharge, spent, cost, allowance int64, window time.Duration) (time.Time, bool) {
-	if cost > allowance {
-		return time.Time{}, false
-	}
-	need := spent + cost - allowance
-	if need <= 0 {
-		return time.Time{}, false
-	}
-	sort.Slice(charges, func(i, j int) bool { return charges[i].at.Before(charges[j].at) })
-	var freed int64
-	var resume time.Time
-	for _, charge := range charges {
-		freed += charge.amount
-		resume = wakeAfter(charge.at.Add(window))
-		if freed >= need {
-			return resume, true
-		}
-	}
-	return time.Time{}, false
-}
-
-func wakeAfter(boundary time.Time) time.Time {
-	ms := boundary.UnixMilli()
-	if time.UnixMilli(ms).Before(boundary) {
-		return time.UnixMilli(ms + 1)
-	}
-	return time.UnixMilli(ms)
+	return &budgetRejection{required: cost, message: fmt.Sprintf("%s还剩 $%.3f，本次调用需预留 $%.3f，未完工作已保留。", label, float64(remaining)/1e6, float64(cost)/1e6)}
 }
 
 func durationLabel(d time.Duration) string {
@@ -222,8 +123,4 @@ func durationLabel(d time.Duration) string {
 		return fmt.Sprintf("%d分钟", int(d/time.Minute))
 	}
 	return d.String()
-}
-
-func explorationHoldDue() time.Time {
-	return time.Date(9999, time.January, 1, 0, 0, 0, 0, time.Local)
 }

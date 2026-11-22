@@ -295,47 +295,59 @@ func (s *Store) budgetBlocked(cfg Config, usage Usage) (bool, error) {
 }
 
 func (s *Store) recheckBudgetWait(cfg Config) error {
-	now := time.Now()
-	limit, _, err := budgetLimit(s.db, cfg, now)
-	if err != nil {
-		return err
-	}
-	siteRemaining, weekRemaining, windowRemaining, weeklyAllowance, windowAllowance, err := s.explorationBalances(s.db, cfg, now, limit)
-	if err != nil {
-		return err
-	}
-	// 只读取恢复判断所需的列，避免把还放不下的工作提前唤醒。
 	rows, err := s.db.Query(`SELECT id, kind, source_id, autonomous, budget_required FROM work WHERE status='waiting_budget' AND budget_required>0`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	var ready []string
+	var waiting []Work
+	hasAutonomous := false
 	for rows.Next() {
 		var w Work
-		var autonomous int
-		if err = rows.Scan(&w.ID, &w.Kind, &w.SourceID, &autonomous, &w.BudgetRequired); err != nil {
+		if err = rows.Scan(&w.ID, &w.Kind, &w.SourceID, &w.Autonomous, &w.BudgetRequired); err != nil {
 			return err
 		}
-		w.Autonomous = autonomous == 1
-		// 真人发起的工作只看站点周额度。自主探索要同时放得进探索周额度和当前窗口。
-		if !autonomousWork(w) {
-			if w.BudgetRequired <= siteRemaining {
-				ready = append(ready, w.ID)
-			}
-			continue
-		}
-		if w.BudgetRequired <= siteRemaining && w.BudgetRequired <= weekRemaining && w.BudgetRequired <= windowRemaining && w.BudgetRequired <= weeklyAllowance && w.BudgetRequired <= windowAllowance {
-			ready = append(ready, w.ID)
-		}
+		w.Autonomous = autonomousWork(w)
+		waiting = append(waiting, w)
+		hasAutonomous = hasAutonomous || w.Autonomous
 	}
 	if err = rows.Err(); err != nil {
 		return err
 	}
-	rows.Close()
-	for _, id := range ready {
-		if _, err = s.db.Exec(`UPDATE work SET status='pending',due_at=? WHERE id=? AND status='waiting_budget'`, now.UnixMilli(), id); err != nil {
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	if len(waiting) == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	limit, _, err := budgetLimit(s.db, cfg, now)
+	if err != nil {
+		return err
+	}
+	usage, err := s.weeklyUsageAt(now)
+	if err != nil {
+		return err
+	}
+	siteRemaining := max(int64(0), limit-usage.CostMicros)
+	var autonomousRemaining int64
+	if hasAutonomous {
+		week, window, err := explorationRemaining(s.db, cfg, now, limit, usage.AutonomousCostMicros)
+		if err != nil {
 			return err
+		}
+		autonomousRemaining = min(siteRemaining, week, window)
+	}
+	for _, w := range waiting {
+		remaining := siteRemaining
+		if w.Autonomous {
+			remaining = autonomousRemaining
+		}
+		if w.BudgetRequired <= remaining {
+			if _, err = s.db.Exec(`UPDATE work SET status='pending',due_at=? WHERE id=? AND status='waiting_budget'`, now.UnixMilli(), w.ID); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

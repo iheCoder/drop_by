@@ -197,16 +197,12 @@ func (e *Engine) dispatch(ctx context.Context) {
 				case recoverableNetwork(err):
 					status, due = "pending", time.Now().Add(e.Config.ExploreInterval)
 				case errors.Is(err, ErrBudget):
-					due = nextBudgetWeek()
 					var rejection *budgetRejection
 					if errors.As(err, &rejection) {
 						w.BudgetRequired = rejection.required
-						switch {
-						case rejection.skipWindowRetry:
-							due = explorationHoldDue()
-						case !rejection.resumeAt.IsZero():
-							due = rejection.resumeAt
-						}
+					}
+					if w.BudgetRequired == 0 {
+						due = nextBudgetWeek() // 旧等待没有预留金额，只能沿用定时兜底。
 					}
 					status = "waiting_budget"
 				default:

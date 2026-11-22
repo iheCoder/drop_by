@@ -81,9 +81,6 @@ func nextBudgetWeek() time.Time {
 type budgetRejection struct {
 	message  string
 	required int64
-	resumeAt time.Time
-	// skipWindowRetry 表示这次预留连空的探索窗口也放不下，不能按旧账滑出的时刻反复唤醒。
-	skipWindowRetry bool
 }
 
 func (e *budgetRejection) Error() string { return e.message }
