@@ -32,7 +32,7 @@ func followupTime(at time.Time, delay int, absolute string) (time.Time, error) {
 }
 
 func autonomousWork(w Work) bool {
-	return w.Autonomous || w.Kind == "revisit" || (w.Kind != "chat" && w.SourceID == "")
+	return w.Autonomous || (w.Kind != "chat" && w.SourceID == "")
 }
 
 func autonomyRoot(ctx context.Context) string {
@@ -133,7 +133,7 @@ func (s *Store) ScheduleFollowup(c Conversation, m Member, source Work, instruct
 	if strings.TrimSpace(instruction) == "" {
 		return nil, fmt.Errorf("后续需要具体关注和实际来由")
 	}
-	w := Work{ID: newID("work"), ParentID: source.ID, RootID: rootOf(source), ConversationID: c.ID, MemberID: m.ID, Kind: "revisit", Autonomous: true, Instruction: instruction, Reason: reason, SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
+	w := Work{ID: newID("work"), ParentID: source.ID, RootID: rootOf(source), ConversationID: c.ID, MemberID: m.ID, Kind: "revisit", Autonomous: autonomousWork(source), Instruction: instruction, Reason: reason, SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
 	err := s.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 		// 不同调用可以预约不同观察时点；同一次调用恢复由工具入口保护。
 		return insertWork(tx, w)

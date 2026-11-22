@@ -545,12 +545,12 @@ func insertWork(tx *sql.Tx, w Work) error {
 	return e
 }
 
-const workColumns = `id,coalesce(conversation_id,''),member_id,kind,instruction,reason,source_id,status,due_at,attempts,result,created_at,root_id,autonomous,assigned_by,parent_id,first_speakers`
+const workColumns = `id,coalesce(conversation_id,''),member_id,kind,instruction,reason,source_id,status,due_at,attempts,result,created_at,root_id,autonomous,assigned_by,parent_id,first_speakers,budget_required`
 
 func scanWork(rows interface{ Scan(...any) error }) (Work, error) {
 	var w Work
 	var audience string
-	e := rows.Scan(&w.ID, &w.ConversationID, &w.MemberID, &w.Kind, &w.Instruction, &w.Reason, &w.SourceID, &w.Status, &w.DueAt, &w.Attempts, &w.Result, &w.CreatedAt, &w.RootID, &w.Autonomous, &w.AssignedBy, &w.ParentID, &audience)
+	e := rows.Scan(&w.ID, &w.ConversationID, &w.MemberID, &w.Kind, &w.Instruction, &w.Reason, &w.SourceID, &w.Status, &w.DueAt, &w.Attempts, &w.Result, &w.CreatedAt, &w.RootID, &w.Autonomous, &w.AssignedBy, &w.ParentID, &audience, &w.BudgetRequired)
 	decode(audience, &w.FirstSpeakers)
 	return w, e
 }
@@ -594,7 +594,7 @@ func (s *Store) DueWorks() ([]Work, error) {
 // 在原有批次上限之前过滤。缺少某个供应商凭据的排队工作不占用其他场景的名额。
 func (s *Store) dueWorks(chat, research, exploration bool) ([]Work, error) {
 	rows, e := s.db.Query(`SELECT `+workColumns+` FROM work
-WHERE status IN ('pending','waiting_budget') AND due_at<=?
+WHERE (status='pending' OR (status='waiting_budget' AND budget_required=0)) AND due_at<=?
   AND CASE WHEN kind='research' THEN ? WHEN coalesce(conversation_id,'')='' THEN ? ELSE ? END
 ORDER BY CASE kind WHEN 'chat' THEN 0 WHEN 'share' THEN 1 WHEN 'revisit' THEN 2 WHEN 'research' THEN 2 ELSE 3 END,created_at LIMIT 100`,
 		time.Now().UnixMilli(), research, exploration, chat)

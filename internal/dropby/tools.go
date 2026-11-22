@@ -222,6 +222,12 @@ func (t *Toolbox) Execute(ctx context.Context, c Conversation, m Member, w Work,
 	if err != nil {
 		status = "failed"
 		result = map[string]any{"error": err.Error()}
+		if errors.Is(err, ErrBudget) {
+			result = map[string]any{
+				"status": "not_sent", "reason": "上次额度不足，受阻的那次请求没有发出；请按当前情况重新决定。",
+				"previous_budget_rejection": err.Error(),
+			}
+		}
 		var transport *requestFailure
 		if errors.As(err, &transport) {
 			result = map[string]any{"error": err.Error(), "execution_error": true}
@@ -525,7 +531,7 @@ func (t *Toolbox) Schedule(ctx context.Context, c Conversation, m Member, source
 	if strings.TrimSpace(instruction) == "" {
 		return nil, fmt.Errorf("后台行动需要具体内容")
 	}
-	w := Work{ID: newID("work"), ParentID: source.ID, ConversationID: c.ID, MemberID: m.ID, RootID: rootOf(source), Autonomous: source.Autonomous, Kind: "research", Instruction: instruction, Reason: reason, SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
+	w := Work{ID: newID("work"), ParentID: source.ID, ConversationID: c.ID, MemberID: m.ID, RootID: rootOf(source), Autonomous: autonomousWork(source), Kind: "research", Instruction: instruction, Reason: reason, SourceID: source.SourceID, Status: "pending", DueAt: due.UnixMilli(), CreatedAt: now()}
 	err := t.Store.Guard(c.ID, c.Revision, func(tx *sql.Tx) error {
 		return insertWork(tx, w)
 	})

@@ -72,7 +72,7 @@ func TestWeeklyBudgetRolloverAndLateSettlement(t *testing.T) {
 	if err != nil || oldUsage.CostMicros != 250_000 || newUsage.CostMicros != 600_000 || newUsage.AutonomousCostMicros != 600_000 {
 		t.Fatalf("跨周结算混入了新账期: old=%+v new=%+v err=%v", oldUsage, newUsage, err)
 	}
-	// 自主和前台共享跨日总预算，不设置第二个隐含门槛。
+	// 本测试把探索比例设成整个周额度，跨日仍只受总预算约束。
 	if _, err = s.reserveContextAt(ctx, cfg, 150_000, monday.AddDate(0, 0, 1)); err != nil {
 		t.Fatalf("自主额度应独立受限: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestBudgetWeekUsesCalendarMondayAcrossDSTAndYear(t *testing.T) {
 
 func TestWeeklyConfigDefaultsAndExplicitLegacyMigration(t *testing.T) {
 	// 清除额度环境以检查真正默认值；不读取、不打印环境中的 API 密钥。
-	for _, key := range []string{"DROPBY_WEEKLY_BUDGET_USD", "DROPBY_WEEKLY_CALLS", "DROPBY_AUTONOMOUS_WEEKLY_BUDGET_USD", "DROPBY_DAILY_BUDGET_USD", "DROPBY_DAILY_CALLS", "DROPBY_AUTONOMOUS_BUDGET_USD"} {
+	for _, key := range []string{"DROPBY_WEEKLY_BUDGET_USD", "DROPBY_WEEKLY_CALLS", "DROPBY_AUTONOMOUS_WEEKLY_BUDGET_USD", "DROPBY_DAILY_BUDGET_USD", "DROPBY_DAILY_CALLS", "DROPBY_AUTONOMOUS_BUDGET_USD", "DROPBY_EXPLORATION_SHARE", "DROPBY_EXPLORATION_WINDOW", "DROPBY_EXPLORATION_WINDOW_SHARE"} {
 		t.Setenv(key, "")
 	}
 	cfg, err := LoadConfig()
@@ -138,6 +138,10 @@ func TestWeeklyConfigDefaultsAndExplicitLegacyMigration(t *testing.T) {
 	}
 	if cfg.WeeklyBudgetMicros != 20_000_000 {
 		t.Fatal("默认总预算应为每周 20 美元")
+	}
+	weekly, window := cfg.explorationAllowances(cfg.WeeklyBudgetMicros)
+	if cfg.ExplorationShare != 0.4 || cfg.ExplorationWindow != 8*time.Hour || cfg.ExplorationWindowShare != 0.25 || weekly != 8_000_000 || window != 2_000_000 {
+		t.Fatalf("默认探索额度应为每周 $8、每 8 小时 $2，实际 %v %s %v → %d/%d", cfg.ExplorationShare, cfg.ExplorationWindow, cfg.ExplorationWindowShare, weekly, window)
 	}
 	// 旧的日配置必须明确迁移，不能悄悄把每天 3 美元解释成每周 3 美元。
 	t.Setenv("DROPBY_DAILY_BUDGET_USD", "3")

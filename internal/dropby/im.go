@@ -295,14 +295,60 @@ func (s *Store) budgetBlocked(cfg Config, usage Usage) (bool, error) {
 }
 
 func (s *Store) recheckBudgetWait(cfg Config) error {
-	u, err := s.Usage()
+	rows, err := s.db.Query(`SELECT id, kind, source_id, autonomous, budget_required FROM work WHERE status='waiting_budget' AND budget_required>0`)
 	if err != nil {
 		return err
 	}
-	limit, _, err := budgetLimit(s.db, cfg, time.Now())
+	defer rows.Close()
+	var waiting []Work
+	hasAutonomous := false
+	for rows.Next() {
+		var w Work
+		if err = rows.Scan(&w.ID, &w.Kind, &w.SourceID, &w.Autonomous, &w.BudgetRequired); err != nil {
+			return err
+		}
+		w.Autonomous = autonomousWork(w)
+		waiting = append(waiting, w)
+		hasAutonomous = hasAutonomous || w.Autonomous
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	if len(waiting) == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	limit, _, err := budgetLimit(s.db, cfg, now)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE work SET status='pending',due_at=? WHERE status='waiting_budget' AND budget_required>0 AND budget_required<=?`, time.Now().UnixMilli(), max(int64(0), limit-u.CostMicros))
-	return err
+	usage, err := s.weeklyUsageAt(now)
+	if err != nil {
+		return err
+	}
+	siteRemaining := max(int64(0), limit-usage.CostMicros)
+	var autonomousRemaining int64
+	if hasAutonomous {
+		week, window, err := explorationRemaining(s.db, cfg, now, limit, usage.AutonomousCostMicros)
+		if err != nil {
+			return err
+		}
+		autonomousRemaining = min(siteRemaining, week, window)
+	}
+	for _, w := range waiting {
+		remaining := siteRemaining
+		if w.Autonomous {
+			remaining = autonomousRemaining
+		}
+		if w.BudgetRequired <= remaining {
+			if _, err = s.db.Exec(`UPDATE work SET status='pending',due_at=? WHERE id=? AND status='waiting_budget'`, now.UnixMilli(), w.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

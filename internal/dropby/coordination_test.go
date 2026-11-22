@@ -35,8 +35,9 @@ func TestDelegationToolCompletesAndReopensCoordinatorJudgment(t *testing.T) {
 		}
 
 		if input.Self.ID == members[0].ID {
-			if autonomyRoot(ctx) != root.ID {
-				return ChatMessage{}, fmt.Errorf("completion changed execution root")
+			use, _ := ctx.Value(usageCallKey{}).(usageCall)
+			if use.root != root.ID || autonomyRoot(ctx) != "" {
+				return ChatMessage{}, fmt.Errorf("completion changed human task origin: root %q, autonomy %q", use.root, autonomyRoot(ctx))
 			}
 			reviewed = true
 			return jsonReply(Outcome{Outcome: "出处暂不可用，现在先停下，不催同伴重做"}), nil

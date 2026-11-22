@@ -166,7 +166,7 @@ func queueCoordinationReview(tx *sql.Tx, w Work, status, result string) error {
 	if status == "failed" || status == "paused" {
 		result = "尚未完成，已有成果保留。"
 	}
-	review := Work{ID: id, ParentID: w.ParentID, RootID: rootOf(w), Autonomous: true, ConversationID: w.ConversationID,
+	review := Work{ID: id, ParentID: w.ParentID, RootID: rootOf(w), Autonomous: autonomousWork(w), ConversationID: w.ConversationID,
 		MemberID: coordinator, Kind: "revisit", SourceID: w.SourceID, Status: "pending",
 		Instruction: "一项委托有了实际结果。先用 read_work 核对工作 " + w.ID + "。状态：" + status + "；实际记录：" + clip(result, 2500),
 		Reason:      "同伴的委托结果触发了这次复看，不是定时催促。", DueAt: time.Now().UnixMilli(), CreatedAt: now()}

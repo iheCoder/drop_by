@@ -10,6 +10,11 @@ search:
 
 budget:
   weekly_usd: 20
+  # 自主探索共用「当前生效」的周额度，不是另写一笔金额。省略时分别为 0.4、8h、0.25。
+  # 0.4 表示最多 40%。窗口向后滚动，旧账逐笔滑出，不按整点刷新。
+  exploration_share: 0.4
+  exploration_window: 8h
+  exploration_window_share: 0.25
 
 explore_interval: 30m
 

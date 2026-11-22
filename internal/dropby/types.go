@@ -98,7 +98,7 @@ type Work struct {
 	FirstSpeakers  []string         `json:"first_speakers,omitempty"`
 	// 真实委托者用于任务回报；空串仍表示成员自行安排的行动。
 	AssignedBy     string `json:"assigned_by,omitempty"`
-	Autonomous     bool   `json:"autonomous,omitempty"` // 保留来源用于用量统计和排队，不另设自主子额度。
+	Autonomous     bool   `json:"autonomous,omitempty"` // 工作来源。自主探索及其续接计入探索额度，不表示单人配额。
 	RootID         string `json:"root_id,omitempty"`    // 同一事项的来源关联，不用它累计消息或行动配额。
 	ID             string `json:"id"`
 	ConversationID string `json:"conversation_id"`
