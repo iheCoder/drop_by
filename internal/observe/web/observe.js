@@ -30,8 +30,8 @@ const PEOPLE = {
   }
 };
 
-const CHAT_TOOLS = ["send_message", "search", "read_page", "organize_context", "search_memory", "read_memory", "read_history", "read_tool_result", "schedule_followup", "cancel_work", "save_artifact"];
-const SOLO_TOOLS = ["send_message", "search", "read_page", "search_memory", "read_memory", "read_conversation", "save_artifact", "schedule_followup", "cancel_work"];
+const CHAT_TOOLS = ["send_message", "search", "read_page", "organize_context", "recall", "read_tool_result", "schedule_followup", "cancel_work", "save_artifact"];
+const SOLO_TOOLS = ["send_message", "search", "read_page", "recall", "read_conversation", "save_artifact", "schedule_followup", "cancel_work"];
 
 const MEMORY = {
   k: "检索到的经历",
@@ -91,9 +91,9 @@ const WORKS = [
       {
         id: "mp_mem", sec: 200, ms: 30, kind: "tool", title: "检索自己的经历",
         tool: {
-          name: "search_memory", status: "succeeded", ms: 30,
-          retry: "本地检索，没有另外的模型调用。",
-          args: "{\n  \"query\": \"屋顶 雨 木板\"\n}",
+          name: "recall", status: "succeeded", ms: 30,
+          retry: "小满按记得的大意，在自己的记忆里找那段关于雨声的记录。",
+          args: "{\n  \"query\": \"我以前比较过雨落在两种材料上的声音，当时觉得有什么差别？\",\n  \"types\": [\n    \"memory\"\n  ]\n}",
           result: MEMORY.text,
           usage: null
         }

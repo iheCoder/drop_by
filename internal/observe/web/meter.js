@@ -251,7 +251,7 @@ const works = [
         id: "mp2", sec: 200, ms: 30000, kind: "model", title: "第二次模型调用",
         price: 4200, model: "gpt-6.1-sol", reasoning: "low", purpose: "个人活动",
         usageText: "输入 3,900 · 缓存读 2,400 · 缓存写 0 · 输出 80",
-        note: "记忆出现在这里，是因为她先调用了 search_memory。没有自动注入。",
+        note: "小满先用 recall 按大意找回了那段关于雨声的记忆，所以这次模型调用能看到它。",
         output: "木板太闷。铁皮上的干雨更密。先记下来，不往群里发。",
         segments: [
           { k: "系统身份", tokens: 800, cache: true, text: systemText("小满", manProfile, "这是你的个人活动机会。当前没有必须去的聊天。") },
