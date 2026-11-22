@@ -66,8 +66,9 @@ func TestCoordinatorAPIAndTwoStagePeerHandoff(t *testing.T) {
 			return jsonReply(Outcome{Outcome: "这次没有需要补充的，按自己的节奏旁听"}), nil
 		}
 		if strings.HasPrefix(input.Trigger.ID, "coordination_") {
-			if autonomyRoot(ctx) != rootID {
-				return ChatMessage{}, fmt.Errorf("completion callback changed budget root: %q", autonomyRoot(ctx))
+			use, _ := ctx.Value(usageCallKey{}).(usageCall)
+			if use.root != rootID || autonomyRoot(ctx) != "" {
+				return ChatMessage{}, fmt.Errorf("completion callback changed human task origin: root %q, autonomy %q", use.root, autonomyRoot(ctx))
 			}
 			mu.Lock()
 			if steps[input.Trigger.ID] == 0 {
@@ -125,8 +126,9 @@ func TestCoordinatorAPIAndTwoStagePeerHandoff(t *testing.T) {
 			return jsonReply(Outcome{Outcome: "卡片约定已经根据现有对话核对，并保存为记录"}), nil
 		}
 		if input.Self.ID == members[2].ID {
-			if autonomyRoot(ctx) != rootID {
-				return ChatMessage{}, fmt.Errorf("handoff escaped autonomous budget")
+			use, _ := ctx.Value(usageCallKey{}).(usageCall)
+			if use.root != rootID || autonomyRoot(ctx) != "" {
+				return ChatMessage{}, fmt.Errorf("handoff changed human task origin: root %q, autonomy %q", use.root, autonomyRoot(ctx))
 			}
 			if step == 1 {
 				return ChatMessage{Role: "assistant", ToolCalls: []ToolCall{toolCall("read_artifact", map[string]string{"id": referenceID})}}, nil
@@ -197,9 +199,9 @@ func TestCoordinatorAPIAndTwoStagePeerHandoff(t *testing.T) {
 	}
 	process(firstReview)
 
-	// 实际结果唤醒协调者后才安排制作，沿用原根，后续计入自主额度。
+	// 实际结果唤醒协调者后才安排制作，仍然属于原来真人发起的任务。
 	second := findAssignment(members[2].ID)
-	if second.RootID != root.ID || !second.Autonomous || second.Instruction != secondInstruction {
+	if second.RootID != root.ID || second.Autonomous || second.Instruction != secondInstruction {
 		t.Fatalf("second handoff lost task/root/budget boundary: %+v", second)
 	}
 	process(second)
