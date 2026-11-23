@@ -20,7 +20,7 @@ import (
 func TestSteeringProtocolAccountingAndPendingTools(t *testing.T) {
 	// 用真实 WebSocket 帧验证已接受/已应用的区别，包含自动续接、工具等待与拒绝。
 	// 每个响应独立结算；尚未启动的续接释放预留，断线后的未知预留不能冒充免费。
-	for _, mode := range []string{"completed", "incomplete", "tool_pending", "rejected", "disconnect"} {
+	for _, mode := range []string{"completed", "incomplete", "tool_pending", "rejected", "disconnect", "cutoff"} {
 		t.Run(mode, func(t *testing.T) {
 			s, _, _ := fixture(t)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +55,12 @@ func TestSteeringProtocolAccountingAndPendingTools(t *testing.T) {
 					t.Errorf("错误 steering：%v", steer)
 				}
 				if mode == "disconnect" {
+					return
+				}
+				if mode == "cutoff" {
+					write(map[string]any{"type": "response.incomplete", "response": map[string]any{"id": "first", "status": "incomplete", "incomplete_details": map[string]string{"reason": "max_output_tokens"}, "output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]string{"type": "output_text", "text": "original"}}}}, "usage": map[string]any{"input_tokens": 10, "output_tokens": 2,
+						"input_tokens_details": map[string]any{"cached_tokens": 2, "cache_write_tokens": 4,
+							"cache_write_tokens_details": map[string]int{"ttl_30m_tokens": 2, "ttl_12h_tokens": 2}}}}})
 					return
 				}
 				if mode == "rejected" {
@@ -94,6 +100,12 @@ func TestSteeringProtocolAccountingAndPendingTools(t *testing.T) {
 			if mode == "disconnect" {
 				if err == nil || usage.UnsettledMicros == 0 {
 					t.Fatal("断线没有保留未知预留")
+				}
+				return
+			}
+			if mode == "cutoff" {
+				if err == nil || !strings.Contains(err.Error(), "max_output_tokens") || strings.Count(err.Error(), "模型本次未完成输出") != 1 {
+					t.Fatalf("截断的插话响应没有保留原因: %v", err)
 				}
 				return
 			}

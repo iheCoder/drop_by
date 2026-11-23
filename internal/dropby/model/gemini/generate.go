@@ -129,11 +129,17 @@ func (m *Client) Generate(ctx context.Context, payload []byte) (result model.Res
 	// 再由业务拒绝执行不完整的工具或发布被截断的聊天。
 	if len(out.Candidates) != 1 || out.Candidates[0].FinishReason != "STOP" {
 		result.Incomplete = true
+		if len(out.Candidates) == 1 {
+			result.IncompleteReason = out.Candidates[0].FinishReason
+		}
 		return result, nil
 	}
 	var decodeErr error
 	result.Message, decodeErr = m.decodeContent(out.Candidates[0].Content, result.Usage.OutputTokens)
-	result.Incomplete = decodeErr != nil
+	if decodeErr != nil {
+		result.Incomplete = true
+		result.IncompleteReason = decodeErr.Error()
+	}
 	return result, nil
 }
 

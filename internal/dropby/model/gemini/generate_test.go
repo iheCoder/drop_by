@@ -1,7 +1,11 @@
 package gemini
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +31,19 @@ func TestGeminiStandardRatesAcrossEffectiveDates(t *testing.T) {
 		if beforeErr != nil || afterErr != nil || before != tc.before || after != tc.after {
 			t.Errorf("%s 费率生效日期或数值不符：%+v / %+v", tc.model, before, after)
 		}
+	}
+}
+
+func TestIncompleteFinishKeepsProviderReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"candidates":[{"finishReason":"MAX_TOKENS","content":{"role":"model","parts":[{"text":"半截"}]}}]}`)
+	}))
+	defer server.Close()
+	client := &Client{HTTP: server.Client(), BaseURL: server.URL, APIKey: "k", Model: "gemini-test"}
+	result, err := client.Generate(context.Background(), []byte(`{}`))
+	if err != nil || !result.Incomplete || result.IncompleteReason != "MAX_TOKENS" {
+		t.Fatalf("未保留截断原因: %+v %v", result, err)
 	}
 }
 

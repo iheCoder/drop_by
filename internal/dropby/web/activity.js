@@ -3,8 +3,11 @@
 function sourceLink(id) {
   return id ? `<button class="quiet activity-source" data-action="jump-message" data-id="${escapeHTML(id)}">${icon('message-circle')}在聊天中查看</button>` : '';
 }
+function technicalJSON(value) {
+  return `<pre tabindex="0">${escapeHTML(JSON.stringify(value,null,2))}</pre>`;
+}
 function technicalRecord(value) {
-  return `<details class="technical-record"><summary>技术细节</summary><pre tabindex="0">${escapeHTML(JSON.stringify(value,null,2))}</pre></details>`;
+  return `<details class="technical-record"><summary>技术细节</summary>${technicalJSON(value)}</details>`;
 }
 function activityPanelName() {
   return roomData?.conversation.kind === 'group' ? '成员动态' : '朋友动态';
@@ -243,7 +246,7 @@ async function openActivityRecord(work, actor, invoker) {
       ${d.source ? `<section class="detail-part"><h4>${d.reply_reference ? '回复的消息' : '从这条消息开始'}</h4>${activityQuote(d.source)}${sourceLink(d.source.id)}</section>` : ''}
       ${d.messages?.length ? `<section class="detail-part"><h4>发出的消息</h4>${d.messages.map(activityQuote).join('')}</section>` : ''}
       ${activitySources(d.tools)}
-      ${d.work || trace || tools ? `<details class="technical-record activity-technical"><summary>技术细节</summary>${trace}${tools}${d.work ? technicalRecord({work:d.work,failure_reason:d.failure_reason}) : ''}</details>` : ''}`;
+      ${d.work || trace || tools ? `<details class="technical-record activity-technical"><summary>技术细节</summary>${trace}${tools}${d.work ? technicalJSON({work:d.work,failure_reason:d.failure_reason}) : ''}</details>` : ''}`;
   } catch (error) {
     if (activityFeed === feed && detail.isConnected) detail.textContent = error.message || '无法读取行动详情。';
   }

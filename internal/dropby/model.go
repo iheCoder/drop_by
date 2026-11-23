@@ -330,7 +330,7 @@ func (m *modelCall) completeWithinBudget(ctx context.Context, messages []ChatMes
 		return ChatMessage{}, e
 	}
 	if response.Incomplete {
-		return ChatMessage{}, fmt.Errorf("模型本次未完成输出")
+		return ChatMessage{}, model.IncompleteError(response.IncompleteReason)
 	}
 	if strings.TrimSpace(response.Message.Content) == "" && len(response.Message.ToolCalls) == 0 {
 		return ChatMessage{}, fmt.Errorf("模型返回了空内容，本次没有生成消息")
