@@ -96,7 +96,7 @@ func beginModelAttempt(ctx context.Context, modelName, input string, attempt int
 	return id
 }
 
-func finishModelAttempt(ctx context.Context, id string, msg ChatMessage, raw string, err error, settled bool, actual, reserved int64, call usageReservation, secret string) {
+func finishModelAttempt(ctx context.Context, id string, response modelResult, err error, settled bool, actual, reserved int64, call usageReservation, secret string) {
 	if id == "" {
 		return
 	}
@@ -104,15 +104,19 @@ func finishModelAttempt(ctx context.Context, id string, msg ChatMessage, raw str
 	if err != nil {
 		status = "failed"
 	}
-	output := strings.TrimSpace(raw)
+	summary := status
+	output := strings.TrimSpace(response.Raw)
 	if output == "" {
-		output = modelObserved(msg, err)
+		output = modelObserved(response.Message, err)
+	} else if response.DecodeError != nil && err != nil {
+		// 响应已到达但本地解析失败。原因写在步骤上，快照里的供应商 JSON 仍能直接回放。
+		summary = scrub(err.Error(), secret)
 	} else if err != nil {
 		output += "\n" + err.Error()
 	}
 	costStatus, cost, hold := billing(err, settled, false, actual, heldMicros(call, reserved))
 	note(ctx, observe.Step{
-		ID: id, Status: status, Summary: status, Output: scrub(output, secret),
+		ID: id, Status: status, Summary: summary, Output: scrub(output, secret),
 		CostStatus: costStatus, CostMicros: cost, ReservedMicros: hold, BusinessID: callRef(call),
 	})
 }

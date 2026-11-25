@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<h1 id="panel-title" tabindex="-1"></h1>
+<button id="panel-back">返回</button>
+<div id="panel-content"></div>
+<output id="result">等待行动详情</output>
+<script>
+  // 提供详情面板所需的节点和一条失败记录，使用产品的打开详情与渲染函数。
+  const $ = id => document.getElementById(id);
+  const roomData = {conversation: {kind: 'group'}};
+  const dateLabel = () => '', timeLabel = () => '', escapeHTML = String;
+  let panelView = 'activity';
+  const api = async () => ({title: '行动失败', failed: true, work: {id: 'work-example'}, failure_reason: '示例'});
+</script>
+<script src="../web/activity.js"></script>
+<script>
+  async function checkDisclosure() {
+    activityFeed = {room: 'room-example', overview: {}, observer: {unobserve() {}}};
+    await openActivityRecord('work-example', '');
+    const panel = $('panel-content');
+    const headings = [...panel.querySelectorAll('summary')].filter(s => s.textContent === '技术细节');
+    if (headings.length !== 1) throw Error('同名折叠标题数量为 ' + headings.length);
+    headings[0].click();
+    const record = panel.querySelector('pre');
+    if (!record?.checkVisibility() || JSON.parse(record.textContent).work.id !== 'work-example') {
+      throw Error('展开一次后未显示原始任务记录');
+    }
+    $('result').textContent = '通过';
+  }
+  checkDisclosure().catch(error => { $('result').textContent = error.message; });
+</script>

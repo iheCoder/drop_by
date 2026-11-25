@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -117,5 +118,51 @@ func TestGenerateContentReplaysParallelResultsAndForeignHistory(t *testing.T) {
 	if string(sent.Contents[len(sent.Contents)-2]) != string(native) || string(sent.Contents[len(sent.Contents)-1]) !=
 		`{"role":"user","parts":[{"functionResponse":{"id":"alpha","name":"read","response":{"result":{"body":"第一页"}}}},{"functionResponse":{"id":"beta","name":"read","response":{"output":[{"body":"第二页"}]}}}]}` {
 		t.Fatalf("工具回执必须按两个独立 ID 紧跟完整原生回合: %s", raw)
+	}
+}
+
+func TestMixedCallIDsSurviveCheckpointAndOutOfOrderReceipts(t *testing.T) {
+	// 混合两种 ID 来源且重复调用完全相同的工具，不能按名称或参数配对。
+	const turn = `{"role":"model","parts":[{"functionCall":{"name":"search","args":{"query":"q"}},"thoughtSignature":"c2ln"},{"functionCall":{"id":"call_native","name":"search","args":{"query":"q"}}},{"functionCall":{"name":"search","args":{"query":"q"}}}]}`
+	client := Client{}
+	msg, err := client.decodeContent(json.RawMessage(turn), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.ToolCalls) != 3 {
+		t.Fatalf("工具数：%d", len(msg.ToolCalls))
+	}
+	next, err := client.decodeContent(json.RawMessage(turn), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.ToolCalls[0].ID == next.ToolCalls[0].ID {
+		t.Fatal("新一轮相同搜索复用了旧执行身份")
+	}
+
+	// 和持久化断点一样序列化再读回。故意倒序交回三个结果，检查最终请求的原生顺序。
+	checkpoint, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored model.ChatMessage
+	if err := json.Unmarshal(checkpoint, &restored); err != nil {
+		t.Fatal(err)
+	}
+	history := []model.ChatMessage{restored}
+	for i := len(restored.ToolCalls) - 1; i >= 0; i-- {
+		history = append(history, model.ChatMessage{Role: "tool", ToolCallID: restored.ToolCalls[i].ID, Content: fmt.Sprintf(`{"index":%d}`, i)})
+	}
+	raw, err := client.Build(history, -1, nil, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent struct{ Contents []json.RawMessage }
+	if err := json.Unmarshal(raw, &sent); err != nil || len(sent.Contents) != 2 {
+		t.Fatalf("工具往返：%s %v", raw, err)
+	}
+	const receipts = `{"role":"user","parts":[{"functionResponse":{"name":"search","response":{"index":0}}},{"functionResponse":{"id":"call_native","name":"search","response":{"index":1}}},{"functionResponse":{"name":"search","response":{"index":2}}}]}`
+	if string(sent.Contents[0]) != turn || string(sent.Contents[1]) != receipts {
+		t.Fatalf("原生请求或回执配对错误：%s", raw)
 	}
 }

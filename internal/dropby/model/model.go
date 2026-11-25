@@ -23,9 +23,12 @@ type ChatMessage struct {
 	PendingDelivery bool              `json:"pending_delivery,omitempty"` // 已进入断点、尚未交给正常生成的原话或工具回执。
 }
 type ToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
+	// 供应商省略可选 ID 时，ID 仅用于本地执行与断点恢复；原生回执应省略它。
+	// 老记录没有此标记，继续原样回传其已有的供应商 ID。
+	LocalIDOnly bool   `json:"local_id_only,omitempty"`
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Function    struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 	} `json:"function"`
@@ -46,6 +49,7 @@ type Result struct {
 	Usage            Tokens
 	CostMicros       int64 // 按供应商模型费率估算，账本可直接结算。
 	CostError        error // 用量有矛盾时保留预留，同时保留响应原文。
+	DecodeError      error // 已收到完整响应，但本地无法解析。仍需结算本次用量。
 	Incomplete       bool
 	IncompleteReason string          // 供应商给出的未完成原因，例如输出上限或过滤。空串表示没有说明。
 	CacheDiagnostic  json.RawMessage // 诊断详情只由所属的适配器解释。
@@ -55,7 +59,12 @@ type Result struct {
 // IncompleteError 保留供应商的未完成原因。没有原因时仍是原来的那一句，避免把空括号写进行动记录。
 func IncompleteError(reason string) error {
 	reason = strings.TrimSpace(reason)
-	if reason == "" {
+	switch reason {
+	case "MAX_TOKENS", "max_output_tokens":
+		return fmt.Errorf("模型达到输出上限（%s）", reason)
+	case "SAFETY", "content_filter":
+		return fmt.Errorf("模型服务因内容过滤停止生成（%s）", reason)
+	case "":
 		return errors.New("模型本次未完成输出")
 	}
 	return fmt.Errorf("模型本次未完成输出（%s）", reason)

@@ -104,7 +104,7 @@ func TestSteeringProtocolAccountingAndPendingTools(t *testing.T) {
 				return
 			}
 			if mode == "cutoff" {
-				if err == nil || !strings.Contains(err.Error(), "max_output_tokens") || strings.Count(err.Error(), "模型本次未完成输出") != 1 {
+				if err == nil || !strings.Contains(err.Error(), "max_output_tokens") || strings.Count(err.Error(), "模型达到输出上限") != 1 {
 					t.Fatalf("截断的插话响应没有保留原因: %v", err)
 				}
 				return

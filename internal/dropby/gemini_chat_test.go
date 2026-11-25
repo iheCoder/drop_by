@@ -465,3 +465,36 @@ func TestGeminiLocalEstimateKeepsSearchReceiptUntilItNeedsSegmenting(t *testing.
 		})
 	}
 }
+
+func TestGeminiFailureStageAndSettlement(t *testing.T) {
+	// 供应商明确拦截、触及输出上限和本地解析失败，在用户记录里应能区分。
+	// 即使拒绝交给执行器，这些成功返回且报告用量的请求仍须结算。
+	for _, tc := range []struct{ name, fields, reason, outcome string }{
+		{"blocked", `"promptFeedback":{"blockReason":"SAFETY"}`, "模型服务因内容过滤停止生成（SAFETY）", "incomplete"},
+		{"truncated", `"candidates":[{"finishReason":"MAX_TOKENS"}]`, "模型达到输出上限（MAX_TOKENS）", "incomplete"},
+		{"unnamed", `"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"functionCall":{"args":{}}}]}}]`, "读取 Gemini 工具调用失败：缺少函数名", "invalid_response"},
+		{"duplicate", `"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"functionCall":{"id":"a","name":"search"}},{"functionCall":{"id":"a","name":"search"}}]}}]`, "同一响应内调用 ID \"a\" 重复", "invalid_response"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, _ := fixture(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, `{%s,"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"totalTokenCount":120}}`, tc.fields)
+			}))
+			defer srv.Close()
+			cfg := testConfig()
+			cfg.Models.Providers["native"] = modelProvider{Protocol: gemini.Protocol, BaseURL: srv.URL, apiKey: "test"}
+			cfg.Models.Scenes[sceneChat] = modelSettings{Provider: "native", Model: gemini.Hydrogen, ContextTokenBudget: 160000, maxOutputTokens: 1024}
+			ctx := withUsageCall(context.WithValue(t.Context(), modelSceneKey{}, sceneChat), usageCall{purpose: "chat"})
+			client := HTTPModel{Config: cfg, Store: s, Client: srv.Client()}
+			_, err := client.Complete(ctx, []ChatMessage{{Role: "user", Content: "测试"}}, nil, true)
+			if err == nil || !strings.Contains(err.Error(), tc.reason) || (tc.outcome == "invalid_response" && strings.Contains(err.Error(), "未完成输出")) {
+				t.Fatalf("失败原因：%v", err)
+			}
+			var count int
+			err = s.db.QueryRow("SELECT count(*) FROM usage_calls WHERE status='settled' AND outcome=? AND input_tokens=100 AND output_tokens=20", tc.outcome).Scan(&count)
+			if err != nil || count != 1 {
+				t.Fatalf("已产生的用量应只结算一次：%d %v", count, err)
+			}
+		})
+	}
+}

@@ -180,6 +180,9 @@ func (s *Store) weeklyUsageAt(at time.Time) (Usage, error) {
 
 // 只描述供应商响应的形态。生成正文并不等同于发布，非成员调用也不猜测内部决策。
 func usageOutcome(ctx context.Context, r model.Result) string {
+	if r.DecodeError != nil {
+		return "invalid_response"
+	}
 	if r.Incomplete {
 		return "incomplete"
 	}
@@ -291,7 +294,7 @@ func (m *modelCall) completeWithinBudget(ctx context.Context, messages []ChatMes
 			stepID := beginModelAttempt(ctx, m.Model, string(encoded), attempt, previous, "")
 			previous = stepID
 			defer func() {
-				finishModelAttempt(ctx, stepID, response.Message, response.Raw, err, settled, actual, reserve, call, m.apiKey)
+				finishModelAttempt(ctx, stepID, response, err, settled, actual, reserve, call, m.apiKey)
 			}()
 			call, err = m.Store.reserveCall(ctx, m.Config, reserve, m.Provider, m.Model, "")
 			if err != nil {
@@ -315,7 +318,8 @@ func (m *modelCall) completeWithinBudget(ctx context.Context, messages []ChatMes
 				}
 				settled = true
 			}
-			return nil
+			// 本地解析失败也有实际用量；结算后交给观测和成员原样记录。
+			return response.DecodeError
 		})
 	}
 	if e != nil {
