@@ -176,6 +176,9 @@ func (m *Client) decodeResponse(out responseEnvelope) (model.Result, error) {
 	}
 	result.Message = msg
 	result.Incomplete = out.Status == "incomplete"
+	if result.Incomplete {
+		result.IncompleteReason = out.IncompleteDetails.Reason
+	}
 	// HTTP 和 WebSocket 都经过这里。缺少 TTL 细分时沿用本次请求的长缓存标记。
 	longCacheRequested := m.cache != nil && m.cache.longWrite
 	m.Price.applyUsage(&result, out.Usage, longCacheRequested)

@@ -200,7 +200,7 @@ func (m *Client) Steer(ctx context.Context, raw []byte, inputEstimate int, input
 				invalid := result.Incomplete && ev.Response.IncompleteDetails.Reason != "steered" && len(queued) > 0 && len(result.Message.ToolCalls) == 0
 				var resultErr error
 				if invalid {
-					resultErr = fmt.Errorf("模型本次未完成输出")
+					resultErr = model.IncompleteError(result.IncompleteReason)
 				}
 				completed = &result
 				if err := call.Complete(result, resultErr); err != nil {

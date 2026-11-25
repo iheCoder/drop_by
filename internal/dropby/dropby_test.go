@@ -394,7 +394,7 @@ func TestModelJSONErrorsAndUsageSettlement(t *testing.T) {
 	for _, tc := range []struct {
 		name, content, reason string
 		wantError             bool
-	}{{"valid", `{"message":"你好"}`, "stop", false}, {"empty", "   ", "stop", true}, {"truncated", `{"message":"`, "length", true}} {
+	}{{"valid", `{"message":"你好"}`, "stop", false}, {"empty", "   ", "stop", true}, {"truncated", `{"message":"`, "max_output_tokens", true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _, _ := fixture(t)
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -405,10 +405,12 @@ func TestModelJSONErrorsAndUsageSettlement(t *testing.T) {
 					t.Errorf("请求走错接口: %s", r.URL.Path)
 				}
 				status := "completed"
-				if tc.reason == "length" {
-					status = "incomplete"
+				body := map[string]any{"status": status, "output": []any{map[string]any{"type": "message", "phase": "final_answer", "content": []any{map[string]string{"type": "output_text", "text": tc.content}}}}, "usage": map[string]int{"input_tokens": 10, "output_tokens": 5}}
+				if tc.reason != "stop" {
+					body["status"] = "incomplete"
+					body["incomplete_details"] = map[string]string{"reason": tc.reason}
 				}
-				respond(w, 200, map[string]any{"status": status, "output": []any{map[string]any{"type": "message", "phase": "final_answer", "content": []any{map[string]string{"type": "output_text", "text": tc.content}}}}, "usage": map[string]int{"input_tokens": 10, "output_tokens": 5}})
+				respond(w, 200, body)
 			}))
 			defer upstream.Close()
 			cfg := testConfig()
@@ -417,6 +419,9 @@ func TestModelJSONErrorsAndUsageSettlement(t *testing.T) {
 			_, err := model.Complete(context.Background(), []ChatMessage{{Role: "user", Content: "返回 JSON"}}, nil, true)
 			if (err != nil) != tc.wantError {
 				t.Fatalf("错误状态不符: %v", err)
+			}
+			if tc.reason != "stop" && (err == nil || !strings.Contains(err.Error(), tc.reason)) {
+				t.Fatalf("未保留服务商未完成原因: %v", err)
 			}
 			u, _ := s.Usage()
 			if u.CostMicros != 35 || u.InputTokens != 10 || u.OutputTokens != 5 {

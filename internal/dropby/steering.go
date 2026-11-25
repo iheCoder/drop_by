@@ -111,7 +111,7 @@ func (b *steeringBill) Complete(result model.Result, failure error) (err error) 
 		if err != nil {
 			failure = err
 		}
-		finishModelAttempt(b.ctx, b.step, result.Message, result.Raw, failure, settled, actual, b.reserve, b.call, b.model.apiKey)
+		finishModelAttempt(b.ctx, b.step, result, failure, settled, actual, b.reserve, b.call, b.model.apiKey)
 	}()
 	if result.Usage.InputTokens+result.Usage.OutputTokens == 0 {
 		return nil

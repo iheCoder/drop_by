@@ -26,12 +26,23 @@ func (m *Client) history(messages []model.ChatMessage) ([]any, []json.RawMessage
 	source := m.source()
 	var system []json.RawMessage
 	turns := make([]any, 0, len(messages))
-	var parts []json.RawMessage
-	var calls map[string]string
+	// 用本地 ID 领取回执，按原生调用的顺序组装，包括多个同名、无 ID 的调用。
+	type pendingResponse struct {
+		call model.ToolCall
+		part json.RawMessage
+	}
+	var batch []pendingResponse
+	var calls map[string]*pendingResponse
 	flushResults := func() {
+		var parts []json.RawMessage
+		for i := range batch {
+			if batch[i].part != nil {
+				parts = append(parts, batch[i].part)
+				batch[i].part = nil
+			}
+		}
 		if len(parts) > 0 {
 			turns = append(turns, content{Role: "user", Parts: parts})
-			parts = nil
 		}
 	}
 	appendText := func(role, text string) {
@@ -49,12 +60,15 @@ func (m *Client) history(messages []model.ChatMessage) ([]any, []json.RawMessage
 				system = append(system, textPart(msg.Content))
 			}
 		case "assistant":
+			batch = nil
 			if msg.NativeSource == source && len(msg.ResponseItems) == 1 {
 				// 原始 Content 作为完整的一轮回传，保留签名的位置和扩展字段。
 				turns = append(turns, msg.ResponseItems[0])
-				calls = make(map[string]string, len(msg.ToolCalls))
-				for _, call := range msg.ToolCalls {
-					calls[call.ID] = call.Function.Name
+				batch = make([]pendingResponse, len(msg.ToolCalls))
+				calls = make(map[string]*pendingResponse, len(batch))
+				for i, call := range msg.ToolCalls {
+					batch[i].call = call
+					calls[call.ID] = &batch[i]
 				}
 				continue
 			}
@@ -65,12 +79,12 @@ func (m *Client) history(messages []model.ChatMessage) ([]any, []json.RawMessage
 				appendText("model", "先前的工具调用："+string(fact))
 			}
 		case "tool":
-			if name, ok := calls[msg.ToolCallID]; ok {
-				result, err := functionResponse(msg.ToolCallID, name, msg.Content)
+			if pending, ok := calls[msg.ToolCallID]; ok {
+				result, err := functionResponse(pending.call, msg.Content)
 				if err != nil {
 					return nil, nil, err
 				}
-				parts = append(parts, result)
+				pending.part = result
 				delete(calls, msg.ToolCallID)
 				continue
 			}
@@ -90,7 +104,7 @@ func (m *Client) history(messages []model.ChatMessage) ([]any, []json.RawMessage
 	return turns, system, nil
 }
 
-func functionResponse(id, name, result string) (json.RawMessage, error) {
+func functionResponse(call model.ToolCall, result string) (json.RawMessage, error) {
 	var object map[string]json.RawMessage
 	var response any = json.RawMessage(result)
 	if json.Unmarshal([]byte(result), &object) != nil || object == nil {
@@ -101,7 +115,9 @@ func functionResponse(id, name, result string) (json.RawMessage, error) {
 		}
 		response = map[string]any{"output": response}
 	}
-	return json.Marshal(map[string]any{"functionResponse": map[string]any{
-		"id": id, "name": name, "response": response,
-	}})
+	receipt := map[string]any{"name": call.Function.Name, "response": response}
+	if !call.LocalIDOnly {
+		receipt["id"] = call.ID
+	}
+	return json.Marshal(map[string]any{"functionResponse": receipt})
 }

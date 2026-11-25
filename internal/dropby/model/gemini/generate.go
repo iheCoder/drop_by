@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -105,8 +106,9 @@ func (m *Client) Count(ctx context.Context, payload []byte) (count int, raw stri
 
 func (m *Client) Generate(ctx context.Context, payload []byte) (result model.Result, err error) {
 	var out struct {
-		ResponseID string
-		Candidates []struct {
+		ResponseID     string
+		PromptFeedback struct{ BlockReason string }
+		Candidates     []struct {
 			Content      json.RawMessage
 			FinishReason string
 		}
@@ -129,11 +131,14 @@ func (m *Client) Generate(ctx context.Context, payload []byte) (result model.Res
 	// 再由业务拒绝执行不完整的工具或发布被截断的聊天。
 	if len(out.Candidates) != 1 || out.Candidates[0].FinishReason != "STOP" {
 		result.Incomplete = true
+		if len(out.Candidates) == 0 {
+			result.IncompleteReason = out.PromptFeedback.BlockReason
+		} else if len(out.Candidates) == 1 {
+			result.IncompleteReason = out.Candidates[0].FinishReason
+		}
 		return result, nil
 	}
-	var decodeErr error
-	result.Message, decodeErr = m.decodeContent(out.Candidates[0].Content, result.Usage.OutputTokens)
-	result.Incomplete = decodeErr != nil
+	result.Message, result.DecodeError = m.decodeContent(out.Candidates[0].Content, result.Usage.OutputTokens)
 	return result, nil
 }
 
@@ -155,24 +160,43 @@ func (m *Client) decodeContent(raw json.RawMessage, outputTokens int) (model.Cha
 			}
 		}
 		if err := json.Unmarshal(raw, &part); err != nil {
-			return model.ChatMessage{}, err
+			return model.ChatMessage{}, fmt.Errorf("读取 Gemini 消息片段失败：%w", err)
 		}
 		if part.Thought {
 			continue // 思考摘要只留在完整原生消息中，不能混进业务 JSON。
 		}
 		text.WriteString(part.Text)
 		if f := part.FunctionCall; f != nil {
-			if f.ID == "" || f.Name == "" || seen[f.ID] {
-				return model.ChatMessage{}, fmt.Errorf("Gemini 工具调用缺少唯一 ID 或函数名")
+			if f.Name == "" {
+				return model.ChatMessage{}, fmt.Errorf("读取 Gemini 工具调用失败：缺少函数名")
 			}
-			seen[f.ID] = true
+			if f.ID != "" && seen[f.ID] {
+				return model.ChatMessage{}, fmt.Errorf("读取 Gemini 工具 %s 的调用失败：同一响应内调用 ID %q 重复", f.Name, f.ID)
+			}
+			if f.ID != "" {
+				seen[f.ID] = true
+			}
 			args := []byte("{}")
 			if f.Args != nil {
 				args, _ = json.Marshal(f.Args)
 			}
-			call := model.ToolCall{ID: f.ID, Type: "function"}
+			call := model.ToolCall{ID: f.ID, Type: "function", LocalIDOnly: f.ID == ""}
 			call.Function.Name, call.Function.Arguments = f.Name, string(args)
 			msg.ToolCalls = append(msg.ToolCalls, call)
+		}
+	}
+	// 为缺 ID 的调用分配执行身份。相同参数也可能是下一轮的新意图，不能按参数去重。
+	// 执行器先把这一轮落入断点再运行工具，恢复时直接读取已经分配的 ID。
+	for i := range msg.ToolCalls {
+		call := &msg.ToolCalls[i]
+		if call.LocalIDOnly {
+			for {
+				call.ID = "call_" + rand.Text()
+				if !seen[call.ID] {
+					seen[call.ID] = true
+					break
+				}
+			}
 		}
 	}
 	msg.Content = text.String()

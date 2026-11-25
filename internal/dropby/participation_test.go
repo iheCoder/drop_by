@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,6 +46,66 @@ func latestChatWork(t *testing.T, s *Store, room string) Work {
 	}
 	t.Fatal("缺少真人消息产生的聊天机会")
 	return Work{}
+}
+
+func TestGroupFailureNamesEachMemberOnce(t *testing.T) {
+	cause := errors.New("模型本次未完成输出")
+	fail := modelFunc(func(context.Context, []ChatMessage, []ToolDefinition, bool) (ChatMessage, error) {
+		return ChatMessage{}, cause
+	})
+	t.Run("one", func(t *testing.T) {
+		s, c, m := fixture(t)
+		if err := s.AddUserMessage(userMessage(c, "你好"), time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		w := latestChatWork(t, s, c.ID)
+		e := NewEngine(s, fail, testConfig())
+		e.dispatch(context.Background())
+		e.wg.Wait()
+		saved, err := s.ReadWork(c.ID, w.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.Status != "failed" || saved.Result != cause.Error() || saved.Attempts != 1 {
+			t.Fatalf("单人失败不应改写原因: %+v", saved)
+		}
+		records, err := s.Participations(c.ID)
+		if err != nil || len(records) != 1 || records[0].MemberID != m.ID || records[0].Action != "error" || records[0].Reason != cause.Error() {
+			t.Fatalf("个人失败记录: %+v %v", records, err)
+		}
+	})
+	t.Run("group", func(t *testing.T) {
+		s, c, people := groupWithMembers(t, 3)
+		if err := s.AddUserMessage(userMessage(c, "不知道你们知不知道，最近老黄又重新回 CEO 了。"), time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		w := latestChatWork(t, s, c.ID)
+		e := NewEngine(s, fail, testConfig())
+		e.dispatch(context.Background())
+		e.wg.Wait()
+		saved, err := s.ReadWork(c.ID, w.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(saved.Result, "\n")
+		if saved.Status != "failed" || saved.MemberID != "" || saved.Attempts != 1 || len(lines) != len(people) {
+			t.Fatalf("群失败结果: %+v", saved)
+		}
+		for _, person := range people {
+			if !slices.Contains(lines, person.Name+"："+cause.Error()) {
+				t.Fatalf("缺少 %s 的失败: %s", person.Name, saved.Result)
+			}
+		}
+		records, err := s.Participations(c.ID)
+		if err != nil || len(records) != len(people) {
+			t.Fatalf("参与记录: %+v %v", records, err)
+		}
+		for _, record := range records {
+			if record.Action != "error" || record.Reason != cause.Error() {
+				t.Fatalf("个人原因被改写: %+v", record)
+			}
+		}
+	})
 }
 
 func TestConcurrentMembersSeePeersWithoutWaitingForSlowMember(t *testing.T) {

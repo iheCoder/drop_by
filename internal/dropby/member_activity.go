@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -173,11 +175,34 @@ func (e *Engine) converse(ctx context.Context, c Conversation, w Work) error {
 			}
 		}
 	}
-	var failure error
-	for _, err := range failures {
-		failure = errors.Join(failure, err)
+	return e.memberFailures(failures)
+}
+
+// 群里每位成员各自失败。只有一个人时保留原来的原因；好几个人时写上名字，
+// 避免同一句原因在工作结果里连成看不出人数的几行。
+func (e *Engine) memberFailures(failures map[string]error) error {
+	ids := make([]string, 0, len(failures))
+	for id, err := range failures {
+		if err != nil {
+			ids = append(ids, id)
+		}
 	}
-	return failure
+	sort.Strings(ids)
+	var joined error
+	for _, id := range ids {
+		err := failures[id]
+		if len(ids) > 1 {
+			label := id
+			if member, readErr := e.Store.Member(id); readErr == nil {
+				if name := strings.TrimSpace(member.Name); name != "" {
+					label = name
+				}
+			}
+			err = fmt.Errorf("%s：%w", label, err)
+		}
+		joined = errors.Join(joined, err)
+	}
+	return joined
 }
 
 func (e *Engine) memberAction(ctx context.Context, c Conversation, m Member, w Work) (int64, error) {
