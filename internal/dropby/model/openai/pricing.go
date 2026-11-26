@@ -6,10 +6,11 @@ import (
 	"drop_by/internal/dropby/model"
 )
 
-// 2026-11-07 核对的官方 Standard 费率，只维护当前使用的三个模型。
+// 官方 Standard 费率，只维护已接入的模型。
 // 来源：https://developers.openai.com/api/docs/models/gpt-6-luna
 // https://developers.openai.com/api/docs/models/gpt-6.1-terra
 // https://developers.openai.com/api/docs/models/gpt-6.1-sol
+// https://developers.openai.com/api/docs/models/gpt-6.2-sol
 // 单位为纳美元/token；最后统一向上取整到微美元，避免浮点累计与重复取整。
 type Price struct{ input, cachedInput, output int64 }
 
@@ -19,7 +20,7 @@ func PriceForModel(model string) (Price, error) {
 		return Price{100, 10, 500}, nil
 	case "gpt-6.1-terra":
 		return Price{1000, 50, 5000}, nil
-	case "gpt-6.1-sol":
+	case "gpt-6.1-sol", "gpt-6.2-sol":
 		return Price{2000, 100, 10000}, nil
 	default:
 		return Price{}, fmt.Errorf("模型 %q 尚未配置费率，未发起收费调用", model)

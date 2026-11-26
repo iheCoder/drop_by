@@ -13,6 +13,7 @@ func TestSelectedModelUsagePrices(t *testing.T) {
 		short, long int64
 	}{
 		{"gpt-6-luna", 119, 132}, {"gpt-6.1-terra", 1170, 1295}, {"gpt-6.1-sol", 2340, 2590},
+		{"gpt-6.2-sol", 2340, 2590},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
 			price, err := PriceForModel(tc.model)
